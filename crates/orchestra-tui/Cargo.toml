@@ -1,0 +1,14 @@
+[package]
+name = "orchestra-tui"
+description = "Frontend terminal (ratatui) d'Orchestra IDE — consomme orchestra-core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "orchestra"
+path = "src/main.rs"
+
+[dependencies]
+orchestra-core = { path = "../orchestra-core" }
+ratatui = { workspace = true }

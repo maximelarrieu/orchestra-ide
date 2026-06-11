@@ -1,0 +1,9 @@
+{
+  "project_name": "Recherche_Immo_Aix",
+  "project_type": "immobilier",
+  "workspace_path": null,
+  "documentalist_enabled": false,
+  "agents": ["Agent_Scraper", "Agent_Filtrage"],
+  "skills": ["Scrape_Web_Page", "Extract_JSON_From_HTML", "Geocoding_Calcul"],
+  "integrations": {}
+}
