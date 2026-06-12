@@ -16,3 +16,18 @@ pub fn default_skills(kind: ProjectType) -> Vec<String> {
     };
     skills.iter().map(|s| s.to_string()).collect()
 }
+
+/// Composition par défaut de l'« orchestre » d'agents selon le type de projet.
+///
+/// Comme [`default_skills`], cette matrice pré-remplit `config.json` lors de
+/// `orchestra init` (Phase 2). Les agents ne sont que des noms pour l'instant ;
+/// le runtime qui les fait vivre arrive en Phase 3.
+pub fn default_agents(kind: ProjectType) -> Vec<String> {
+    let agents: &[&str] = match kind {
+        ProjectType::Dev => &["Agent_Architecte", "Agent_Codeur", "Agent_Testeur"],
+        ProjectType::Nutrition => &["Agent_Planificateur", "Agent_Nutritionniste"],
+        ProjectType::Langue => &["Agent_Tuteur", "Agent_Correcteur"],
+        ProjectType::Immobilier => &["Agent_Scraper", "Agent_Filtrage"],
+    };
+    agents.iter().map(|s| s.to_string()).collect()
+}

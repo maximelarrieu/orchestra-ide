@@ -7,5 +7,5 @@ pub mod space;
 
 pub use config::{GitIntegration, GithubIntegration, Integrations, JiraIntegration, ProjectConfig};
 pub use project_type::ProjectType;
-pub use skill_id::default_skills;
+pub use skill_id::{default_agents, default_skills};
 pub use space::{Adr, ContextSpace};

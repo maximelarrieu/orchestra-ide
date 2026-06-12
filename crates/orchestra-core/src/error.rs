@@ -13,6 +13,9 @@ pub enum OrchestraError {
         source: std::io::Error,
     },
 
+    #[error("Un Espace existe déjà ici : {path} — refus d'écraser la configuration")]
+    SpaceAlreadyExists { path: PathBuf },
+
     #[error("Configuration invalide : {0}")]
     InvalidConfig(#[from] serde_json::Error),
 
