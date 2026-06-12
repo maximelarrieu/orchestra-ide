@@ -146,6 +146,10 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   porte désormais les intégrations.
 - Dashboard : au lancement `[1]`, si le persona contient encore des « à compléter » **et**
   qu'un LLM est actif, un avertissement s'affiche au lieu d'un appel LLM voué à l'échec.
+- **Éditeur de persona intégré** (`[4]`) : mini éditeur multi-ligne (`orchestra-tui::editor`,
+  UTF-8) pour renseigner le contexte sans quitter l'outil ; `Ctrl+S` persiste via
+  `ContextSpace::save_persona` (l'écriture disque reste dans le cœur). Objectif : limiter les
+  actions hors logiciel.
 
 ## Phase 4c — Intégration Jira ⏳ (optionnelle, à venir)
 

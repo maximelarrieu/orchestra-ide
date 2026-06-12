@@ -55,9 +55,10 @@ seul le *nom* de la variable d'environnement est enregistré). La logique d'écr
 `orchestra-tui::wizard` — découplage métier/affichage respecté. Un espace déjà initialisé
 n'est jamais écrasé (`SpaceAlreadyExists`).
 
-> 📝 **Pense à remplir `.orchestra/persona.md`** (remplace les « à compléter ») : c'est le
-> contexte donné aux agents. Si le persona est incomplet et qu'un LLM est actif, `[1]`
-> affiche un avertissement plutôt que de gaspiller un appel.
+> 📝 **Pense à remplir le persona** (remplace les « à compléter ») : c'est le contexte donné
+> aux agents. Tu peux le faire **directement dans l'interface** avec la touche `[4]`. Si le
+> persona est incomplet et qu'un LLM est actif, `[1]` affiche un avertissement plutôt que de
+> gaspiller un appel.
 
 ## Phase 3 — Runtime d'agents, radar vivant ✅
 
@@ -151,7 +152,12 @@ validé). Outils et prompt dédiés, indépendants de la liste de Skills du proj
 | `[1]` | Lancer l'orchestre |
 | `[2]` | Basculer radar ↔ **liste des ADRs** de l'espace |
 | `[3]` | **Changer d'Espace** (saisie d'un chemin, `Entrée` charge / `Échap` annule) |
+| `[4]` | **Éditer le persona** dans l'interface (`Ctrl+S` enregistre, `Échap` annule) |
 | `q` / `Échap` | Quitter |
+
+> 🧩 L'éditeur de persona intégré (`[4]`) permet de renseigner le contexte **sans quitter
+> l'outil** : l'écriture sur disque passe par le cœur (`ContextSpace::save_persona`), l'UI ne
+> touche jamais le système de fichiers directement.
 
 ## Phases suivantes
 

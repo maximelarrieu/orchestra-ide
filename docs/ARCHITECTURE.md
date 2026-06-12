@@ -221,11 +221,14 @@ validation du type de diagramme.
 
 ### Finitions du dashboard (Phase 5)
 
-`App` porte une `View` (`Radar`/`Adrs`), un mode de saisie (`input: Option<String>`) et un
-message transitoire (`notice`). La boucle clavier route les touches vers le tampon de
-saisie quand il est actif, sinon vers les commandes : `[2]` bascule la vue ADRs, `[3]` ouvre
-la saisie d'un chemin d'espace (chargement via `ContextSpace::load` à l'`Entrée`, ce qui
-réinitialise l'`App` et stoppe l'orchestre courant).
+`App` porte une `View` (`Radar`/`Adrs`), un mode de saisie (`input: Option<String>`), un
+éditeur de persona (`editor: Option<Editor>`) et un message transitoire (`notice`). La boucle
+clavier route les touches vers l'éditeur ou le tampon de saisie quand l'un est actif, sinon
+vers les commandes : `[2]` bascule la vue ADRs, `[3]` ouvre la saisie d'un chemin d'espace
+(chargement via `ContextSpace::load`), `[4]` ouvre l'**éditeur de persona intégré**
+(`orchestra-tui::editor` — mini éditeur multi-ligne UTF-8 pur ; `Ctrl+S` persiste via
+`ContextSpace::save_persona`, l'UI ne touchant jamais le disque directement). Objectif
+produit : limiter au maximum les actions effectuées hors de l'outil.
 
 ### Flux d'un lancement (touche `[1]`)
 

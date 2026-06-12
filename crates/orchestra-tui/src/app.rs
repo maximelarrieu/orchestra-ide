@@ -6,6 +6,8 @@
 use orchestra_core::events::AgentEvent;
 use orchestra_core::model::ContextSpace;
 
+use crate::editor::Editor;
+
 /// Nombre d'événements conservés dans l'historique du radar (les plus anciens sont
 /// oubliés). Largement au-delà de ce qu'un écran affiche.
 const HISTORY_CAP: usize = 500;
@@ -42,6 +44,8 @@ pub struct App {
     pub view: View,
     /// Saisie en cours d'un chemin d'espace (`Some(tampon)`), ou `None` hors saisie.
     pub input: Option<String>,
+    /// Éditeur de persona ouvert (`Some`) ou fermé (`None`).
+    pub editor: Option<Editor>,
     /// Message transitoire affiché à l'utilisateur (succès/erreur d'une action).
     pub notice: Option<String>,
 }
@@ -57,7 +61,19 @@ impl App {
             llm_model: orchestra_core::llm::LlmClient::from_env().map(|c| c.model().to_string()),
             view: View::Radar,
             input: None,
+            editor: None,
             notice: None,
+        }
+    }
+
+    /// `[4]` — ouvre l'éditeur de persona sur le contenu courant de l'espace.
+    pub fn open_persona_editor(&mut self) {
+        if let Some(space) = &self.space {
+            let text = space.persona.clone().unwrap_or_default();
+            self.editor = Some(Editor::from_str(&text));
+            self.notice = None;
+        } else {
+            self.notice = Some("Aucun espace chargé : impossible d'éditer le persona.".into());
         }
     }
 

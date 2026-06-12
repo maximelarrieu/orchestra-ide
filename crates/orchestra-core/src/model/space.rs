@@ -25,6 +25,20 @@ pub struct ContextSpace {
 }
 
 impl ContextSpace {
+    /// Chemin du fichier persona de cet espace (`.orchestra/persona.md`).
+    pub fn persona_path(&self) -> PathBuf {
+        self.root.join(".orchestra").join("persona.md")
+    }
+
+    /// Écrit le persona sur disque et met à jour la copie en mémoire. C'est par ici que
+    /// l'UI persiste les modifications — elle ne touche jamais le système de fichiers
+    /// directement (frontière métier/affichage).
+    pub fn save_persona(&mut self, content: &str) -> Result<(), OrchestraError> {
+        fs::write(self.persona_path(), content)?;
+        self.persona = Some(content.to_string());
+        Ok(())
+    }
+
     /// Charge l'espace situé dans `root` (qui doit contenir `.orchestra/config.json`).
     pub fn load(root: &Path) -> Result<Self, OrchestraError> {
         let config_path = root.join(".orchestra").join("config.json");

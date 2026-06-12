@@ -5,13 +5,14 @@
 //! l'[`App`].
 
 use orchestra_core::events::AgentEvent;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, Phase, View};
+use crate::editor::Editor;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let [header, center, menu] = Layout::vertical([
@@ -22,11 +23,41 @@ pub fn render(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     render_header(frame, header, app);
-    match app.view {
-        View::Radar => render_radar(frame, center, app),
-        View::Adrs => render_adrs(frame, center, app),
+    if let Some(ed) = &app.editor {
+        render_persona_editor(frame, center, ed);
+    } else {
+        match app.view {
+            View::Radar => render_radar(frame, center, app),
+            View::Adrs => render_adrs(frame, center, app),
+        }
     }
     render_menu(frame, menu, app);
+}
+
+/// Éditeur de persona : lignes éditables + curseur terminal positionné (avec défilement
+/// vertical si le contenu dépasse la zone).
+fn render_persona_editor(frame: &mut Frame, area: Rect, ed: &Editor) {
+    let dirty = if ed.is_dirty() { " *" } else { "" };
+    let block = Block::bordered().title(format!(" ✏ PERSONA (.orchestra/persona.md){dirty} "));
+
+    let inner_h = area.height.saturating_sub(2) as usize; // -2 : bordures
+    let (cy, cx) = ed.cursor();
+    let top = if inner_h > 0 && cy >= inner_h { cy - inner_h + 1 } else { 0 };
+
+    let lines: Vec<Line> = ed
+        .lines()
+        .iter()
+        .skip(top)
+        .take(inner_h.max(1))
+        .map(|l| Line::raw(l.iter().collect::<String>()))
+        .collect();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+
+    // Curseur terminal (à l'intérieur des bordures), borné à la zone visible.
+    let max_x = area.x + area.width.saturating_sub(2);
+    let cursor_x = (area.x + 1 + cx as u16).min(max_x);
+    let cursor_y = area.y + 1 + (cy - top) as u16;
+    frame.set_cursor_position(Position { x: cursor_x, y: cursor_y });
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
@@ -154,8 +185,13 @@ fn render_adrs(frame: &mut Frame, area: Rect, app: &App) {
 fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" 📋 OPTIONS & MENUS ");
 
-    // En saisie de chemin d'espace, l'invite remplace le menu.
-    let content = if let Some(buf) = &app.input {
+    // L'éditeur de persona et la saisie de chemin ont priorité sur le menu.
+    let content = if app.editor.is_some() {
+        Line::from(Span::styled(
+            "✏ Persona — Ctrl+S enregistrer · Échap annuler · ←↑↓→ naviguer",
+            Style::new().magenta(),
+        ))
+    } else if let Some(buf) = &app.input {
         Line::from(vec![
             Span::styled("Chemin de l'espace : ", Style::new().bold()),
             Span::raw(buf.clone()),
@@ -165,9 +201,9 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     } else if let Some(notice) = &app.notice {
         Line::from(Span::styled(notice.clone(), Style::new().yellow()))
     } else {
-        let adrs = if app.view == View::Adrs { "[2] Retour radar" } else { "[2] Voir les ADRs" };
+        let adrs = if app.view == View::Adrs { "[2] Retour radar" } else { "[2] ADRs" };
         Line::from(format!(
-            "[1] Lancer l'orchestre   {adrs}   [3] Changer d'Espace   [q] Quitter"
+            "[1] Lancer   {adrs}   [3] Changer d'Espace   [4] Éditer persona   [q] Quitter"
         ))
     };
     frame.render_widget(Paragraph::new(content).block(block), area);
@@ -231,6 +267,19 @@ mod tests {
         app.toggle_adrs(); // retour radar
         app.start_space_input(); // invite de saisie dans le menu
         app.input_push('x');
+        terminal.draw(|f| render(f, &app)).unwrap();
+    }
+
+    /// L'éditeur de persona doit se rendre (avec curseur) sans panique.
+    #[test]
+    fn renders_persona_editor() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut app = demo_app();
+        app.open_persona_editor();
+        if let Some(ed) = app.editor.as_mut() {
+            ed.insert_char('B');
+            ed.newline();
+        }
         terminal.draw(|f| render(f, &app)).unwrap();
     }
 }

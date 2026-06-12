@@ -83,6 +83,7 @@ Le tableau de bord (TUI) s'ouvre en 3 zones :
 | `[1]` | Lancer l'orchestre → le radar défile en temps réel | ✅ actif |
 | `[2]` | Basculer radar ↔ liste des ADRs de l'espace | ✅ actif (5) |
 | `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
+| `[4]` | Éditer le persona dans l'interface (`Ctrl+S` enregistre) | ✅ actif |
 | `q` / `Échap` | Quitter | ✅ actif |
 
 Quand l'orchestre tourne, l'en-tête indique `▶ N agent(s) en cours`, le radar liste les
