@@ -221,14 +221,23 @@ validation du type de diagramme.
 
 ### Finitions du dashboard (Phase 5)
 
-`App` porte une `View` (`Radar`/`Adrs`), un mode de saisie (`input: Option<String>`), un
-éditeur de persona (`editor: Option<Editor>`) et un message transitoire (`notice`). La boucle
-clavier route les touches vers l'éditeur ou le tampon de saisie quand l'un est actif, sinon
-vers les commandes : `[2]` bascule la vue ADRs, `[3]` ouvre la saisie d'un chemin d'espace
-(chargement via `ContextSpace::load`), `[4]` ouvre l'**éditeur de persona intégré**
-(`orchestra-tui::editor` — mini éditeur multi-ligne UTF-8 pur ; `Ctrl+S` persiste via
-`ContextSpace::save_persona`, l'UI ne touchant jamais le disque directement). Objectif
-produit : limiter au maximum les actions effectuées hors de l'outil.
+`App` porte une `View` (`Radar`/`Docs`), un mode de saisie (`input`), un éditeur de persona
+(`editor: Option<Editor>`), un visualiseur (`viewer: Option<Viewer>`) et un `notice`. La
+boucle clavier applique une **priorité de modes** : éditeur → visualiseur → navigateur de
+documents → saisie de chemin → commandes. Tout reste dans l'outil :
+
+- `[2]` ouvre le **navigateur de documents** : `ContextSpace::documents()` agrège le persona,
+  les ADRs et les fichiers Markdown du workspace (balayage borné, dossiers cachés/build
+  ignorés). `Entrée` lit le document via `load_document()` et l'affiche dans le **visualiseur
+  Markdown** (`orchestra-tui::markdown::to_lines` — rendu titres/listes/citations/code/gras),
+  avec défilement. Sur le persona, `e` ouvre l'éditeur.
+- `[3]` charge un autre espace (`ContextSpace::load`).
+- `[4]` ouvre l'**éditeur de persona** (`orchestra-tui::editor`, multi-ligne UTF-8 pur) ;
+  `Ctrl+S` persiste via `ContextSpace::save_persona`.
+
+Toute lecture/écriture passe par le cœur (`documents`/`load_document`/`save_persona`) — l'UI
+ne touche jamais le système de fichiers directement. Objectif produit : limiter au maximum
+les actions effectuées hors de l'outil.
 
 ### Flux d'un lancement (touche `[1]`)
 

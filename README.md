@@ -150,14 +150,17 @@ validé). Outils et prompt dédiés, indépendants de la liste de Skills du proj
 | Touche | Action |
 |---|---|
 | `[1]` | Lancer l'orchestre |
-| `[2]` | Basculer radar ↔ **liste des ADRs** de l'espace |
+| `[2]` | **Navigateur de documents** de l'espace (persona, ADRs, docs Markdown) avec **visualiseur Markdown** intégré |
 | `[3]` | **Changer d'Espace** (saisie d'un chemin, `Entrée` charge / `Échap` annule) |
 | `[4]` | **Éditer le persona** dans l'interface (`Ctrl+S` enregistre, `Échap` annule) |
 | `q` / `Échap` | Quitter |
 
-> 🧩 L'éditeur de persona intégré (`[4]`) permet de renseigner le contexte **sans quitter
-> l'outil** : l'écriture sur disque passe par le cœur (`ContextSpace::save_persona`), l'UI ne
-> touche jamais le système de fichiers directement.
+Dans le navigateur `[2]` : `↑↓` choisir, `Entrée` ouvrir un document dans le visualiseur
+(Markdown rendu : titres, listes, citations, blocs de code, gras/`code`), `↑↓` y défiler,
+`Échap` revenir. Sur le persona, `e` ouvre directement l'éditeur. **Tout reste dans l'outil :**
+persona éditable, docs et ADRs consultables — la lecture/écriture passe par le cœur
+(`ContextSpace::documents` / `load_document` / `save_persona`), l'UI ne touche jamais le
+système de fichiers directement.
 
 ## Phases suivantes
 

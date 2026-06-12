@@ -5,14 +5,16 @@
 //! l'[`App`].
 
 use orchestra_core::events::AgentEvent;
+use orchestra_core::model::DocKind;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, Phase, View};
+use crate::app::{App, Phase, View, Viewer};
 use crate::editor::Editor;
+use crate::markdown;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let [header, center, menu] = Layout::vertical([
@@ -25,13 +27,62 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_header(frame, header, app);
     if let Some(ed) = &app.editor {
         render_persona_editor(frame, center, ed);
+    } else if let Some(v) = &app.viewer {
+        render_markdown_viewer(frame, center, v);
     } else {
         match app.view {
             View::Radar => render_radar(frame, center, app),
-            View::Adrs => render_adrs(frame, center, app),
+            View::Docs => render_docs_list(frame, center, app),
         }
     }
     render_menu(frame, menu, app);
+}
+
+/// Navigateur des documents de l'espace (persona / ADRs / docs), avec sélection.
+fn render_docs_list(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 📚 DOCUMENTS DE L'ESPACE ");
+    let lines: Vec<Line> = if app.docs.is_empty() {
+        vec![Line::from(Span::styled(
+            "  Aucun document (persona, ADR ou .md du workspace).",
+            Style::new().dark_gray(),
+        ))]
+    } else {
+        app.docs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let (tag, tag_style) = match d.kind {
+                    DocKind::Persona => ("persona", Style::new().yellow()),
+                    DocKind::Adr => ("adr ", Style::new().green()),
+                    DocKind::Doc => ("doc ", Style::new().cyan()),
+                };
+                let selected = i == app.doc_sel;
+                let marker = if selected { "▶ " } else { "  " };
+                let label_style = if selected {
+                    Style::new().bold().reversed()
+                } else {
+                    Style::new()
+                };
+                Line::from(vec![
+                    Span::raw(marker),
+                    Span::styled(format!("[{tag}] "), tag_style),
+                    Span::styled(d.label.clone(), label_style),
+                ])
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Visualiseur Markdown : rendu stylé + défilement vertical borné.
+fn render_markdown_viewer(frame: &mut Frame, area: Rect, v: &Viewer) {
+    let block = Block::bordered().title(format!(" 📖 {} ", v.title));
+    let rendered = markdown::to_lines(&v.text);
+    let visible = area.height.saturating_sub(2) as usize; // -2 : bordures
+    let max_scroll = rendered.len().saturating_sub(visible);
+    let top = v.scroll.min(max_scroll);
+    let lines: Vec<Line> = rendered.into_iter().skip(top).take(visible.max(1)).collect();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Éditeur de persona : lignes éditables + curseur terminal positionné (avec défilement
@@ -156,40 +207,25 @@ fn event_line(ev: &AgentEvent) -> Line<'static> {
     }
 }
 
-/// Vue ADRs : liste des Architecture Decision Records de l'espace chargé.
-fn render_adrs(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::bordered().title(" 📐 ADRs (DÉCISIONS D'ARCHITECTURE) ");
-    let lines: Vec<Line> = match &app.space {
-        Some(s) if !s.adrs.is_empty() => s
-            .adrs
-            .iter()
-            .map(|adr| {
-                Line::from(vec![
-                    Span::styled("  • ", Style::new().cyan()),
-                    Span::raw(adr.title.clone()),
-                ])
-            })
-            .collect(),
-        Some(_) => vec![Line::from(Span::styled(
-            "  Aucun ADR dans cet espace (dossier .orchestra/adr/ vide).",
-            Style::new().dark_gray(),
-        ))],
-        None => vec![Line::from(Span::styled(
-            "  Aucun espace chargé.",
-            Style::new().dark_gray(),
-        ))],
-    };
-    frame.render_widget(Paragraph::new(lines).block(block), area);
-}
-
 fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" 📋 OPTIONS & MENUS ");
 
-    // L'éditeur de persona et la saisie de chemin ont priorité sur le menu.
+    // Les modes (éditeur / visualiseur / saisie) ont priorité sur le menu.
     let content = if app.editor.is_some() {
         Line::from(Span::styled(
             "✏ Persona — Ctrl+S enregistrer · Échap annuler · ←↑↓→ naviguer",
             Style::new().magenta(),
+        ))
+    } else if app.viewer.is_some() {
+        let edit = if app.viewer_is_persona() { " · [e] éditer" } else { "" };
+        Line::from(Span::styled(
+            format!("📖 Document — ↑↓ défiler · Échap fermer{edit}"),
+            Style::new().cyan(),
+        ))
+    } else if app.view == View::Docs {
+        Line::from(Span::styled(
+            "📚 Documents — ↑↓ choisir · Entrée ouvrir · Échap retour",
+            Style::new().cyan(),
         ))
     } else if let Some(buf) = &app.input {
         Line::from(vec![
@@ -201,10 +237,9 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     } else if let Some(notice) = &app.notice {
         Line::from(Span::styled(notice.clone(), Style::new().yellow()))
     } else {
-        let adrs = if app.view == View::Adrs { "[2] Retour radar" } else { "[2] ADRs" };
-        Line::from(format!(
-            "[1] Lancer   {adrs}   [3] Changer d'Espace   [4] Éditer persona   [q] Quitter"
-        ))
+        Line::from(
+            "[1] Lancer   [2] Documents   [3] Changer d'Espace   [4] Éditer persona   [q] Quitter",
+        )
     };
     frame.render_widget(Paragraph::new(content).block(block), area);
 }
@@ -255,18 +290,32 @@ mod tests {
         render_at(20, 6); // radar quasi inexistant
     }
 
-    /// La vue ADRs et le mode saisie (finitions Phase 5) doivent aussi se rendre sans panique.
+    /// Le navigateur de documents et le mode saisie doivent se rendre sans panique.
     #[test]
-    fn renders_adrs_view_and_input_mode() {
+    fn renders_docs_view_and_input_mode() {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
         let mut app = demo_app();
-        app.toggle_adrs(); // vue ADRs
+        app.toggle_docs(); // vue Documents
         terminal.draw(|f| render(f, &app)).unwrap();
 
-        app.toggle_adrs(); // retour radar
+        app.toggle_docs(); // retour radar
         app.start_space_input(); // invite de saisie dans le menu
         app.input_push('x');
+        terminal.draw(|f| render(f, &app)).unwrap();
+    }
+
+    /// Le visualiseur Markdown doit se rendre (avec défilement borné) sans panique.
+    #[test]
+    fn renders_markdown_viewer() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        let mut app = demo_app();
+        app.viewer = Some(crate::app::Viewer {
+            title: "doc.md".into(),
+            text: "# Titre\n\n- a\n- b\n\n```\ncode\n```\nfin".into(),
+            scroll: 100, // au-delà de la fin → clampé au rendu
+            is_persona: false,
+        });
         terminal.draw(|f| render(f, &app)).unwrap();
     }
 

@@ -148,7 +148,11 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   qu'un LLM est actif, un avertissement s'affiche au lieu d'un appel LLM voué à l'échec.
 - **Éditeur de persona intégré** (`[4]`) : mini éditeur multi-ligne (`orchestra-tui::editor`,
   UTF-8) pour renseigner le contexte sans quitter l'outil ; `Ctrl+S` persiste via
-  `ContextSpace::save_persona` (l'écriture disque reste dans le cœur). Objectif : limiter les
+  `ContextSpace::save_persona` (l'écriture disque reste dans le cœur).
+- **Navigateur de documents + visualiseur Markdown** (`[2]`) : `ContextSpace::documents()`
+  agrège persona, ADRs et Markdown du workspace (ceux produits par le Documentaliste
+  compris) ; ouverture dans un visualiseur Markdown stylé (`orchestra-tui::markdown`), `e`
+  pour éditer le persona. Lecture via `load_document()` (cœur). Objectif : limiter les
   actions hors logiciel.
 
 ## Phase 4c — Intégration Jira ⏳ (optionnelle, à venir)

@@ -4,7 +4,7 @@
 //! (`dashboard`). On peut ainsi tester l'agrégation sans terminal ni tokio.
 
 use orchestra_core::events::AgentEvent;
-use orchestra_core::model::ContextSpace;
+use orchestra_core::model::{ContextSpace, DocKind, SpaceDoc};
 
 use crate::editor::Editor;
 
@@ -23,13 +23,22 @@ pub enum Phase {
     Finished,
 }
 
-/// Vue affichée dans la zone centrale du dashboard (Phase 5, finitions).
+/// Vue affichée dans la zone centrale du dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     /// Flux d'activité des agents.
     Radar,
-    /// Liste des ADRs de l'espace.
-    Adrs,
+    /// Navigateur des documents de l'espace (persona, ADRs, docs).
+    Docs,
+}
+
+/// Visualiseur Markdown ouvert sur un document.
+pub struct Viewer {
+    pub title: String,
+    pub text: String,
+    pub scroll: usize,
+    /// Vrai si le document affiché est le persona (→ raccourci d'édition).
+    pub is_persona: bool,
 }
 
 pub struct App {
@@ -46,6 +55,12 @@ pub struct App {
     pub input: Option<String>,
     /// Éditeur de persona ouvert (`Some`) ou fermé (`None`).
     pub editor: Option<Editor>,
+    /// Documents de l'espace (rafraîchis à l'ouverture du navigateur).
+    pub docs: Vec<SpaceDoc>,
+    /// Index du document sélectionné dans le navigateur.
+    pub doc_sel: usize,
+    /// Visualiseur Markdown ouvert (`Some`) ou fermé (`None`).
+    pub viewer: Option<Viewer>,
     /// Message transitoire affiché à l'utilisateur (succès/erreur d'une action).
     pub notice: Option<String>,
 }
@@ -62,6 +77,9 @@ impl App {
             view: View::Radar,
             input: None,
             editor: None,
+            docs: Vec::new(),
+            doc_sel: 0,
+            viewer: None,
             notice: None,
         }
     }
@@ -77,12 +95,60 @@ impl App {
         }
     }
 
-    /// `[2]` — bascule entre le radar et la liste des ADRs.
-    pub fn toggle_adrs(&mut self) {
-        self.view = match self.view {
-            View::Adrs => View::Radar,
-            _ => View::Adrs,
-        };
+    /// `[2]` — bascule entre le radar et le navigateur de documents (rafraîchit la liste).
+    pub fn toggle_docs(&mut self) {
+        if self.view == View::Docs {
+            self.view = View::Radar;
+            self.viewer = None;
+            return;
+        }
+        self.docs = self.space.as_ref().map(ContextSpace::documents).unwrap_or_default();
+        self.doc_sel = 0;
+        self.viewer = None;
+        self.notice = None;
+        self.view = View::Docs;
+    }
+
+    /// Déplace la sélection dans la liste de documents (bornée).
+    pub fn docs_move(&mut self, delta: isize) {
+        if self.docs.is_empty() {
+            return;
+        }
+        let last = self.docs.len() - 1;
+        let next = (self.doc_sel as isize + delta).clamp(0, last as isize);
+        self.doc_sel = next as usize;
+    }
+
+    /// Ouvre le document sélectionné dans le visualiseur Markdown (lecture via le cœur).
+    pub fn open_selected_doc(&mut self) {
+        let Some(doc) = self.docs.get(self.doc_sel) else { return };
+        match orchestra_core::model::load_document(&doc.path) {
+            Ok(text) => {
+                self.viewer = Some(Viewer {
+                    title: doc.label.clone(),
+                    text,
+                    scroll: 0,
+                    is_persona: doc.kind == DocKind::Persona,
+                });
+            }
+            Err(e) => self.notice = Some(format!("Lecture impossible : {e}")),
+        }
+    }
+
+    pub fn close_viewer(&mut self) {
+        self.viewer = None;
+    }
+
+    /// Fait défiler le visualiseur (clamp bas géré au rendu d'après la hauteur dispo).
+    pub fn viewer_scroll(&mut self, delta: isize) {
+        if let Some(v) = self.viewer.as_mut() {
+            v.scroll = (v.scroll as isize + delta).max(0) as usize;
+        }
+    }
+
+    /// Vrai si le visualiseur affiche le persona (→ raccourci `e` pour l'éditer).
+    pub fn viewer_is_persona(&self) -> bool {
+        self.viewer.as_ref().is_some_and(|v| v.is_persona)
     }
 
     /// `[3]` — entre en saisie d'un chemin d'espace.
@@ -195,13 +261,20 @@ mod tests {
     }
 
     #[test]
-    fn toggle_adrs_switches_view() {
+    fn toggle_docs_switches_view() {
         let mut app = App::new(None);
         assert_eq!(app.view, View::Radar);
-        app.toggle_adrs();
-        assert_eq!(app.view, View::Adrs);
-        app.toggle_adrs();
+        app.toggle_docs();
+        assert_eq!(app.view, View::Docs);
+        app.toggle_docs();
         assert_eq!(app.view, View::Radar);
+    }
+
+    #[test]
+    fn docs_move_is_bounded() {
+        let mut app = App::new(None);
+        app.docs_move(5); // liste vide → reste à 0
+        assert_eq!(app.doc_sel, 0);
     }
 
     #[test]

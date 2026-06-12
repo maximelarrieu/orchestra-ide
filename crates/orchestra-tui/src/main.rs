@@ -10,6 +10,7 @@
 mod app;
 mod dashboard;
 mod editor;
+mod markdown;
 mod wizard;
 
 use std::path::{Path, PathBuf};
@@ -23,7 +24,7 @@ use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyMo
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::app::App;
+use crate::app::{App, View};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -130,6 +131,29 @@ async fn event_loop(
                                 }
                                 _ => {}
                             }
+                        } else if app.viewer.is_some() {
+                            // Visualiseur Markdown : défilement + fermeture (+ édition persona).
+                            match key.code {
+                                KeyCode::Esc => app.close_viewer(),
+                                KeyCode::Up => app.viewer_scroll(-1),
+                                KeyCode::Down => app.viewer_scroll(1),
+                                KeyCode::PageUp => app.viewer_scroll(-10),
+                                KeyCode::PageDown => app.viewer_scroll(10),
+                                KeyCode::Char('e') if app.viewer_is_persona() => {
+                                    app.close_viewer();
+                                    app.open_persona_editor();
+                                }
+                                _ => {}
+                            }
+                        } else if app.view == View::Docs {
+                            // Navigateur de documents : sélection + ouverture.
+                            match key.code {
+                                KeyCode::Up => app.docs_move(-1),
+                                KeyCode::Down => app.docs_move(1),
+                                KeyCode::Enter => app.open_selected_doc(),
+                                KeyCode::Esc | KeyCode::Char('2') => app.toggle_docs(),
+                                _ => {}
+                            }
                         } else if app.input.is_some() {
                             // Mode saisie d'un chemin d'espace : les touches alimentent le tampon.
                             match key.code {
@@ -167,7 +191,7 @@ async fn event_loop(
                                         rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
                                     }
                                 }
-                                KeyCode::Char('2') => app.toggle_adrs(),
+                                KeyCode::Char('2') => app.toggle_docs(),
                                 KeyCode::Char('3') => app.start_space_input(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
                                 _ => {}
