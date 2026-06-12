@@ -96,16 +96,29 @@ démarrages, les logs et les fins d'agents, puis bascule en `✓ terminé`.
 | Tableau de bord 3 zones | ✅ | 1 |
 | Création d'Espace assistée (`init`) | ✅ | 2 |
 | Radar temps réel (flux d'agents) | ✅ | 3 |
-| **Agents réellement intelligents (LLM)** | ❌ *simulés* | 4 |
-| Skills exécutables (lecture/écriture, web, terminal…) | ❌ | 4 |
-| Intégrations Git / GitHub / Jira | ❌ | 4 |
-| Consultation des ADRs / changement d'Espace dans l'UI | ❌ | 4–5 |
+| **Agents intelligents (LLM Claude)** | ✅ avec clé API | 4a |
+| Skills Dev exécutables (lecture/écriture fichier, terminal) | ✅ | 4a |
+| Repli simulé hors-ligne (sans clé) | ✅ | 4a |
+| Intégrations Git / GitHub / Jira | ❌ | 4b |
+| Consultation des ADRs / changement d'Espace dans l'UI | ❌ | 4b–5 |
 | Agent Documentaliste (doc auto, Mermaid) | ❌ | 5 |
 
-> ⚠️ **Limite importante du prototype actuel** : aucun LLM n'est branché. Les agents
-> *simulent* leur activité pour valider l'expérience temps réel. L'outil sait donc
-> *montrer* un orchestre vivant, mais ne *réalise* pas encore de travail réel. C'est
-> l'objet de la Phase 4.
+### Activer le LLM
+
+Les agents appellent réellement Claude dès qu'une clé API est exposée :
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."     # lue depuis l'environnement, jamais en dur
+cargo run -p orchestra-tui -- examples/recherche-immo-aix
+```
+
+L'en-tête du dashboard affiche le mode : `🤖 claude-opus-4-8` quand le LLM est actif,
+`simulé` sinon. **Sans clé (ou si l'API est injoignable), l'appli bascule automatiquement
+en mode simulé** — elle reste pleinement utilisable hors-ligne.
+
+> ⚠️ Le Skill `Execute_Terminal_Command` exécute de vraies commandes shell dans le
+> workspace. C'est une capacité assumée pour un IDE de développement, encadrée (workspace
+> uniquement, délai max, sortie plafonnée) — mais à utiliser en connaissance de cause.
 
 ## 5. Exemple fourni
 

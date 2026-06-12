@@ -44,11 +44,18 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         ),
     };
 
+    let mode = match &app.llm_model {
+        Some(model) => Span::styled(format!("🤖 {model}"), Style::new().magenta()),
+        None => Span::styled("simulé", Style::new().dark_gray()),
+    };
+
     let line = Line::from(vec![
         Span::styled("ORCHESTRA IDE v0.1.0", Style::new().bold().cyan()),
         Span::raw("  |  "),
         Span::styled(format!("[{name}]"), Style::new().yellow().bold()),
         Span::raw(format!(" ({kind})  |  ")),
+        mode,
+        Span::raw("  |  "),
         status,
     ]);
 

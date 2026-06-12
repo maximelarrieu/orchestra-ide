@@ -27,6 +27,8 @@ pub struct App {
     pub started: usize,
     pub done: usize,
     pub phase: Phase,
+    /// Modèle Claude actif si `ANTHROPIC_API_KEY` est présente, sinon `None` (mode simulé).
+    pub llm_model: Option<String>,
 }
 
 impl App {
@@ -37,6 +39,7 @@ impl App {
             started: 0,
             done: 0,
             phase: Phase::Idle,
+            llm_model: orchestra_core::llm::LlmClient::from_env().map(|c| c.model().to_string()),
         }
     }
 
