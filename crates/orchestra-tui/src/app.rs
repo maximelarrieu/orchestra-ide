@@ -19,6 +19,15 @@ pub struct AgentStat {
     thinking_start: Option<Instant>,
 }
 
+/// Statut « live » d'un agent, pour la sidebar de l'orchestre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveStatus {
+    Idle,
+    Thinking,
+    Working,
+    Done,
+}
+
 /// Champ d'agent en cours d'édition (saisie dans le menu Agents).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentField {
@@ -104,6 +113,8 @@ pub struct App {
     pub agent_prompt: Option<(AgentField, String)>,
     /// Stats de session par agent (clé = nom).
     pub agent_stats: HashMap<String, AgentStat>,
+    /// Statut live par agent, pour la sidebar (clé = nom).
+    pub agent_status: HashMap<String, LiveStatus>,
     /// Défilement du radar : nombre de lignes remontées depuis le bas (0 = suit le bas).
     pub radar_scroll: usize,
     /// Agent dont un appel LLM est en cours (`Some`) — pilote l'indicateur « réfléchit… ».
@@ -149,6 +160,7 @@ impl App {
             agent_sel: 0,
             agent_prompt: None,
             agent_stats: HashMap::new(),
+            agent_status: HashMap::new(),
             radar_scroll: 0,
             busy: None,
             busy_since: None,
@@ -370,6 +382,7 @@ impl App {
         self.radar_scroll = 0;
         self.busy = None;
         self.busy_since = None;
+        self.agent_status.clear(); // statuts live remis à zéro pour le nouveau run
     }
 
     /// Intègre un événement du runtime dans l'état (compteurs + historique + stats agents).
@@ -379,10 +392,22 @@ impl App {
             self.busy = Some(agent.clone());
             self.busy_since = Some(Instant::now());
             self.agent_stats.entry(agent.clone()).or_default().thinking_start = Some(Instant::now());
+            self.agent_status.insert(agent.clone(), LiveStatus::Thinking);
             return;
         }
         self.busy = None; // une sortie est apparue → plus en attente
         self.busy_since = None;
+
+        // Statut live pour la sidebar de l'orchestre.
+        match &ev {
+            AgentEvent::Started { agent } | AgentEvent::Log { agent, .. } => {
+                self.agent_status.insert(agent.clone(), LiveStatus::Working);
+            }
+            AgentEvent::Done { agent } => {
+                self.agent_status.insert(agent.clone(), LiveStatus::Done);
+            }
+            AgentEvent::Thinking { .. } => {}
+        }
 
         match &ev {
             AgentEvent::Started { agent } => {
@@ -646,6 +671,19 @@ mod tests {
             "le nouvel agent doit être persisté dans config.json");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_status_tracks_agents_and_resets() {
+        let mut app = App::new(None);
+        app.on_event(AgentEvent::Started { agent: "A".into() });
+        assert_eq!(app.agent_status.get("A").copied(), Some(LiveStatus::Working));
+        app.on_event(AgentEvent::Thinking { agent: "A".into() });
+        assert_eq!(app.agent_status.get("A").copied(), Some(LiveStatus::Thinking));
+        app.on_event(AgentEvent::Done { agent: "A".into() });
+        assert_eq!(app.agent_status.get("A").copied(), Some(LiveStatus::Done));
+        app.begin_run();
+        assert!(app.agent_status.is_empty(), "un nouveau run réinitialise les statuts");
     }
 
     #[test]

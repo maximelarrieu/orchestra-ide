@@ -12,9 +12,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, Phase, View, Viewer};
+use crate::app::{App, LiveStatus, Phase, View, Viewer};
 use crate::editor::Editor;
 use crate::markdown;
+
+/// En dessous de cette largeur de terminal, la sidebar est masquée (centre plein).
+const SIDEBAR_MIN_TERM_WIDTH: u16 = 60;
+const SIDEBAR_WIDTH: u16 = 26;
 
 pub fn render(frame: &mut Frame, app: &App) {
     // La zone du bas grandit pendant une saisie de chat multi-ligne.
@@ -22,12 +26,22 @@ pub fn render(frame: &mut Frame, app: &App) {
         Some(buf) => (buf.matches('\n').count() as u16 + 4).clamp(4, 12),
         None => 4,
     };
-    let [header, center, menu] = Layout::vertical([
+    let [header, body, menu] = Layout::vertical([
         Constraint::Length(3),       // en-tête
-        Constraint::Min(6),          // zone centrale (radar / docs / éditeur)
+        Constraint::Min(6),          // corps (sidebar + zone centrale)
         Constraint::Length(menu_h),  // menu / saisie
     ])
     .areas(frame.area());
+
+    // Cockpit : sidebar « orchestre » à gauche + zone centrale, sauf terminal trop étroit.
+    let center = if frame.area().width >= SIDEBAR_MIN_TERM_WIDTH {
+        let [sidebar, center] =
+            Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(20)]).areas(body);
+        render_sidebar(frame, sidebar, app);
+        center
+    } else {
+        body
+    };
 
     render_header(frame, header, app);
     if let Some(ed) = &app.editor {
@@ -42,6 +56,62 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     }
     render_menu(frame, menu, app);
+}
+
+/// Sidebar « orchestre » : statut live de chaque agent (toujours visible).
+fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 🎻 ORCHESTRE ");
+    let inner_w = area.width.saturating_sub(4) as usize; // bordures + icône
+    let mut lines: Vec<Line> = Vec::new();
+
+    let names = sidebar_agents(app);
+    if names.is_empty() {
+        lines.push(Line::from(Span::styled("  (aucun agent)", Style::new().dark_gray())));
+    } else {
+        for name in &names {
+            let status = app.agent_status.get(name).copied().unwrap_or(LiveStatus::Idle);
+            let (icon, style) = match status {
+                LiveStatus::Idle => ("○".to_string(), Style::new().dark_gray()),
+                LiveStatus::Thinking => (app.spinner_frame().to_string(), Style::new().magenta().bold()),
+                LiveStatus::Working => ("▸".to_string(), Style::new().green().bold()),
+                LiveStatus::Done => ("✔".to_string(), Style::new().green()),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {icon} "), style),
+                Span::raw(truncate_str(name, inner_w)),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(" [2] Docs   [4] Persona", Style::new().dark_gray())));
+    lines.push(Line::from(Span::styled(" [6] Agents", Style::new().dark_gray())));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Agents à afficher dans la sidebar : Coordinateur (s'il est apparu) + agents + Documentaliste.
+fn sidebar_agents(app: &App) -> Vec<String> {
+    let mut v = Vec::new();
+    if app.agent_status.contains_key("Coordinateur") {
+        v.push("Coordinateur".to_string());
+    }
+    if let Some(s) = &app.space {
+        for a in &s.config.agents {
+            v.push(a.name.clone());
+        }
+        if s.config.documentalist_enabled {
+            v.push("Agent_Documentaliste".to_string());
+        }
+    }
+    v
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+    }
 }
 
 /// Gestionnaire d'agents : liste + fiche (rôle, skills, stats de session).

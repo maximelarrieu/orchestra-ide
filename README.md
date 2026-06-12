@@ -145,7 +145,15 @@ rejoint l'orchestre avec une mission documentation : il lit les fichiers, met à
 `Write_Mermaid_Diagram` (écrit un `.md` avec un bloc ` ```mermaid `, type de diagramme
 validé). Outils et prompt dédiés, indépendants de la liste de Skills du projet.
 
-**Finitions du dashboard** — les touches du menu sont désormais actives :
+### Disposition « cockpit »
+
+Le dashboard est organisé en **multi-panneaux** : une **sidebar « 🎻 Orchestre »** à gauche
+affiche en permanence le **statut live de chaque agent** (`○` au repos · spinner *réfléchit*
+· `▸` agit · `✔` terminé), à côté de la **zone centrale** (conversation / radar / documents /
+agents / éditeur) et d'une **barre de saisie** en bas. La sidebar se masque automatiquement
+sur les terminaux étroits.
+
+**Les touches du menu** :
 
 | Touche | Action |
 |---|---|

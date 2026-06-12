@@ -175,6 +175,15 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   *keyboard enhancement flags* (crossterm) pour distinguer Maj+Entrée sur les terminaux
   compatibles.
 
+## Disposition « cockpit » + orchestre live (post-Phase 5) ✅
+
+- Le dashboard passe en **multi-panneaux** : sidebar « 🎻 Orchestre » (gauche) toujours
+  visible + zone centrale + barre de saisie. La sidebar se masque sous ~60 colonnes.
+- **Statut live par agent** (`App::agent_status` : Idle/Thinking/Working/Done) dérivé des
+  événements ; icône par agent (`○` / spinner / `▸` / `✔`), réinitialisé à chaque run.
+- La zone centrale conserve le système de vues existant (radar/docs/agents/éditeur), rendu
+  désormais dans le panneau central plutôt qu'en plein écran.
+
 ## Gestionnaire d'agents (post-Phase 5) ✅
 
 - **Modèle structuré** : `config.agents` passe de `Vec<String>` à `Vec<AgentDef { name, role,
