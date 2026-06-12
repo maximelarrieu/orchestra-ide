@@ -1,0 +1,215 @@
+# Architecture technique — Orchestra IDE
+
+> Doc technique vivante, mise à jour à chaque phase. Pour la vision produit et les
+> parcours utilisateur, voir [`FONCTIONNEL.md`](./FONCTIONNEL.md) ; pour l'historique
+> par phase, [`JOURNAL.md`](./JOURNAL.md).
+
+## 1. Principe directeur : découplage strict métier / affichage
+
+Orchestra IDE est un prototype Rust d'« IDE pour l'ère agentique ». Le TUI (`ratatui`)
+est l'interface d'aujourd'hui ; un portage Tauri + React est prévu. Pour que ce portage
+ne soit pas une réécriture, **toute la logique vit dans `orchestra-core`, qui ne dépend
+d'AUCUNE bibliothèque d'affichage**. L'UI ne fait que :
+
+1. appeler des fonctions du cœur (`scaffold_space`, `runtime::spawn`, `ContextSpace::load`) ;
+2. consommer le type-contrat `AgentEvent`.
+
+C'est l'invariant non négociable du projet. Toute évolution doit le préserver.
+
+## 2. Vue d'ensemble des crates
+
+```mermaid
+graph TD
+    subgraph workspace[Workspace Cargo]
+        core["orchestra-core<br/>(domaine pur — 0 dépendance UI)"]
+        tui["orchestra-tui<br/>(frontend ratatui + CLI)"]
+    end
+    tui -->|appelle / consomme AgentEvent| core
+    tui -->|rendu| ratatui
+    core -->|sérialisation| serde
+    core -->|tâches + canal mpsc| tokio
+    future["UI Tauri + React<br/>(prévu)"] -.->|consommera le MÊME core| core
+
+    style core fill:#0b7,stroke:#064,color:#fff
+    style future stroke-dasharray: 5 5
+```
+
+| Crate | Rôle | Dépendances clés |
+|---|---|---|
+| `orchestra-core` | Modèle, scaffolding, runtime d'agents, contrat d'événements | `serde`, `serde_json`, `thiserror`, `tokio` |
+| `orchestra-tui` | CLI (`init`) + tableau de bord temps réel | `orchestra-core`, `ratatui`, `tokio`, `futures`, `crossterm` |
+
+### Arborescence des modules
+
+```
+crates/
+├─ orchestra-core/src/
+│  ├─ lib.rs            # ré-exports publics
+│  ├─ error.rs          # OrchestraError (type d'erreur unique)
+│  ├─ events.rs         # AgentEvent — contrat cœur ↔ UI
+│  ├─ runtime.rs        # spawn() : lance les agents (Phase 3)
+│  ├─ scaffold.rs       # scaffold_space() : crée un Espace (Phase 2)
+│  └─ model/
+│     ├─ project_type.rs  # enum ProjectType
+│     ├─ config.rs        # ProjectConfig + Integrations
+│     ├─ space.rs         # ContextSpace (+ Adr)
+│     └─ skill_id.rs      # default_skills() / default_agents()
+└─ orchestra-tui/src/
+   ├─ main.rs           # dispatch CLI + boucle async tokio::select!
+   ├─ app.rs            # App : état agrégé du dashboard (sans ratatui)
+   ├─ dashboard.rs      # rendu des 3 zones (en-tête / radar / menu)
+   └─ wizard.rs         # assistant interactif `orchestra init`
+```
+
+## 3. Modèle de données — l'« Espace de Contexte »
+
+Le concept central est volontairement **agnostique** : un projet Dev, Nutrition, Langue
+ou Immobilier partage la même structure ; seuls les Skills, agents et intégrations
+diffèrent.
+
+```mermaid
+classDiagram
+    class ContextSpace {
+        +PathBuf root
+        +ProjectConfig config
+        +Option~String~ persona
+        +Vec~Adr~ adrs
+        +load(root) Result
+    }
+    class ProjectConfig {
+        +String project_name
+        +ProjectType project_type
+        +Option~PathBuf~ workspace_path
+        +bool documentalist_enabled
+        +Vec~String~ skills
+        +Vec~String~ agents
+        +Integrations integrations
+    }
+    class ProjectType {
+        <<enum>>
+        Dev
+        Nutrition
+        Langue
+        Immobilier
+    }
+    class Integrations {
+        +Option~GitIntegration~ git
+        +Option~GithubIntegration~ github
+        +Option~JiraIntegration~ jira
+    }
+    class Adr {
+        +String title
+        +PathBuf path
+    }
+    ContextSpace --> ProjectConfig
+    ContextSpace --> "0..*" Adr
+    ProjectConfig --> ProjectType
+    ProjectConfig --> Integrations
+```
+
+Sur le disque, un Espace est un dossier contenant :
+
+```
+<espace>/.orchestra/
+├─ config.json     # sérialisation de ProjectConfig
+├─ persona.md      # contexte/critères rédigés par l'utilisateur
+└─ adr/            # Architecture Decision Records (*.md)
+```
+
+**Règle d'accès** : l'UI ne touche jamais au système de fichiers. Elle passe par
+`ContextSpace::load` / `scaffold_space`. Les intégrations ne stockent jamais de secret en
+clair : seul le **nom** de la variable d'environnement du token est persisté
+(`token_env_var`).
+
+## 4. Contrat d'événements `AgentEvent`
+
+Pivot du découplage temps réel. Figé tôt pour que l'UI puisse être écrite sans connaître
+les agents.
+
+```rust
+enum AgentEvent {
+    Started { agent: String },
+    Log     { agent: String, msg: String },
+    Done    { agent: String },
+}
+```
+
+## 5. Runtime d'agents (Phase 3) et flux temps réel
+
+`runtime::spawn(&ContextSpace) -> UnboundedReceiver<AgentEvent>` lance un agent par nom
+présent dans `config.agents`, chacun comme une **tâche `tokio`**. Tous publient sur un
+unique canal `tokio::sync::mpsc`. Le `Sender` original est lâché à la fin de `spawn` :
+**quand tous les agents ont terminé, le canal se ferme et `recv()` renvoie `None`** —
+c'est ainsi que l'UI sait, sans drapeau dédié, que l'orchestre est au repos.
+
+> **Phase 3 = sans LLM.** Les agents sont *simulés* : ils jouent un scénario scripté
+> (`scripted_steps`) étalé dans le temps. La Phase 4 remplacera ce corps simulé par de
+> vrais appels LLM + Skills **sans changer la signature de `spawn`**.
+
+### Flux d'un lancement (touche `[1]`)
+
+```mermaid
+sequenceDiagram
+    actor U as Utilisateur
+    participant L as event_loop (tui/main)
+    participant A as App (tui/app)
+    participant R as runtime::spawn (core)
+    participant Tk as Tâches tokio (agents)
+
+    U->>L: touche [1]
+    L->>A: begin_run() (reset radar, phase=Running)
+    L->>R: spawn(space)
+    R->>Tk: spawn une tâche par agent
+    R-->>L: UnboundedReceiver<AgentEvent>
+    loop tant que le canal est ouvert
+        Tk-->>L: AgentEvent (Started / Log / Done)
+        L->>A: on_event(ev) (compteurs + historique)
+        L->>L: terminal.draw(render(App))
+    end
+    Tk-->>L: (toutes finies → canal fermé, recv = None)
+    L->>A: mark_finished() (phase=Finished)
+```
+
+## 6. Boucle d'affichage asynchrone (`orchestra-tui`)
+
+Le dashboard multiplexe trois sources via `tokio::select!` :
+
+```mermaid
+graph LR
+    subgraph loop["event_loop — tokio::select!"]
+        kbd["EventStream clavier<br/>(crossterm)"]
+        chan["recv_optional(rx)<br/>flux des agents"]
+        tick["interval 250 ms<br/>(rafraîchissement)"]
+    end
+    kbd -->|q/Échap → quit · 1 → spawn| state[App]
+    chan -->|on_event| state
+    tick -->|redraw| state
+    state --> render[dashboard::render]
+```
+
+- `recv_optional` neutralise la branche du canal tant que l'orchestre n'est pas lancé
+  (`std::future::pending()` si `rx` est `None`).
+- `App` (dans `app.rs`) agrège le flux — compteurs `started`/`done`, historique borné
+  (`HISTORY_CAP = 500`), `Phase` (`Idle` → `Running` → `Finished`) — **sans dépendre de
+  ratatui**, ce qui le rend testable et réutilisable par la future UI Tauri.
+- `dashboard.rs` est purement du rendu : il lit `App` et dessine les 3 zones.
+
+## 7. Gestion des erreurs
+
+Type unique `OrchestraError` (via `thiserror`) :
+
+| Variante | Quand |
+|---|---|
+| `SpaceNotFound` | `config.json` illisible au chargement |
+| `SpaceAlreadyExists` | `orchestra init` refuse d'écraser un Espace existant |
+| `InvalidConfig` | JSON de configuration invalide |
+| `Io` | erreurs d'E/S génériques |
+
+## 8. Conventions & tests
+
+- **Langue du code et des messages** : français (domaine et UI francophones).
+- **Découplage** : aucune dépendance UI ne doit remonter dans `orchestra-core`.
+- **Tests** (`cargo test --workspace`) : modèle (parsing config), `scaffold`
+  (création + refus d'écrasement), `runtime` (start/done par agent, canal vide), `App`
+  (agrégation, borne d'historique), rendu **headless** via `ratatui::backend::TestBackend`.
+- **Qualité** : `cargo clippy --workspace --all-targets` doit rester sans warning.

@@ -3,8 +3,15 @@
 Moteur + interface d'un « IDE pour l'ère agentique ». TUI aujourd'hui (`ratatui`),
 portage Tauri + React prévu — d'où le **découplage strict** logique métier / affichage.
 
-> Plan d'architecture complet (5 phases) : voir `../ORCHESTRA_PLAN.md`.
-> Ce dossier sera recopié à terme dans le repo dédié `maximelarrieu/orchestra-ide`.
+## 📚 Documentation
+
+| Doc | Contenu |
+|---|---|
+| [`docs/FONCTIONNEL.md`](docs/FONCTIONNEL.md) | Vision produit, Espaces de Contexte, parcours utilisateur, état des fonctionnalités |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Crates, modèle de données, flux d'événements `mpsc`, décisions techniques (diagrammes Mermaid) |
+| [`docs/JOURNAL.md`](docs/JOURNAL.md) | Avancement par phase : livré / limites connues / à venir |
+
+Doc technique générée du code : `cargo doc -p orchestra-core --open`.
 
 ## Structure (workspace Cargo)
 
