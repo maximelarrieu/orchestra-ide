@@ -14,12 +14,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 
 use crate::events::AgentEvent;
-use crate::llm::LlmClient;
+use crate::llm::{Block, LlmClient, Msg, ToolResult};
 use crate::model::project_type::ProjectType;
 use crate::model::space::ContextSpace;
 use crate::skills;
@@ -110,8 +110,9 @@ async fn run_agent(
     let _ = tx.send(AgentEvent::Done { agent });
 }
 
-/// Boucle agentique réelle : Claude raisonne, demande des outils (Skills Dev), on les
-/// exécute, on lui renvoie les résultats, jusqu'à `end_turn` ou la limite de tours.
+/// Boucle agentique réelle (provider-agnostique) : le modèle raisonne, demande des outils
+/// (Skills Dev), on les exécute, on lui renvoie les résultats, jusqu'à la fin ou la limite
+/// de tours.
 async fn llm_agent_loop(
     client: &LlmClient,
     agent: &str,
@@ -120,53 +121,39 @@ async fn llm_agent_loop(
 ) -> Result<(), crate::llm::LlmError> {
     let system = build_system_prompt(agent, ctx);
     let tools = skills::dev_tool_definitions(&ctx.skills);
-    let mut messages: Vec<Value> = vec![json!({
-        "role": "user",
-        "content": "Avance concrètement sur l'objectif de cet espace. Utilise tes outils \
-                    quand c'est utile et explique brièvement chaque action.",
-    })];
+    let mut conv: Vec<Msg> = vec![Msg::User(
+        "Avance concrètement sur l'objectif de cet espace. Utilise tes outils quand c'est \
+         utile et explique brièvement chaque action."
+            .to_string(),
+    )];
 
     for _ in 0..MAX_TURNS {
-        let resp = client.create_message(&system, &tools, &messages).await?;
+        let blocks = client.complete(&system, &tools, &conv).await?;
 
         // Émettre le texte et repérer les appels d'outils.
-        let mut tool_calls: Vec<(String, String, Value)> = Vec::new(); // (id, name, input)
-        for block in &resp.content {
-            match block.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    if let Some(t) = block.get("text").and_then(Value::as_str) {
-                        emit_log(tx, agent, t.trim());
-                    }
+        let mut calls: Vec<(String, String, Value)> = Vec::new();
+        for block in &blocks {
+            match block {
+                Block::Text(t) => emit_log(tx, agent, t.trim()),
+                Block::ToolUse { id, name, input } => {
+                    emit_log(tx, agent, &format!("🔧 {name} {}", brief(input)));
+                    calls.push((id.clone(), name.clone(), input.clone()));
                 }
-                Some("tool_use") => {
-                    let id = block.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-                    let name = block.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-                    let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
-                    emit_log(tx, agent, &format!("🔧 {name} {}", brief(&input)));
-                    tool_calls.push((id, name, input));
-                }
-                _ => {}
             }
         }
 
-        if resp.stop_reason.as_deref() != Some("tool_use") || tool_calls.is_empty() {
-            return Ok(()); // l'agent a fini (end_turn, refusal, max_tokens…)
+        if calls.is_empty() {
+            return Ok(()); // l'agent a fini (réponse finale, sans nouvel outil)
         }
 
-        // Réinjecter le tour assistant tel quel, puis exécuter les outils demandés.
-        messages.push(json!({ "role": "assistant", "content": resp.content }));
-
-        let mut results = Vec::with_capacity(tool_calls.len());
-        for (id, name, input) in tool_calls {
+        // Réinjecter le tour assistant, puis exécuter les outils demandés.
+        conv.push(Msg::Assistant(blocks));
+        let mut results = Vec::with_capacity(calls.len());
+        for (id, name, input) in calls {
             let outcome = skills::execute_skill(&name, &input, &ctx.workspace).await;
-            results.push(json!({
-                "type": "tool_result",
-                "tool_use_id": id,
-                "content": outcome.text,
-                "is_error": outcome.is_error,
-            }));
+            results.push(ToolResult { id, name, content: outcome.text, is_error: outcome.is_error });
         }
-        messages.push(json!({ "role": "user", "content": results }));
+        conv.push(Msg::Tool(results));
     }
 
     emit_log(tx, agent, "limite de tours atteinte — arrêt.");

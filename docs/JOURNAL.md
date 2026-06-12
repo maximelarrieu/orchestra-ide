@@ -9,7 +9,7 @@ Plan global en 5 phases :
 1. Modèle des Espaces de Contexte + coquille du dashboard ✅
 2. Commande `orchestra init` (scaffolding interactif) ✅
 3. Runtime d'agents + flux temps réel → radar vivant ✅
-4a. Intégration LLM Claude + Skills Dev exécutables (tool use) ✅
+4a. Intégration LLM (Claude **ou** Gemini) + Skills Dev exécutables (tool use) ✅
 4b. Intégrations écosystème : Git / GitHub / Jira ⏳
 5. Agent Documentaliste (Doc_Auto_Update, Mermaid) + finitions ⏳
 
@@ -71,16 +71,19 @@ Plan global en 5 phases :
 ## Phase 4a — LLM Claude + Skills Dev exécutables ✅
 
 **Livré**
-- `orchestra-core::llm` : client de l'API Messages d'Anthropic en HTTP brut (`reqwest`,
-  rustls), modèle `claude-opus-4-8` par défaut, clé via `ANTHROPIC_API_KEY`
-  (override modèle via `ORCHESTRA_MODEL`).
+- `orchestra-core::llm` : client **multi-fournisseurs** en HTTP brut (`reqwest`, rustls) —
+  **Claude** (`claude-opus-4-8`) ou **Gemini** (`gemini-2.0-flash`) au choix, via une
+  représentation neutre (`Msg`/`Block`/`ToolSpec`). Sélection par `ORCHESTRA_PROVIDER` ou
+  auto-détection de la clé (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) ; modèle surchargé par
+  `ORCHESTRA_MODEL`.
 - `orchestra-core::skills` : trois Skills Dev exécutables via tool use — `Read_File`,
   `Write_File_Validated`, `Execute_Terminal_Command` — confinés au workspace (chemins
   absolus/`..` refusés ; commande shell avec délai 30 s et sortie plafonnée).
 - `runtime` : boucle agentique réelle (Claude ↔ outils, max 6 tours) **sans changer la
   signature de `spawn`** ; **repli automatique** sur le flux simulé sans clé ou si l'API
   échoue.
-- TUI : indicateur de mode dans l'en-tête (`🤖 <modèle>` / `simulé`).
+- TUI : indicateur de mode dans l'en-tête (`🤖 <modèle>` / `simulé · clé API absente`) et
+  rappel sur le radar des variables d'environnement à définir pour activer un vrai LLM.
 
 **Limites connues**
 - Pas d'intention saisie par l'utilisateur : chaque agent part d'un objectif générique

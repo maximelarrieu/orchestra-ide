@@ -17,6 +17,8 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 use tokio::time::timeout;
 
+use crate::llm::ToolSpec;
+
 /// Identifiants des Skills Dev branchés sur le système.
 pub const READ_FILE: &str = "Read_File";
 pub const WRITE_FILE: &str = "Write_File_Validated";
@@ -40,48 +42,53 @@ impl SkillOutcome {
     }
 }
 
-/// Définitions d'outils (format Anthropic) pour les Skills *exécutables* présents dans
+/// Définitions d'outils neutres ([`ToolSpec`]) pour les Skills *exécutables* présents dans
 /// `enabled`. Les Skills inconnus/non-Dev sont ignorés : le LLM ne voit que ce qu'il peut
-/// réellement actionner.
-pub fn dev_tool_definitions(enabled: &[String]) -> Vec<Value> {
+/// réellement actionner. Chaque provider (Claude/Gemini) rend ces specs dans son format.
+pub fn dev_tool_definitions(enabled: &[String]) -> Vec<ToolSpec> {
     enabled
         .iter()
         .filter_map(|id| tool_definition(id))
         .collect()
 }
 
-fn tool_definition(id: &str) -> Option<Value> {
+fn tool_definition(id: &str) -> Option<ToolSpec> {
+    let spec = |name: &str, description: &str, parameters: Value| ToolSpec {
+        name: name.to_string(),
+        description: description.to_string(),
+        parameters,
+    };
     match id {
-        READ_FILE => Some(json!({
-            "name": READ_FILE,
-            "description": "Lit un fichier texte du workspace et renvoie son contenu. Chemin relatif au workspace.",
-            "input_schema": {
+        READ_FILE => Some(spec(
+            READ_FILE,
+            "Lit un fichier texte du workspace et renvoie son contenu. Chemin relatif au workspace.",
+            json!({
                 "type": "object",
                 "properties": { "path": { "type": "string", "description": "Chemin relatif du fichier" } },
                 "required": ["path"]
-            }
-        })),
-        WRITE_FILE => Some(json!({
-            "name": WRITE_FILE,
-            "description": "Écrit (ou remplace) un fichier texte dans le workspace. Crée les dossiers parents au besoin.",
-            "input_schema": {
+            }),
+        )),
+        WRITE_FILE => Some(spec(
+            WRITE_FILE,
+            "Écrit (ou remplace) un fichier texte dans le workspace. Crée les dossiers parents au besoin.",
+            json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Chemin relatif du fichier" },
                     "content": { "type": "string", "description": "Contenu à écrire" }
                 },
                 "required": ["path", "content"]
-            }
-        })),
-        EXEC_COMMAND => Some(json!({
-            "name": EXEC_COMMAND,
-            "description": "Exécute une commande shell dans le workspace et renvoie stdout/stderr et le code de sortie.",
-            "input_schema": {
+            }),
+        )),
+        EXEC_COMMAND => Some(spec(
+            EXEC_COMMAND,
+            "Exécute une commande shell dans le workspace et renvoie stdout/stderr et le code de sortie.",
+            json!({
                 "type": "object",
                 "properties": { "command": { "type": "string", "description": "Commande shell à exécuter" } },
                 "required": ["command"]
-            }
-        })),
+            }),
+        )),
         _ => None,
     }
 }
@@ -200,7 +207,7 @@ mod tests {
             EXEC_COMMAND.to_string(),
         ];
         let defs = dev_tool_definitions(&enabled);
-        let names: Vec<_> = defs.iter().filter_map(|d| d["name"].as_str()).collect();
+        let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec![READ_FILE, EXEC_COMMAND]);
     }
 

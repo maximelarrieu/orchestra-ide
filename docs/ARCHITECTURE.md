@@ -152,11 +152,21 @@ tests hors-ligne et déterministes.
 
 ## 5bis. Boucle agentique LLM + Skills exécutables (Phase 4a)
 
-`orchestra-core::llm::LlmClient` appelle l'API Messages d'Anthropic
-(`POST /v1/messages`, `claude-opus-4-8` par défaut) en **HTTP brut** via `reqwest` — Rust
-n'a pas de SDK officiel. Clé via `ANTHROPIC_API_KEY`, modèle surchargé par
-`ORCHESTRA_MODEL`. `orchestra-core::skills` expose les Skills Dev au modèle comme *tools*
-et les exécute côté Rust, confinés au workspace.
+`orchestra-core::llm::LlmClient` appelle, en **HTTP brut** via `reqwest` (Rust n'a pas de
+SDK officiel), l'un des deux fournisseurs **au choix** :
+
+| Provider | Endpoint | Modèle par défaut | Clé |
+|---|---|---|---|
+| `Anthropic` (Claude) | `POST /v1/messages` | `claude-opus-4-8` | `ANTHROPIC_API_KEY` |
+| `Gemini` | `…/{model}:generateContent` | `gemini-2.0-flash` | `GEMINI_API_KEY` |
+
+Une représentation **neutre** (`Msg` / `Block` / `ToolSpec` / `ToolResult`) découple la
+boucle agentique du format de chaque fournisseur : chaque provider *rend* cette
+représentation dans son protocole (content blocks vs `functionCall`/`functionResponse`) et
+*parse* sa réponse vers les mêmes `Block`. Le choix se fait via `ORCHESTRA_PROVIDER`
+(prioritaire) ou par auto-détection de la clé présente ; le modèle est surchargeable par
+`ORCHESTRA_MODEL`. `orchestra-core::skills` expose les Skills Dev comme *tools* et les
+exécute côté Rust, confinés au workspace.
 
 ```mermaid
 sequenceDiagram
