@@ -17,10 +17,15 @@ use crate::editor::Editor;
 use crate::markdown;
 
 pub fn render(frame: &mut Frame, app: &App) {
+    // La zone du bas grandit pendant une saisie de chat multi-ligne.
+    let menu_h: u16 = match &app.chat {
+        Some(buf) => (buf.matches('\n').count() as u16 + 4).clamp(4, 12),
+        None => 4,
+    };
     let [header, center, menu] = Layout::vertical([
-        Constraint::Length(3), // en-tête
-        Constraint::Min(8),    // zone centrale (radar / ADRs)
-        Constraint::Length(4), // menu
+        Constraint::Length(3),       // en-tête
+        Constraint::Min(6),          // zone centrale (radar / docs / éditeur)
+        Constraint::Length(menu_h),  // menu / saisie
     ])
     .areas(frame.area());
 
@@ -119,7 +124,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
 
     let status = if let Some(agent) = &app.busy {
         Span::styled(
-            format!("{} {agent} réfléchit…", app.spinner_frame()),
+            format!("{} {agent} réfléchit… {}s", app.spinner_frame(), app.busy_elapsed_secs().unwrap_or(0)),
             Style::new().magenta().bold(),
         )
     } else if app.chat.is_some() {
@@ -195,7 +200,10 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(agent) = &app.busy {
         rows.push(Line::from(vec![
             Span::styled(format!("  {} ", app.spinner_frame()), Style::new().magenta().bold()),
-            Span::styled(format!("{agent} réfléchit…"), Style::new().dark_gray()),
+            Span::styled(
+                format!("{agent} réfléchit… {}s", app.busy_elapsed_secs().unwrap_or(0)),
+                Style::new().dark_gray(),
+            ),
         ]));
     }
     let total = rows.len();
@@ -315,45 +323,59 @@ fn wrap_plain(s: &str, width: usize) -> Vec<String> {
 fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" 📋 OPTIONS & MENUS ");
 
-    // Les modes (éditeur / visualiseur / saisie) ont priorité sur le menu.
-    let content = if app.editor.is_some() {
-        Line::from(Span::styled(
+    // Les modes (éditeur / visualiseur / chat / saisie) ont priorité sur le menu.
+    let lines: Vec<Line> = if app.editor.is_some() {
+        vec![Line::from(Span::styled(
             "✏ Persona — Ctrl+S enregistrer · Échap annuler · ←↑↓→ naviguer",
             Style::new().magenta(),
-        ))
+        ))]
     } else if app.viewer.is_some() {
         let edit = if app.viewer_is_persona() { " · [e] éditer" } else { "" };
-        Line::from(Span::styled(
+        vec![Line::from(Span::styled(
             format!("📖 Document — ↑↓ défiler · Échap fermer{edit}"),
             Style::new().cyan(),
-        ))
+        ))]
     } else if app.view == View::Docs {
-        Line::from(Span::styled(
+        vec![Line::from(Span::styled(
             "📚 Documents — ↑↓ choisir · Entrée ouvrir · Échap retour",
             Style::new().cyan(),
-        ))
+        ))]
     } else if let Some(buf) = &app.chat {
-        Line::from(vec![
+        // Saisie de message, potentiellement sur plusieurs lignes (Maj+Entrée).
+        let mut lines = Vec::new();
+        let mut parts = buf.split('\n');
+        let first = parts.next().unwrap_or("");
+        lines.push(Line::from(vec![
             Span::styled("› ", Style::new().magenta().bold()),
-            Span::raw(buf.clone()),
-            Span::styled("▏", Style::new().magenta()),
-            Span::styled("   (Entrée = envoyer · Échap = quitter le chat)", Style::new().dark_gray()),
-        ])
+            Span::raw(first.to_string()),
+        ]));
+        for part in parts {
+            lines.push(Line::from(vec![Span::raw("  "), Span::raw(part.to_string())]));
+        }
+        // Curseur en fin de dernière ligne.
+        if let Some(last) = lines.last_mut() {
+            last.spans.push(Span::styled("▏", Style::new().magenta()));
+        }
+        lines.push(Line::from(Span::styled(
+            "(Entrée = envoyer · Maj/Alt+Entrée = nouvelle ligne · Échap = quitter)",
+            Style::new().dark_gray(),
+        )));
+        lines
     } else if let Some(buf) = &app.input {
-        Line::from(vec![
+        vec![Line::from(vec![
             Span::styled("Chemin de l'espace : ", Style::new().bold()),
             Span::raw(buf.clone()),
             Span::styled("▏", Style::new().cyan()),
             Span::styled("   (Entrée = charger · Échap = annuler)", Style::new().dark_gray()),
-        ])
+        ])]
     } else if let Some(notice) = &app.notice {
-        Line::from(Span::styled(notice.clone(), Style::new().yellow()))
+        vec![Line::from(Span::styled(notice.clone(), Style::new().yellow()))]
     } else {
-        Line::from(
+        vec![Line::from(
             "[1] Lancer  [5] Converser  [2] Documents  [3] Espace  [4] Persona  [q] Quitter",
-        )
+        )]
     };
-    frame.render_widget(Paragraph::new(content).block(block), area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 #[cfg(test)]

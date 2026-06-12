@@ -16,11 +16,17 @@ mod wizard;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use std::io::stdout;
+
 use futures::StreamExt;
 use orchestra_core::events::AgentEvent;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime;
-use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
+use ratatui::crossterm::execute;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -66,7 +72,13 @@ async fn run_dashboard(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new(ContextSpace::load(root).ok());
 
     let mut terminal = ratatui::init();
+    // Best-effort : permet de distinguer Maj/Alt+Entrée (terminaux compatibles kitty).
+    let _ = execute!(
+        stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     let result = event_loop(&mut terminal, &mut app).await;
+    let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     ratatui::restore();
     result
 }
@@ -162,6 +174,12 @@ async fn event_loop(
                                 KeyCode::Esc => {
                                     app.end_chat();
                                     chat_tx = None; // ferme le canal → termine la conversation
+                                }
+                                // Maj/Alt+Entrée : nouvelle ligne ; Entrée seul : envoyer.
+                                KeyCode::Enter
+                                    if key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+                                {
+                                    app.chat_push('\n');
                                 }
                                 KeyCode::Enter => {
                                     if let Some(msg) = app.chat_submit() {

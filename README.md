@@ -176,7 +176,9 @@ Le radar **rend le Markdown** des réponses (titres, listes, citations, blocs de
 **défile** : `PgUp`/`PgDn` (ou `↑`/`↓`) pour remonter dans l'historique de la conversation,
 retour automatique en bas à chaque nouveau message. Les interlocuteurs sont colorés : 🟢
 **Vous**, 🟣 **Coordinateur**, 🔵 **agents**. Pendant qu'un agent attend le modèle, un
-**indicateur animé** « ⠋ {agent} réfléchit… » montre ce qui travaille en arrière-plan.
+**indicateur animé** « ⠋ {agent} réfléchit… {n}s » (avec temps écoulé) montre ce qui
+travaille en arrière-plan. Dans la saisie, **Entrée** envoie et **Maj/Alt+Entrée** insère un
+retour à la ligne (message multi-ligne).
 
 Dans le navigateur `[2]` : `↑↓` choisir, `Entrée` ouvrir un document dans le visualiseur
 (Markdown rendu : titres, listes, citations, blocs de code, gras/`code`), `↑↓` y défiler,

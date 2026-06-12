@@ -167,9 +167,13 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   (`markdown::styled_blocks` — titres, listes, citations, code) puis repliés à la largeur
   (`wrap_plain`). Le visualiseur plein écran `[2]` conserve en plus le style en ligne.
 - **Indicateur d'activité** : un événement `AgentEvent::Thinking` est émis avant chaque
-  appel LLM (coordinateur et sous-agents) ; l'UI affiche un **spinner animé**
-  « ⠋ {agent} réfléchit… » (en-tête + bas du flux) pendant l'attente, effacé dès qu'une
-  sortie arrive. On voit ainsi qui « mouline » en arrière-plan.
+  appel LLM (coordinateur et sous-agents) ; l'UI affiche un **spinner animé** avec **temps
+  écoulé** « ⠋ {agent} réfléchit… {n}s » (en-tête + bas du flux), effacé dès qu'une sortie
+  arrive. On voit ainsi qui « mouline » en arrière-plan et depuis combien de temps.
+- **Saisie de chat multi-ligne** : Maj/Alt+Entrée insère un retour à la ligne, Entrée
+  envoie ; la zone de saisie grandit dynamiquement. Activation best-effort des
+  *keyboard enhancement flags* (crossterm) pour distinguer Maj+Entrée sur les terminaux
+  compatibles.
 
 ## Améliorations UX (post-Phase 5) ✅
 

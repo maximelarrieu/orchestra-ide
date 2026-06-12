@@ -3,6 +3,8 @@
 //! Sépare la *logique* d'agrégation du flux (compteurs, historique) du *dessin*
 //! (`dashboard`). On peut ainsi tester l'agrégation sans terminal ni tokio.
 
+use std::time::Instant;
+
 use orchestra_core::events::AgentEvent;
 use orchestra_core::model::{ContextSpace, DocKind, SpaceDoc};
 
@@ -67,6 +69,8 @@ pub struct App {
     pub radar_scroll: usize,
     /// Agent dont un appel LLM est en cours (`Some`) — pilote l'indicateur « réfléchit… ».
     pub busy: Option<String>,
+    /// Début de l'attente courante (pour afficher le temps écoulé).
+    pub busy_since: Option<Instant>,
     /// Compteur d'animation du spinner (incrémenté à chaque tick).
     pub spinner: usize,
     /// Message transitoire affiché à l'utilisateur (succès/erreur d'une action).
@@ -94,9 +98,15 @@ impl App {
             chat: None,
             radar_scroll: 0,
             busy: None,
+            busy_since: None,
             spinner: 0,
             notice: None,
         }
+    }
+
+    /// Secondes écoulées depuis le début de l'attente courante (si un agent réfléchit).
+    pub fn busy_elapsed_secs(&self) -> Option<u64> {
+        self.busy_since.map(|t| t.elapsed().as_secs())
     }
 
     /// Avance l'animation du spinner (appelé au tick de rafraîchissement).
@@ -273,6 +283,7 @@ impl App {
         self.phase = Phase::Running;
         self.radar_scroll = 0;
         self.busy = None;
+        self.busy_since = None;
     }
 
     /// Intègre un événement du runtime dans l'état (compteurs + historique borné).
@@ -280,9 +291,11 @@ impl App {
         // « Thinking » ne va pas dans l'historique : il pilote seulement l'indicateur.
         if let AgentEvent::Thinking { agent } = &ev {
             self.busy = Some(agent.clone());
+            self.busy_since = Some(Instant::now());
             return;
         }
         self.busy = None; // une sortie est apparue → plus en attente
+        self.busy_since = None;
 
         match &ev {
             AgentEvent::Started { .. } => self.started += 1,
@@ -298,6 +311,7 @@ impl App {
     /// Signalé par la boucle principale quand le canal se ferme (tous les agents finis).
     pub fn mark_finished(&mut self) {
         self.busy = None;
+        self.busy_since = None;
         if self.phase == Phase::Running {
             self.phase = Phase::Finished;
         }
@@ -394,6 +408,16 @@ mod tests {
         assert_eq!(app.chat_submit(), None, "message vide → rien envoyé");
         app.end_chat();
         assert!(app.chat.is_none());
+    }
+
+    #[test]
+    fn chat_message_can_be_multiline() {
+        let mut app = App::new(None);
+        app.start_chat();
+        app.chat_push('a');
+        app.chat_push('\n'); // Maj+Entrée
+        app.chat_push('b');
+        assert_eq!(app.chat_submit().as_deref(), Some("a\nb"));
     }
 
     #[test]
