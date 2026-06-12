@@ -44,6 +44,8 @@ Rotation des compétences pour équilibrer les 4 axes sur 15 min/jour.
 - Auxiliaires *hebben* / *zijn* au passé composé.
 - Articles *de* / *het* et accord des adjectifs.
 
+> Vue d'ensemble synthétique : [mind map des priorités grammaticales](diagrammes/priorites-grammaire.md).
+
 ## Compétences évaluées (CNaVT)
 
 | Compétence | Pratique recommandée |
@@ -60,9 +62,13 @@ Rotation des compétences pour équilibrer les 4 axes sur 15 min/jour.
 - [ ] Réaliser des examens blancs CNaVT.
 - [ ] S'inscrire et passer le CNaVT.
 
+> Vue chronologique : [timeline des jalons CNaVT](diagrammes/jalons-cnavt.md).
+
 ## Documents liés
 
 - [Suivi de progression](progression.md)
 - [Diagramme — Parcours d'apprentissage](diagrammes/parcours-apprentissage.md)
 - [Diagramme — Routine quotidienne](diagrammes/routine-quotidienne.md)
 - [Diagramme — Couverture hebdomadaire des compétences](diagrammes/cycle-hebdomadaire.md)
+- [Diagramme — Priorités grammaticales](diagrammes/priorites-grammaire.md)
+- [Diagramme — Jalons CNaVT](diagrammes/jalons-cnavt.md)

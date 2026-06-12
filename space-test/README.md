@@ -17,9 +17,14 @@ préparer le **CNaVT** (Certificat de Néerlandais comme Langue Étrangère).
 
 - [Plan d'apprentissage](docs/plan-apprentissage.md)
 - [Suivi de progression](docs/progression.md)
-- [Diagramme — Parcours d'apprentissage](docs/diagrammes/parcours-apprentissage.md)
-- [Diagramme — Routine quotidienne](docs/diagrammes/routine-quotidienne.md)
-- [Diagramme — Couverture hebdomadaire des compétences](docs/diagrammes/cycle-hebdomadaire.md)
+
+### Diagrammes
+
+- [Parcours d'apprentissage](docs/diagrammes/parcours-apprentissage.md)
+- [Routine quotidienne](docs/diagrammes/routine-quotidienne.md)
+- [Couverture hebdomadaire des compétences](docs/diagrammes/cycle-hebdomadaire.md)
+- [Priorités grammaticales (mind map)](docs/diagrammes/priorites-grammaire.md)
+- [Jalons vers le CNaVT (timeline)](docs/diagrammes/jalons-cnavt.md)
 
 ## Organisation du dépôt
 
@@ -32,7 +37,9 @@ space-test/
     └── diagrammes/               # Diagrammes Mermaid
         ├── parcours-apprentissage.md
         ├── routine-quotidienne.md
-        └── cycle-hebdomadaire.md
+        ├── cycle-hebdomadaire.md
+        ├── priorites-grammaire.md
+        └── jalons-cnavt.md
 ```
 
 > Documentation maintenue par l'Agent Documentaliste d'Orchestra IDE.
