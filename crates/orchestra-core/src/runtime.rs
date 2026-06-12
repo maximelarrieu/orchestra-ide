@@ -423,14 +423,16 @@ fn build_system_prompt(agent: &str, documentalist: bool, ctx: &AgentContext) -> 
     s
 }
 
-/// Émet une ligne de log non vide, en limitant la longueur affichée sur le radar.
+/// Émet une ligne de log non vide. On conserve le **texte complet** (multi-ligne) ; le
+/// rendu (côté UI) se charge du retour à la ligne et du défilement. Un plafond large évite
+/// seulement les cas pathologiques.
 fn emit_log(tx: &UnboundedSender<AgentEvent>, agent: &str, msg: &str) {
+    let msg = msg.trim();
     if msg.is_empty() {
         return;
     }
-    let msg = msg.lines().next().unwrap_or(msg);
-    let msg = if msg.chars().count() > 200 {
-        format!("{}…", msg.chars().take(200).collect::<String>())
+    let msg = if msg.chars().count() > 4000 {
+        format!("{}…", msg.chars().take(4000).collect::<String>())
     } else {
         msg.to_string()
     };

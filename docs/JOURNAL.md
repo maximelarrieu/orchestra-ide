@@ -153,6 +153,10 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   ferme le canal et termine la conversation.
 - Refactor : la boucle agentique d'un tour est extraite (`run_agent_turn`) et partagée entre
   le mode autonome et les sous-agents du coordinateur.
+- **Correctif d'affichage** : le radar ne tronquait plus que la 1ʳᵉ ligne (≤200 car.) de
+  chaque réponse — il déroule désormais le **texte complet avec retour à la ligne**
+  (`emit_log` conserve le multi-ligne ; rendu via `wrap_plain`), et colore distinctement
+  « Vous » (vert) / « Coordinateur » (magenta) / agents (cyan).
 
 ## Améliorations UX (post-Phase 5) ✅
 
