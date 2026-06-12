@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     render_header(frame, header, app);
     if let Some(ed) = &app.editor {
-        render_persona_editor(frame, center, ed);
+        render_text_editor(frame, center, ed, &app.editor_title);
     } else if let Some(v) = &app.viewer {
         render_markdown_viewer(frame, center, v);
     } else {
@@ -149,7 +149,9 @@ fn render_agents(frame: &mut Frame, area: Rect, app: &App) {
                             spans.push(Span::raw(", "));
                         }
                         if orchestra_core::skills::is_executable(sk) {
-                            spans.push(Span::styled(sk.clone(), Style::new().green()));
+                            spans.push(Span::styled(sk.clone(), Style::new().green())); // primitive (code)
+                        } else if app.is_markdown_skill(sk) {
+                            spans.push(Span::styled(format!("{sk} (fiche)"), Style::new().cyan())); // SKILL.md
                         } else {
                             spans.push(Span::styled(format!("{sk} (inactif)"), Style::new().dark_gray()));
                         }
@@ -223,9 +225,9 @@ fn render_markdown_viewer(frame: &mut Frame, area: Rect, v: &Viewer) {
 
 /// Éditeur de persona : lignes éditables + curseur terminal positionné (avec défilement
 /// vertical si le contenu dépasse la zone).
-fn render_persona_editor(frame: &mut Frame, area: Rect, ed: &Editor) {
+fn render_text_editor(frame: &mut Frame, area: Rect, ed: &Editor, title: &str) {
     let dirty = if ed.is_dirty() { " *" } else { "" };
-    let block = Block::bordered().title(format!(" ✏ PERSONA (.orchestra/persona.md){dirty} "));
+    let block = Block::bordered().title(format!("{title}{dirty} "));
 
     let inner_h = area.height.saturating_sub(2) as usize; // -2 : bordures
     let (cy, cx) = ed.cursor();
@@ -480,7 +482,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         ])]
     } else if app.view == View::Agents {
         vec![Line::from(Span::styled(
-            "📇 Agents — ↑↓ choisir · [r] renommer · [o] rôle · [s] skills · [a] ajouter · [d] supprimer · Échap",
+            "📇 Agents — ↑↓ · [r] renommer · [o] rôle · [s] skills · [a] ajouter · [n] nouveau skill · [d] suppr · Échap",
             Style::new().cyan(),
         ))]
     } else if let Some(buf) = &app.chat {
