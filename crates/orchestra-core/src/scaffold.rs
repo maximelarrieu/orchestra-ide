@@ -169,6 +169,26 @@ mod tests {
     }
 
     #[test]
+    fn save_persona_persists_and_reloads() {
+        let tmp = TempDir::new("persona");
+        let opts = InitOptions {
+            project_name: "P".to_string(),
+            project_type: ProjectType::Dev,
+            workspace_path: None,
+            documentalist_enabled: false,
+            integrations: Default::default(),
+        };
+        let mut space = scaffold_space(&tmp.0, opts).expect("scaffolding réussi");
+
+        space.save_persona("# Persona\n\nBudget : 350k€").expect("sauvegarde OK");
+        assert_eq!(space.persona.as_deref(), Some("# Persona\n\nBudget : 350k€"));
+
+        // Rechargé depuis le disque, le persona reflète la sauvegarde.
+        let reloaded = ContextSpace::load(&tmp.0).expect("rechargement OK");
+        assert_eq!(reloaded.persona.as_deref(), Some("# Persona\n\nBudget : 350k€"));
+    }
+
+    #[test]
     fn refuses_to_overwrite_existing_space() {
         let tmp = TempDir::new("dup");
         let opts = || InitOptions {

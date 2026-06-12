@@ -9,6 +9,8 @@
 
 mod app;
 mod dashboard;
+mod editor;
+mod markdown;
 mod wizard;
 
 use std::path::{Path, PathBuf};
@@ -18,11 +20,11 @@ use futures::StreamExt;
 use orchestra_core::events::AgentEvent;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime;
-use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::app::App;
+use crate::app::{App, View};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -87,7 +89,72 @@ async fn event_loop(
             maybe_input = input.next() => {
                 match maybe_input {
                     Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
-                        if app.input.is_some() {
+                        if app.editor.is_some() {
+                            // Mode édition du persona : les touches alimentent l'éditeur.
+                            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.editor = None;
+                                    app.notice = Some("Édition annulée.".to_string());
+                                }
+                                KeyCode::Char('s') if ctrl => {
+                                    // Sauvegarde via le cœur (l'UI ne touche pas le disque).
+                                    if let Some(text) = app.editor.as_ref().map(|e| e.to_text()) {
+                                        match app.space.as_mut() {
+                                            Some(space) => match space.save_persona(&text) {
+                                                Ok(()) => {
+                                                    app.editor = None;
+                                                    app.notice = Some("Persona enregistré.".to_string());
+                                                }
+                                                Err(e) => {
+                                                    app.notice = Some(format!("Échec enregistrement : {e}"))
+                                                }
+                                            },
+                                            None => app.editor = None,
+                                        }
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(ed) = app.editor.as_mut() { ed.newline() }
+                                }
+                                KeyCode::Backspace => {
+                                    if let Some(ed) = app.editor.as_mut() { ed.backspace() }
+                                }
+                                KeyCode::Left => { if let Some(ed) = app.editor.as_mut() { ed.left() } }
+                                KeyCode::Right => { if let Some(ed) = app.editor.as_mut() { ed.right() } }
+                                KeyCode::Up => { if let Some(ed) = app.editor.as_mut() { ed.up() } }
+                                KeyCode::Down => { if let Some(ed) = app.editor.as_mut() { ed.down() } }
+                                KeyCode::Home => { if let Some(ed) = app.editor.as_mut() { ed.home() } }
+                                KeyCode::End => { if let Some(ed) = app.editor.as_mut() { ed.end() } }
+                                KeyCode::Char(c) if !ctrl => {
+                                    if let Some(ed) = app.editor.as_mut() { ed.insert_char(c) }
+                                }
+                                _ => {}
+                            }
+                        } else if app.viewer.is_some() {
+                            // Visualiseur Markdown : défilement + fermeture (+ édition persona).
+                            match key.code {
+                                KeyCode::Esc => app.close_viewer(),
+                                KeyCode::Up => app.viewer_scroll(-1),
+                                KeyCode::Down => app.viewer_scroll(1),
+                                KeyCode::PageUp => app.viewer_scroll(-10),
+                                KeyCode::PageDown => app.viewer_scroll(10),
+                                KeyCode::Char('e') if app.viewer_is_persona() => {
+                                    app.close_viewer();
+                                    app.open_persona_editor();
+                                }
+                                _ => {}
+                            }
+                        } else if app.view == View::Docs {
+                            // Navigateur de documents : sélection + ouverture.
+                            match key.code {
+                                KeyCode::Up => app.docs_move(-1),
+                                KeyCode::Down => app.docs_move(1),
+                                KeyCode::Enter => app.open_selected_doc(),
+                                KeyCode::Esc | KeyCode::Char('2') => app.toggle_docs(),
+                                _ => {}
+                            }
+                        } else if app.input.is_some() {
                             // Mode saisie d'un chemin d'espace : les touches alimentent le tampon.
                             match key.code {
                                 KeyCode::Esc => app.cancel_input(),
@@ -124,8 +191,9 @@ async fn event_loop(
                                         rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
                                     }
                                 }
-                                KeyCode::Char('2') => app.toggle_adrs(),
+                                KeyCode::Char('2') => app.toggle_docs(),
                                 KeyCode::Char('3') => app.start_space_input(),
+                                KeyCode::Char('4') => app.open_persona_editor(),
                                 _ => {}
                             }
                         }
