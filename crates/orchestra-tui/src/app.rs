@@ -35,6 +35,8 @@ pub enum AgentField {
     Role,
     Skills,
     Add,
+    /// Création d'un skill Markdown (`.orchestra/skills/<id>/SKILL.md`).
+    NewSkill,
 }
 
 impl AgentField {
@@ -44,8 +46,16 @@ impl AgentField {
             AgentField::Role => "Rôle",
             AgentField::Skills => "Skills (séparés par des virgules)",
             AgentField::Add => "Nom du nouvel agent",
+            AgentField::NewSkill => "Nom du nouveau skill (fiche Markdown)",
         }
     }
+}
+
+/// Cible de l'éditeur de texte : le persona de l'espace, ou un fichier `SKILL.md`.
+#[derive(Debug, Clone)]
+pub enum EditTarget {
+    Persona,
+    SkillFile(std::path::PathBuf),
 }
 
 /// Nombre d'événements conservés dans l'historique du radar (les plus anciens sont
@@ -97,8 +107,14 @@ pub struct App {
     pub input: Option<String>,
     /// Saisie en cours d'une intention pour `[1]` (`Some(tampon)`), ou `None`.
     pub intention: Option<String>,
-    /// Éditeur de persona ouvert (`Some`) ou fermé (`None`).
+    /// Éditeur de texte ouvert (`Some`) ou fermé (`None`) — persona ou fiche de skill.
     pub editor: Option<Editor>,
+    /// Cible de l'éditeur courant (où Ctrl+S enregistre).
+    pub editor_target: EditTarget,
+    /// Titre affiché de l'éditeur courant.
+    pub editor_title: String,
+    /// Identifiants des skills Markdown reconnus de l'espace (pour marquer le menu Agents).
+    pub md_skills: Vec<String>,
     /// Documents de l'espace (rafraîchis à l'ouverture du navigateur).
     pub docs: Vec<SpaceDoc>,
     /// Index du document sélectionné dans le navigateur.
@@ -142,6 +158,10 @@ fn default_intention(kind: ProjectType) -> &'static str {
 
 impl App {
     pub fn new(space: Option<ContextSpace>) -> Self {
+        let md_skills = space
+            .as_ref()
+            .map(|s| orchestra_core::markdown_skill::load_all(&s.root).into_iter().flat_map(|m| [m.id, m.name]).collect())
+            .unwrap_or_default();
         Self {
             space,
             events: Vec::new(),
@@ -153,6 +173,9 @@ impl App {
             input: None,
             intention: None,
             editor: None,
+            editor_target: EditTarget::Persona,
+            editor_title: String::new(),
+            md_skills,
             docs: Vec::new(),
             doc_sel: 0,
             viewer: None,
@@ -234,10 +257,61 @@ impl App {
         if let Some(space) = &self.space {
             let text = space.persona.clone().unwrap_or_default();
             self.editor = Some(Editor::from_str(&text));
+            self.editor_target = EditTarget::Persona;
+            self.editor_title = " ✏ PERSONA (.orchestra/persona.md)".to_string();
             self.notice = None;
         } else {
             self.notice = Some("Aucun espace chargé : impossible d'éditer le persona.".into());
         }
+    }
+
+    /// `[n]` (menu Agents) — saisit le nom d'un nouveau skill Markdown à créer.
+    pub fn start_new_skill(&mut self) {
+        if self.space.is_some() {
+            self.agent_prompt = Some((AgentField::NewSkill, String::new()));
+        } else {
+            self.notice = Some("Aucun espace chargé : impossible de créer un skill.".into());
+        }
+    }
+
+    /// Crée la fiche `.orchestra/skills/<nom>/SKILL.md` (via le cœur) puis l'ouvre dans
+    /// l'éditeur pour rédaction immédiate des instructions.
+    fn create_skill(&mut self, name: &str) {
+        let Some(root) = self.space.as_ref().map(|s| s.root.clone()) else {
+            self.notice = Some("Aucun espace chargé.".into());
+            return;
+        };
+        match orchestra_core::markdown_skill::create(&root, name, "") {
+            Ok(path) => {
+                self.refresh_md_skills();
+                let label = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string();
+                let content = orchestra_core::model::load_document(&path).unwrap_or_default();
+                self.editor = Some(Editor::from_str(&content));
+                self.editor_target = EditTarget::SkillFile(path);
+                self.editor_title = format!(" ✏ SKILL ({label})");
+                self.notice = Some("Skill créé — rédige ses instructions puis Ctrl+S.".into());
+            }
+            Err(e) => self.notice = Some(format!("Création impossible : {e}")),
+        }
+    }
+
+    /// Recharge la liste des skills Markdown reconnus (après création/édition).
+    pub fn refresh_md_skills(&mut self) {
+        self.md_skills = self
+            .space
+            .as_ref()
+            .map(|s| {
+                orchestra_core::markdown_skill::load_all(&s.root)
+                    .into_iter()
+                    .flat_map(|m| [m.id, m.name])
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+
+    /// Vrai si `id` correspond à un skill Markdown de l'espace (fiche d'instructions).
+    pub fn is_markdown_skill(&self, id: &str) -> bool {
+        self.md_skills.iter().any(|s| s == id)
     }
 
     /// `[2]` — bascule entre le radar et le navigateur de documents (rafraîchit la liste).
@@ -504,6 +578,10 @@ impl App {
     pub fn submit_agent_prompt(&mut self) {
         let Some((field, buf)) = self.agent_prompt.take() else { return };
         let value = buf.trim().to_string();
+        if field == AgentField::NewSkill {
+            self.create_skill(&value); // chemin distinct : crée une fiche + ouvre l'éditeur
+            return;
+        }
         let sel = self.agent_sel;
         let Some(space) = self.space.as_mut() else { return };
         match field {
@@ -534,6 +612,7 @@ impl App {
                     self.agent_sel = space.config.agents.len() - 1;
                 }
             }
+            AgentField::NewSkill => return, // traité plus haut (création de fiche)
         }
         self.persist_config();
     }
@@ -669,6 +748,44 @@ mod tests {
         let reloaded = ContextSpace::load(&dir).unwrap();
         assert!(reloaded.config.agents.iter().any(|a| a.name == "Agent_X"),
             "le nouvel agent doit être persisté dans config.json");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_skill_creates_fiche_and_opens_editor() {
+        use orchestra_core::model::project_type::ProjectType;
+        use orchestra_core::{scaffold_space, InitOptions};
+
+        let dir = std::env::temp_dir().join(format!("orch-newskill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        scaffold_space(
+            &dir,
+            InitOptions {
+                project_name: "T".into(),
+                project_type: ProjectType::Dev,
+                workspace_path: None,
+                documentalist_enabled: false,
+                integrations: Default::default(),
+            },
+        )
+        .unwrap();
+
+        let mut app = App::new(Some(ContextSpace::load(&dir).unwrap()));
+        app.toggle_agents();
+        app.start_new_skill();
+        assert_eq!(app.agent_prompt.as_ref().map(|(f, _)| *f), Some(AgentField::NewSkill));
+        for c in "Creation Quiz".chars() {
+            app.agent_prompt_push(c);
+        }
+        app.submit_agent_prompt();
+
+        // La fiche est créée sur disque, reconnue, et ouverte dans l'éditeur (cible SkillFile).
+        assert!(dir.join(".orchestra/skills/Creation_Quiz/SKILL.md").is_file());
+        assert!(app.is_markdown_skill("Creation_Quiz"));
+        assert!(app.editor.is_some());
+        assert!(matches!(app.editor_target, EditTarget::SkillFile(_)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

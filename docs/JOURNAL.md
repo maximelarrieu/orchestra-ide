@@ -184,6 +184,19 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - La zone centrale conserve le système de vues existant (radar/docs/agents/éditeur), rendu
   désormais dans le panneau central plutôt qu'en plein écran.
 
+## Skills « fiches » Markdown + création depuis l'UI (post-Phase 5) ✅
+
+- Modèle « skill = dossier + `SKILL.md` » (façon *Agent Skills*) : `crate::markdown_skill`
+  charge `.orchestra/skills/<id>/SKILL.md` (en-tête `name`/`description` + corps).
+- Le runtime injecte les instructions des fiches **assignées** à un agent dans son prompt
+  système (section « ## Compétences ») — aucun code, aucune recompilation.
+- **Création depuis l'interface** : menu Agents → `[n]` saisit un nom → `markdown_skill::create`
+  scaffolde la fiche, qui s'ouvre dans l'éditeur de texte (généralisé persona/skill, `Ctrl+S`
+  enregistre via le cœur). Le menu marque ces skills **(fiche)** en cyan, distincts des
+  primitives exécutables (vert) et des étiquettes inactives (gris).
+- Deux couches assumées : **primitives = code** (registre `skills`), **skills = fichiers**
+  (`markdown_skill`) qui orchestrent les primitives.
+
 ## Registre de skills exécutables (post-Phase 5) ✅
 
 - Les skills sont **activés systématiquement** via un registre : id → définition

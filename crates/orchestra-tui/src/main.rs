@@ -112,19 +112,30 @@ async fn event_loop(
                                     app.notice = Some("Édition annulée.".to_string());
                                 }
                                 KeyCode::Char('s') if ctrl => {
-                                    // Sauvegarde via le cœur (l'UI ne touche pas le disque).
+                                    // Sauvegarde via le cœur (l'UI ne touche pas le disque) ;
+                                    // la cible dépend de ce que l'éditeur édite (persona / skill).
                                     if let Some(text) = app.editor.as_ref().map(|e| e.to_text()) {
-                                        match app.space.as_mut() {
-                                            Some(space) => match space.save_persona(&text) {
-                                                Ok(()) => {
-                                                    app.editor = None;
-                                                    app.notice = Some("Persona enregistré.".to_string());
-                                                }
-                                                Err(e) => {
-                                                    app.notice = Some(format!("Échec enregistrement : {e}"))
-                                                }
-                                            },
-                                            None => app.editor = None,
+                                        let result = match &app.editor_target {
+                                            app::EditTarget::Persona => app
+                                                .space
+                                                .as_mut()
+                                                .map(|space| space.save_persona(&text))
+                                                .transpose()
+                                                .map(|_| "Persona enregistré."),
+                                            app::EditTarget::SkillFile(path) => {
+                                                orchestra_core::markdown_skill::save(path, &text)
+                                                    .map(|()| "Skill enregistré.")
+                                            }
+                                        };
+                                        match result {
+                                            Ok(msg) => {
+                                                app.editor = None;
+                                                app.refresh_md_skills();
+                                                app.notice = Some(msg.to_string());
+                                            }
+                                            Err(e) => {
+                                                app.notice = Some(format!("Échec enregistrement : {e}"))
+                                            }
                                         }
                                     }
                                 }
@@ -177,6 +188,7 @@ async fn event_loop(
                                 KeyCode::Char('o') => app.start_agent_role(),
                                 KeyCode::Char('s') => app.start_agent_skills(),
                                 KeyCode::Char('a') => app.start_agent_add(),
+                                KeyCode::Char('n') => app.start_new_skill(),
                                 KeyCode::Char('d') => app.delete_selected_agent(),
                                 KeyCode::Esc | KeyCode::Char('6') => app.toggle_agents(),
                                 _ => {}

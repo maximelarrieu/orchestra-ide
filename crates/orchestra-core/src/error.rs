@@ -19,6 +19,12 @@ pub enum OrchestraError {
     #[error("Configuration invalide : {0}")]
     InvalidConfig(#[from] serde_json::Error),
 
+    #[error("Un skill « {0} » existe déjà — refus de l'écraser")]
+    SkillAlreadyExists(String),
+
+    #[error("Nom de skill invalide : « {0} » (lettres, chiffres, « _ » ou « - »)")]
+    InvalidSkillName(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

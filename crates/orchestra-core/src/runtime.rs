@@ -21,6 +21,7 @@ use tokio::time::sleep;
 use crate::events::AgentEvent;
 use crate::integrations::{self, IntegrationConn};
 use crate::llm::{Block, LlmClient, Msg, ToolResult, ToolSpec};
+use crate::markdown_skill::MarkdownSkill;
 use crate::model::project_type::ProjectType;
 use crate::model::space::ContextSpace;
 use crate::skills;
@@ -72,6 +73,8 @@ struct AgentContext {
     persona: Option<String>,
     workspace: PathBuf,
     skills: Vec<String>,
+    /// Skills Markdown de l'espace (fiches d'instructions), partagés entre agents.
+    md_skills: Arc<Vec<MarkdownSkill>>,
     integ: IntegrationConn,
 }
 
@@ -88,6 +91,7 @@ impl AgentContext {
             persona: space.persona.clone(),
             workspace,
             skills: space.config.skills.clone(),
+            md_skills: Arc::new(crate::markdown_skill::load_all(&space.root)),
             integ: IntegrationConn::from_space(space),
         }
     }
@@ -168,7 +172,8 @@ async fn llm_agent_loop(
     ctx: &AgentContext,
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<(), crate::llm::LlmError> {
-    let system = build_system_prompt(&agent.name, &agent.role, agent.documentalist, ctx);
+    let effective = if agent.skills.is_empty() { &ctx.skills } else { &agent.skills };
+    let system = build_system_prompt(&agent.name, &agent.role, agent.documentalist, effective, ctx);
     let tools = agent_tools(agent, ctx);
     let documentalist = agent.documentalist;
     let intention = if documentalist {
@@ -372,7 +377,8 @@ async fn run_subagent(
     let agent = roster.iter().find(|a| a.name == name).unwrap_or(&fallback);
     let _ = tx.send(AgentEvent::Started { agent: name.to_string() });
 
-    let system = build_system_prompt(&agent.name, &agent.role, agent.documentalist, ctx);
+    let effective = if agent.skills.is_empty() { &ctx.skills } else { &agent.skills };
+    let system = build_system_prompt(&agent.name, &agent.role, agent.documentalist, effective, ctx);
     let tools = agent_tools(agent, ctx);
     let mut conv: Vec<Msg> = vec![Msg::User(instruction.to_string())];
     let text = run_agent_turn(client, &system, &tools, &mut conv, name, ctx, tx).await;
@@ -428,8 +434,15 @@ fn coordinator_prompt(ctx: &AgentContext, roster: &[RosterAgent]) -> String {
     s
 }
 
-/// Construit le prompt système d'un agent à partir de son nom, son rôle et l'espace.
-fn build_system_prompt(name: &str, role: &str, documentalist: bool, ctx: &AgentContext) -> String {
+/// Construit le prompt système d'un agent à partir de son nom, son rôle, ses skills
+/// (les fiches Markdown assignées sont injectées sous « ## Compétences ») et l'espace.
+fn build_system_prompt(
+    name: &str,
+    role: &str,
+    documentalist: bool,
+    skills: &[String],
+    ctx: &AgentContext,
+) -> String {
     let mut s = if documentalist {
         format!(
             "Tu es l'Agent Documentaliste d'Orchestra IDE pour le projet « {} » (type : {}). \
@@ -453,6 +466,22 @@ fn build_system_prompt(name: &str, role: &str, documentalist: bool, ctx: &AgentC
         }
         s
     };
+    // Compétences : instructions des skills Markdown assignés à l'agent (le « comment faire »).
+    let mut added_skills = false;
+    for sk in skills {
+        if let Some(md) = ctx.md_skills.iter().find(|m| m.id == *sk || m.name == *sk) {
+            if !added_skills {
+                s.push_str("\n\n## Compétences");
+                added_skills = true;
+            }
+            s.push_str(&format!("\n\n### {}", md.name));
+            if !md.description.is_empty() {
+                s.push_str(&format!("\n_{}_", md.description));
+            }
+            s.push('\n');
+            s.push_str(md.instructions.trim());
+        }
+    }
     if let Some(persona) = &ctx.persona {
         s.push_str("\n\n## Contexte / persona\n");
         s.push_str(persona);
