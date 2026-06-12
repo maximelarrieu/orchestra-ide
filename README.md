@@ -129,7 +129,23 @@ export GITHUB_TOKEN="ghp_..."     # requis pour activer les Skills GitHub
 > *sortantes* (création de PR/commentaire) : l'utilisateur les autorise en configurant
 > l'intégration dans son espace.
 
+## Phase 5 — Agent Documentaliste + finitions ✅
+
+**Agent Documentaliste.** Si `documentalist_enabled: true` dans la config, un agent dédié
+rejoint l'orchestre avec une mission documentation : il lit les fichiers, met à jour la doc
+(`Write_File_Validated`) et produit des diagrammes via le nouveau Skill
+`Write_Mermaid_Diagram` (écrit un `.md` avec un bloc ` ```mermaid `, type de diagramme
+validé). Outils et prompt dédiés, indépendants de la liste de Skills du projet.
+
+**Finitions du dashboard** — les touches du menu sont désormais actives :
+
+| Touche | Action |
+|---|---|
+| `[1]` | Lancer l'orchestre |
+| `[2]` | Basculer radar ↔ **liste des ADRs** de l'espace |
+| `[3]` | **Changer d'Espace** (saisie d'un chemin, `Entrée` charge / `Échap` annule) |
+| `q` / `Échap` | Quitter |
+
 ## Phases suivantes
 
-4c. Intégration Jira (même schéma : Skills exposés si configuré).
-5. Agent Documentaliste (Doc_Auto_Update, Mermaid) + finitions.
+4c (optionnel). Intégration Jira (même schéma : Skills exposés si configuré).
