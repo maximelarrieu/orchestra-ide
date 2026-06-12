@@ -195,9 +195,10 @@ Les modifications sont **enregistrées dans `.orchestra/config.json`** (via le c
 
 > 📝 **Skills « fiches » (sans code).** Au-delà des primitives, un skill peut être une simple
 > **fiche d'instructions** : un fichier `.orchestra/skills/<id>/SKILL.md` (en-tête `name`/
-> `description` + corps Markdown du « comment faire »). Aucune recompilation : tout agent à
-> qui la fiche est assignée voit ses instructions injectées dans son prompt système (section
-> « Compétences »). Crée-en une **depuis l'interface** : menu Agents `[6]` → **`[n]`** → saisis
+> `description` + corps Markdown du « comment faire »). Aucune recompilation. **Divulgation
+> progressive** (économie de tokens) : le prompt ne porte que le **nom + la description** des
+> fiches assignées ; l'agent charge la procédure complète à la demande via la primitive
+> **`Load_Skill{id}`**. Crée-en une **depuis l'interface** : menu Agents `[6]` → **`[n]`** → saisis
 > un nom → la fiche s'ouvre dans l'éditeur (rédige puis `Ctrl+S`). Le menu marque ces skills
 > **(fiche)** en cyan. Idéal pour `Creation_Quiz` (pur texte) ou un `Web_Search` qui s'appuie
 > sur la primitive `Web_Fetch`.

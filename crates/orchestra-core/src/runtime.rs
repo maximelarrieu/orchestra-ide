@@ -21,7 +21,7 @@ use tokio::time::sleep;
 use crate::events::AgentEvent;
 use crate::integrations::{self, IntegrationConn};
 use crate::llm::{Block, LlmClient, Msg, ToolResult, ToolSpec};
-use crate::markdown_skill::MarkdownSkill;
+use crate::markdown_skill::{self, MarkdownSkill};
 use crate::memory;
 use crate::model::project_type::ProjectType;
 use crate::model::space::ContextSpace;
@@ -166,6 +166,10 @@ fn agent_tools(agent: &RosterAgent, ctx: &AgentContext) -> Vec<ToolSpec> {
         let own = if agent.skills.is_empty() { &ctx.skills } else { &agent.skills };
         let mut v = skills::tool_specs(own); // skills exécutables assignés (registre)
         v.extend(integrations::tool_definitions(&ctx.integ)); // Git/GitHub si configurés
+        // Divulgation progressive : `Load_Skill` n'est exposé que si l'agent a au moins une fiche.
+        if own.iter().any(|sk| ctx.md_skills.iter().any(|m| m.id == *sk || m.name == *sk)) {
+            v.push(markdown_skill::tool_definition());
+        }
         v
     };
     t.extend(memory::tool_definitions()); // mémoire partagée : disponible pour tous les agents
@@ -240,6 +244,8 @@ async fn run_agent_turn(
         for (id, name, input) in calls {
             let outcome = if memory::handles(&name) {
                 memory::execute(&name, &input, &ctx.root, label)
+            } else if markdown_skill::handles(&name) {
+                markdown_skill::execute(&input, &ctx.root)
             } else if integrations::handles(&name) {
                 integrations::execute(&name, &input, &ctx.workspace, &ctx.integ).await
             } else {
@@ -475,20 +481,23 @@ fn build_system_prompt(
         }
         s
     };
-    // Compétences : instructions des skills Markdown assignés à l'agent (le « comment faire »).
-    let mut added_skills = false;
-    for sk in skills {
-        if let Some(md) = ctx.md_skills.iter().find(|m| m.id == *sk || m.name == *sk) {
-            if !added_skills {
-                s.push_str("\n\n## Compétences");
-                added_skills = true;
+    // Compétences (fiches) : divulgation progressive. On ne met que nom + description dans le
+    // prompt ; l'agent charge les instructions détaillées à la demande via `Load_Skill`. Cela
+    // évite de payer le corps de chaque fiche à chaque appel.
+    let assigned: Vec<&MarkdownSkill> = skills
+        .iter()
+        .filter_map(|sk| ctx.md_skills.iter().find(|m| m.id == *sk || m.name == *sk))
+        .collect();
+    if !assigned.is_empty() {
+        s.push_str(
+            "\n\n## Compétences\nTu disposes des compétences ci-dessous. Appelle `Load_Skill` \
+             avec l'`id` indiqué pour obtenir la procédure détaillée quand tu en as besoin.",
+        );
+        for m in assigned {
+            s.push_str(&format!("\n- **{}** (id `{}`)", m.name, m.id));
+            if !m.description.is_empty() {
+                s.push_str(&format!(" — {}", m.description));
             }
-            s.push_str(&format!("\n\n### {}", md.name));
-            if !md.description.is_empty() {
-                s.push_str(&format!("\n_{}_", md.description));
-            }
-            s.push('\n');
-            s.push_str(md.instructions.trim());
         }
     }
     // Mémoire partagée : rappel court seulement (pas le contenu — lu à la demande via `Recall`,
@@ -598,6 +607,30 @@ mod tests {
             .collect();
         assert!(names.iter().any(|n| n == memory::REMEMBER));
         assert!(names.iter().any(|n| n == memory::RECALL));
+    }
+
+    #[test]
+    fn load_skill_exposed_only_when_a_fiche_is_assigned() {
+        // Espace sans fiche → pas de Load_Skill.
+        let space = space_with_agents(&["A"]);
+        let ctx = AgentContext::from_space(&space);
+        let agents = roster(&space);
+        let none: Vec<_> = agent_tools(&agents[0], &ctx).into_iter().map(|t| t.name).collect();
+        assert!(!none.iter().any(|n| n == markdown_skill::LOAD_SKILL));
+
+        // Espace avec une fiche assignée → Load_Skill exposé.
+        let dir = std::env::temp_dir().join(format!("orch-rt-fiche-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".orchestra")).unwrap();
+        markdown_skill::create(&dir, "Quiz", "fait un quiz").unwrap();
+        let mut space2 = space_with_agents(&["A"]);
+        space2.root = dir.clone();
+        space2.config.skills = vec!["Quiz".to_string()];
+        let ctx2 = AgentContext::from_space(&space2);
+        let agents2 = roster(&space2);
+        let with: Vec<_> = agent_tools(&agents2[0], &ctx2).into_iter().map(|t| t.name).collect();
+        assert!(with.iter().any(|n| n == markdown_skill::LOAD_SKILL));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

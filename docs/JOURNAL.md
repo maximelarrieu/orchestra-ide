@@ -195,7 +195,14 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   pas en brut — la mémoire sert de compression de contexte.
 - **Prompt caching (Anthropic)** : le bloc `system` (stable d'un tour/agent à l'autre) est marqué
   `cache_control: ephemeral` → les tours suivants paient une fraction des tokens d'entrée.
-- Reste planifié : divulgation progressive des fiches (`Load_Skill`), context caching Gemini.
+- **Divulgation progressive des fiches** (`Load_Skill`) : le prompt ne porte que nom+description
+  des fiches assignées ; le corps est chargé à la demande via `Load_Skill{id}`, exposé uniquement
+  aux agents ayant au moins une fiche. Bénéficie aux deux fournisseurs (prompt plus court).
+- **Context caching Gemini : volontairement non implémenté.** Le caching explicite Gemini est un
+  flux *stateful* (ressource `CachedContent` créée par un appel séparé, TTL à gérer) avec un seuil
+  de tokens minimal élevé — faible ROI sur des boucles d'agents courtes, et difficile à tester
+  hors-ligne. Les modèles Gemini récents font du caching *implicite* automatique ; la divulgation
+  progressive réduit déjà le prompt côté Gemini. À reconsidérer si les boucles s'allongent.
 
 ## Skills « fiches » Markdown + création depuis l'UI (post-Phase 5) ✅
 
