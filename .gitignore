@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 Cargo.lock
+
+# Espaces de test personnels (gardés locaux)
+/space-test/
