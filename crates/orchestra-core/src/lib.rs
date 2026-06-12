@@ -10,6 +10,7 @@ pub mod events;
 pub mod integrations;
 pub mod llm;
 pub mod markdown_skill;
+pub mod memory;
 pub mod model;
 pub mod runtime;
 pub mod scaffold;

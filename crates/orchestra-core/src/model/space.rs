@@ -74,6 +74,10 @@ impl ContextSpace {
         if persona.is_file() {
             docs.push(SpaceDoc { label: "persona.md".into(), path: persona, kind: DocKind::Persona });
         }
+        let memory = self.root.join(".orchestra").join("memory.md");
+        if memory.is_file() {
+            docs.push(SpaceDoc { label: "memory.md".into(), path: memory, kind: DocKind::Doc });
+        }
         for adr in &self.adrs {
             let name = adr
                 .path

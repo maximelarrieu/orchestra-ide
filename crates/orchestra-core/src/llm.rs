@@ -218,7 +218,13 @@ fn anthropic_body(model: &str, system: &str, tools: &[ToolSpec], conv: &[Msg]) -
     let mut body = Map::new();
     body.insert("model".into(), json!(model));
     body.insert("max_tokens".into(), json!(MAX_OUTPUT_TOKENS));
-    body.insert("system".into(), json!(system));
+    // Prompt caching : le system prompt (projet + rôle + compétences + persona) est stable
+    // d'un tour à l'autre et d'un agent à l'autre. On marque ce préfixe comme cacheable —
+    // les requêtes suivantes paient une fraction des tokens d'entrée sur ce bloc.
+    body.insert(
+        "system".into(),
+        json!([{ "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }]),
+    );
     body.insert("messages".into(), json!(messages));
     if !tools.is_empty() {
         let defs: Vec<Value> = tools
@@ -354,6 +360,14 @@ mod tests {
         assert_eq!(b["messages"][1]["content"][0]["type"], "tool_use");
         assert_eq!(b["messages"][2]["content"][0]["tool_use_id"], "t1");
         assert_eq!(b["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn anthropic_body_marks_system_prompt_cacheable() {
+        let b = anthropic_body("claude-opus-4-8", "sys", &tools(), &sample_conv());
+        // Le system est un tableau de blocs, avec un point de césure de cache éphémère.
+        assert_eq!(b["system"][0]["text"], "sys");
+        assert_eq!(b["system"][0]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]

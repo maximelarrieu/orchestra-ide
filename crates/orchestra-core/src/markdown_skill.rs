@@ -12,10 +12,53 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde_json::{json, Value};
+
 use crate::error::OrchestraError;
+use crate::llm::ToolSpec;
+use crate::skills::SkillOutcome;
 
 /// Nom du fichier d'instructions au sein du dossier d'un skill.
 const SKILL_FILE: &str = "SKILL.md";
+
+/// Outil de **divulgation progressive** : charge les instructions détaillées d'une fiche à la
+/// demande. Le prompt système ne porte que nom + description (économie de tokens) ; l'agent
+/// appelle `Load_Skill` quand il a besoin du « comment faire » complet.
+pub const LOAD_SKILL: &str = "Load_Skill";
+
+/// Vrai si `name` est la primitive de chargement de fiche (aiguillage côté runtime).
+pub fn handles(name: &str) -> bool {
+    name == LOAD_SKILL
+}
+
+/// Définition d'outil de [`LOAD_SKILL`], à exposer aux agents qui ont au moins une fiche assignée.
+pub fn tool_definition() -> ToolSpec {
+    ToolSpec {
+        name: LOAD_SKILL.to_string(),
+        description:
+            "Charge les instructions détaillées d'une de tes compétences (fiche). Fournis son \
+             `id` tel qu'indiqué dans la section « Compétences ». À appeler seulement quand tu as \
+             besoin de la procédure complète."
+                .to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": { "id": { "type": "string", "description": "Identifiant de la fiche à charger" } },
+            "required": ["id"]
+        }),
+    }
+}
+
+/// Exécute [`LOAD_SKILL`] : renvoie le corps Markdown de la fiche `id` de l'espace `root`.
+pub fn execute(input: &Value, root: &Path) -> SkillOutcome {
+    let Some(id) = input.get("id").and_then(Value::as_str) else {
+        return SkillOutcome::err("paramètre `id` manquant.");
+    };
+    match load_all(root).into_iter().find(|m| m.id == id || m.name == id) {
+        Some(m) if !m.instructions.trim().is_empty() => SkillOutcome::ok(m.instructions),
+        Some(_) => SkillOutcome::ok(format!("(la fiche « {id} » ne contient pas encore d'instructions)")),
+        None => SkillOutcome::err(format!("compétence « {id} » introuvable dans cet espace.")),
+    }
+}
 
 /// Un skill décrit par un `SKILL.md` : métadonnées (nom/description) + instructions.
 #[derive(Debug, Clone)]
@@ -219,5 +262,23 @@ mod tests {
     #[test]
     fn load_all_missing_dir_is_empty() {
         assert!(load_all(Path::new("/nope/orch/zzz")).is_empty());
+    }
+
+    #[test]
+    fn load_skill_returns_body_or_error() {
+        let root = tmp();
+        fs::create_dir_all(&root).unwrap();
+        create(&root, "Web_Search", "Cherche sur le web").unwrap();
+
+        let ok = execute(&json!({ "id": "Web_Search" }), &root);
+        assert!(!ok.is_error && ok.text.contains("# Web_Search"));
+
+        let missing = execute(&json!({ "id": "Inconnu" }), &root);
+        assert!(missing.is_error);
+
+        let no_id = execute(&json!({}), &root);
+        assert!(no_id.is_error);
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -184,6 +184,26 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - La zone centrale conserve le système de vues existant (radar/docs/agents/éditeur), rendu
   désormais dans le panneau central plutôt qu'en plein écran.
 
+## Mémoire partagée d'espace + prompt caching (post-Phase 5) ✅
+
+- **Mémoire partagée** : module `memory` (`.orchestra/memory.md`) + primitives universelles
+  `Remember{note}` / `Recall{query?}` exposées à **tous** les agents (dispatch `memory::handles`
+  dans le runtime, aiguillé comme les intégrations). Notes numérotées + attribuées à l'agent,
+  durables entre sessions, listées dans le navigateur `[2]`.
+- **Token-smart** : le prompt système n'injecte qu'un rappel court ; le contenu se lit à la
+  demande via `Recall` (filtre par mot-clé). Une source résumée une fois est relue en synthèse,
+  pas en brut — la mémoire sert de compression de contexte.
+- **Prompt caching (Anthropic)** : le bloc `system` (stable d'un tour/agent à l'autre) est marqué
+  `cache_control: ephemeral` → les tours suivants paient une fraction des tokens d'entrée.
+- **Divulgation progressive des fiches** (`Load_Skill`) : le prompt ne porte que nom+description
+  des fiches assignées ; le corps est chargé à la demande via `Load_Skill{id}`, exposé uniquement
+  aux agents ayant au moins une fiche. Bénéficie aux deux fournisseurs (prompt plus court).
+- **Context caching Gemini : volontairement non implémenté.** Le caching explicite Gemini est un
+  flux *stateful* (ressource `CachedContent` créée par un appel séparé, TTL à gérer) avec un seuil
+  de tokens minimal élevé — faible ROI sur des boucles d'agents courtes, et difficile à tester
+  hors-ligne. Les modèles Gemini récents font du caching *implicite* automatique ; la divulgation
+  progressive réduit déjà le prompt côté Gemini. À reconsidérer si les boucles s'allongent.
+
 ## Skills « fiches » Markdown + création depuis l'UI (post-Phase 5) ✅
 
 - Modèle « skill = dossier + `SKILL.md` » (façon *Agent Skills*) : `crate::markdown_skill`

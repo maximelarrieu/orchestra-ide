@@ -195,12 +195,23 @@ Les modifications sont **enregistrées dans `.orchestra/config.json`** (via le c
 
 > 📝 **Skills « fiches » (sans code).** Au-delà des primitives, un skill peut être une simple
 > **fiche d'instructions** : un fichier `.orchestra/skills/<id>/SKILL.md` (en-tête `name`/
-> `description` + corps Markdown du « comment faire »). Aucune recompilation : tout agent à
-> qui la fiche est assignée voit ses instructions injectées dans son prompt système (section
-> « Compétences »). Crée-en une **depuis l'interface** : menu Agents `[6]` → **`[n]`** → saisis
+> `description` + corps Markdown du « comment faire »). Aucune recompilation. **Divulgation
+> progressive** (économie de tokens) : le prompt ne porte que le **nom + la description** des
+> fiches assignées ; l'agent charge la procédure complète à la demande via la primitive
+> **`Load_Skill{id}`**. Crée-en une **depuis l'interface** : menu Agents `[6]` → **`[n]`** → saisis
 > un nom → la fiche s'ouvre dans l'éditeur (rédige puis `Ctrl+S`). Le menu marque ces skills
 > **(fiche)** en cyan. Idéal pour `Creation_Quiz` (pur texte) ou un `Web_Search` qui s'appuie
 > sur la primitive `Web_Fetch`.
+
+> 🧠 **Mémoire partagée + économie de tokens.** Tous les agents disposent de deux primitives
+> universelles : **`Remember{note}`** (consigne un fait/décision/synthèse dans
+> `.orchestra/memory.md`) et **`Recall{query?}`** (relit la mémoire, filtrée par mot-clé). La
+> mémoire est durable entre sessions et visible dans le navigateur `[2]`. C'est aussi un levier
+> d'économie : un agent résume une source volumineuse **une fois**, les autres lisent la
+> synthèse au lieu de relire le fichier. Le prompt système ne contient qu'un **rappel court** (le
+> contenu est lu à la demande via `Recall`). Côté infra, le system prompt — stable d'un tour à
+> l'autre — est marqué **cacheable** (Anthropic *prompt caching*) : les tours suivants paient une
+> fraction des tokens d'entrée sur ce préfixe.
 
 ### Converser avec le chef d'orchestre (`[5]`)
 
