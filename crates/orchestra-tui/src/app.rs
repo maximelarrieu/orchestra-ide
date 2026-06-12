@@ -63,6 +63,8 @@ pub struct App {
     pub viewer: Option<Viewer>,
     /// Conversation avec le coordinateur en cours : `Some(tampon de saisie)`.
     pub chat: Option<String>,
+    /// Défilement du radar : nombre de lignes remontées depuis le bas (0 = suit le bas).
+    pub radar_scroll: usize,
     /// Message transitoire affiché à l'utilisateur (succès/erreur d'une action).
     pub notice: Option<String>,
 }
@@ -83,8 +85,15 @@ impl App {
             doc_sel: 0,
             viewer: None,
             chat: None,
+            radar_scroll: 0,
             notice: None,
         }
+    }
+
+    /// Fait défiler le radar (delta>0 = remonter dans l'historique). Borné en bas à 0 ; la
+    /// borne haute est appliquée au rendu (selon le contenu et la hauteur).
+    pub fn radar_scroll_by(&mut self, delta: isize) {
+        self.radar_scroll = (self.radar_scroll as isize + delta).max(0) as usize;
     }
 
     /// `[5]` — démarre une conversation : radar remis à zéro, saisie de chat ouverte.
@@ -117,6 +126,7 @@ impl App {
         if msg.is_empty() {
             None
         } else {
+            self.radar_scroll = 0; // revient au bas pour suivre la réponse
             Some(msg)
         }
     }
@@ -242,6 +252,7 @@ impl App {
         self.started = 0;
         self.done = 0;
         self.phase = Phase::Running;
+        self.radar_scroll = 0;
     }
 
     /// Intègre un événement du runtime dans l'état (compteurs + historique borné).
@@ -316,6 +327,18 @@ mod tests {
         let mut app = App::new(None);
         app.docs_move(5); // liste vide → reste à 0
         assert_eq!(app.doc_sel, 0);
+    }
+
+    #[test]
+    fn radar_scroll_clamps_at_zero() {
+        let mut app = App::new(None);
+        app.radar_scroll_by(5);
+        assert_eq!(app.radar_scroll, 5);
+        app.radar_scroll_by(-100); // ne descend pas sous 0
+        assert_eq!(app.radar_scroll, 0);
+        app.radar_scroll_by(3);
+        app.begin_run(); // un nouveau lancement revient en bas
+        assert_eq!(app.radar_scroll, 0);
     }
 
     #[test]

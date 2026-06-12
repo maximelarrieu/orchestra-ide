@@ -170,6 +170,10 @@ async fn event_loop(
                                         }
                                     }
                                 }
+                                KeyCode::PageUp => app.radar_scroll_by(10),
+                                KeyCode::PageDown => app.radar_scroll_by(-10),
+                                KeyCode::Up => app.radar_scroll_by(3),
+                                KeyCode::Down => app.radar_scroll_by(-3),
                                 KeyCode::Backspace => app.chat_backspace(),
                                 KeyCode::Char(c) => app.chat_push(c),
                                 _ => {}
@@ -228,6 +232,10 @@ async fn event_loop(
                                 KeyCode::Char('2') => app.toggle_docs(),
                                 KeyCode::Char('3') => app.start_space_input(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
+                                KeyCode::PageUp => app.radar_scroll_by(10),
+                                KeyCode::PageDown => app.radar_scroll_by(-10),
+                                KeyCode::Up => app.radar_scroll_by(3),
+                                KeyCode::Down => app.radar_scroll_by(-3),
                                 _ => {}
                             }
                         }

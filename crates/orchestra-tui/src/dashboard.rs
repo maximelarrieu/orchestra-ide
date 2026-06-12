@@ -152,11 +152,10 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::bordered().title(" 🛰  ÉCRAN RADAR (FLUX D'ACTIVITÉ DES AGENTS) ");
-
-    let body = if app.events.is_empty() {
+    if app.events.is_empty() {
+        let block = Block::bordered().title(" 🛰  ÉCRAN RADAR (FLUX D'ACTIVITÉ DES AGENTS) ");
         let hint = match (app.can_launch(), app.phase) {
-            (true, Phase::Idle) => "  Prêt. Appuie sur [1] pour lancer l'orchestre.",
+            (true, Phase::Idle) => "  Prêt. [1] lancer l'orchestre · [5] converser.",
             (false, _) => "  Aucun agent dans cet espace (ou aucun espace chargé).",
             _ => "  En attente d'activité…",
         };
@@ -164,7 +163,6 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
             Line::raw(""),
             Line::from(Span::styled(hint, Style::new().dark_gray())),
         ];
-        // En mode simulé, rappeler comment activer un vrai LLM.
         if app.llm_model.is_none() {
             lines.push(Line::raw(""));
             lines.push(Line::from(Span::styled(
@@ -176,21 +174,31 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
                 Style::new().dark_gray(),
             )));
         }
-        Paragraph::new(lines)
-    } else {
-        // On déroule chaque événement en lignes (texte complet, retour à la ligne), puis on
-        // affiche les dernières qui tiennent dans la zone (auto-scroll vers le bas).
-        let inner_w = area.width.saturating_sub(2) as usize; // -2 : bordures
-        let visible = area.height.saturating_sub(2) as usize;
-        let mut rows: Vec<Line> = Vec::new();
-        for ev in &app.events {
-            event_rows(ev, inner_w, &mut rows);
-        }
-        let start = rows.len().saturating_sub(visible);
-        Paragraph::new(rows[start..].to_vec())
-    };
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
 
-    frame.render_widget(body.block(block), area);
+    // On déroule chaque événement en lignes (Markdown + retour à la ligne), puis on affiche
+    // une fenêtre : par défaut le bas (auto-scroll), ou plus haut si l'utilisateur a défilé.
+    let inner_w = area.width.saturating_sub(2) as usize; // -2 : bordures
+    let visible = area.height.saturating_sub(2) as usize;
+    let mut rows: Vec<Line> = Vec::new();
+    for ev in &app.events {
+        event_rows(ev, inner_w, &mut rows);
+    }
+    let total = rows.len();
+    let max_scroll = total.saturating_sub(visible);
+    let scroll = app.radar_scroll.min(max_scroll);
+    let end = total - scroll;
+    let start = end.saturating_sub(visible);
+
+    let title = if scroll > 0 {
+        " 🛰  RADAR — ↑ historique · PgDn pour revenir en bas ".to_string()
+    } else {
+        " 🛰  ÉCRAN RADAR (FLUX D'ACTIVITÉ DES AGENTS) ".to_string()
+    };
+    let block = Block::bordered().title(title);
+    frame.render_widget(Paragraph::new(rows[start..end].to_vec()).block(block), area);
 }
 
 /// Style du nom selon l'émetteur (utilisateur / coordinateur / agent).
@@ -219,24 +227,35 @@ fn event_rows(ev: &AgentEvent, width: usize, rows: &mut Vec<Line<'static>>) {
             let prefix = format!("{agent} : ");
             let indent = 2 + prefix.chars().count();
             let avail = width.saturating_sub(indent);
-            let wrapped = wrap_plain(msg, avail);
-            if wrapped.is_empty() {
+            // Le message est rendu en Markdown (titres, listes, citations, code) puis chaque
+            // bloc est replié à la largeur disponible.
+            let mut first = true;
+            for (style, text) in markdown::styled_blocks(msg) {
+                let mut wrapped = wrap_plain(&text, avail);
+                if wrapped.is_empty() {
+                    wrapped.push(String::new());
+                }
+                for chunk in wrapped {
+                    if first {
+                        rows.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(prefix.clone(), speaker_style(agent)),
+                            Span::styled(chunk, style),
+                        ]));
+                        first = false;
+                    } else {
+                        rows.push(Line::from(vec![
+                            Span::raw(" ".repeat(indent)),
+                            Span::styled(chunk, style),
+                        ]));
+                    }
+                }
+            }
+            if first {
                 rows.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(prefix, speaker_style(agent)),
                 ]));
-                return;
-            }
-            for (i, chunk) in wrapped.into_iter().enumerate() {
-                if i == 0 {
-                    rows.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(prefix.clone(), speaker_style(agent)),
-                        Span::raw(chunk),
-                    ]));
-                } else {
-                    rows.push(Line::from(vec![Span::raw(" ".repeat(indent)), Span::raw(chunk)]));
-                }
             }
         }
     }

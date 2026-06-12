@@ -172,6 +172,11 @@ quitte la conversation.
    → tu réponds → … (conversation continue)
 ```
 
+Le radar **rend le Markdown** des réponses (titres, listes, citations, blocs de code) et se
+**défile** : `PgUp`/`PgDn` (ou `↑`/`↓`) pour remonter dans l'historique de la conversation,
+retour automatique en bas à chaque nouveau message. Les interlocuteurs sont colorés : 🟢
+**Vous**, 🟣 **Coordinateur**, 🔵 **agents**.
+
 Dans le navigateur `[2]` : `↑↓` choisir, `Entrée` ouvrir un document dans le visualiseur
 (Markdown rendu : titres, listes, citations, blocs de code, gras/`code`), `↑↓` y défiler,
 `Échap` revenir. Sur le persona, `e` ouvre directement l'éditeur. **Tout reste dans l'outil :**

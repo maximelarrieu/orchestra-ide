@@ -158,6 +158,15 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   (`emit_log` conserve le multi-ligne ; rendu via `wrap_plain`), et colore distinctement
   « Vous » (vert) / « Coordinateur » (magenta) / agents (cyan).
 
+## Radar : défilement + rendu Markdown (post-Phase 5) ✅
+
+- **Défilement du radar** : `PgUp`/`PgDn` (et `↑`/`↓`) remontent dans l'historique
+  (`App::radar_scroll`), retour automatique en bas à chaque nouveau message ; titre du radar
+  qui indique le défilement.
+- **Rendu Markdown dans la conversation** : les messages sont stylés bloc par bloc
+  (`markdown::styled_blocks` — titres, listes, citations, code) puis repliés à la largeur
+  (`wrap_plain`). Le visualiseur plein écran `[2]` conserve en plus le style en ligne.
+
 ## Améliorations UX (post-Phase 5) ✅
 
 - `orchestra init` (Dev) : le **workspace est résolu en chemin absolu** (fini la fragilité
