@@ -11,9 +11,9 @@ portage Tauri + React prévu — d'où le **découplage strict** logique métier
 ```
 crates/
 ├─ orchestra-core/   # domaine pur — AUCUNE dépendance UI
-│  └─ src/{error,events,scaffold,model/{project_type,config,space,skill_id}}.rs
+│  └─ src/{error,events,runtime,scaffold,model/{project_type,config,space,skill_id}}.rs
 └─ orchestra-tui/    # frontend ratatui + CLI — consomme orchestra-core
-   └─ src/{main,dashboard,wizard}.rs
+   └─ src/{main,app,dashboard,wizard}.rs
 ```
 
 ## Phase 1 — Modèle + dashboard ✅
@@ -45,8 +45,24 @@ La logique d'écriture vit dans `orchestra-core::scaffold` (pure, testée) ; les
 terminal restent dans `orchestra-tui::wizard` — découplage métier/affichage respecté.
 Un espace déjà initialisé n'est jamais écrasé (`SpaceAlreadyExists`).
 
+## Phase 3 — Runtime d'agents, radar vivant ✅
+
+Le radar n'est plus une coquille. `orchestra-core::runtime::spawn` lance chaque agent de
+l'espace comme une tâche `tokio` qui publie des `AgentEvent` sur un canal
+`tokio::sync::mpsc` ; le TUI les consomme en direct.
+
+```bash
+cargo run -p orchestra-tui -- examples/recherche-immo-aix
+# Dans le dashboard : [1] lance l'orchestre → le radar défile en temps réel.  [q] quitte.
+```
+
+Boucle async multiplexée par `tokio::select!` (clavier via `EventStream` + flux d'agents +
+tick de rafraîchissement). **Toujours sans LLM** : les agents sont *simulés* (flux
+d'activité crédible et étalé dans le temps) — le vrai modèle arrive en Phase 4, sans
+changer la signature de `runtime::spawn`. L'agrégation du flux (`orchestra-tui::app::App`)
+est isolée du rendu et testée.
+
 ## Phases suivantes
 
-3. Runtime d'agents + flux temps réel (`tokio::sync::mpsc`) → radar vivant.
 4. Intégration LLM + Skills écosystème Dev (Git / Jira / GitHub).
 5. Agent Documentaliste (Doc_Auto_Update, Mermaid) + finitions.

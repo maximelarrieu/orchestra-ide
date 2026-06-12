@@ -12,3 +12,6 @@ path = "src/main.rs"
 [dependencies]
 orchestra-core = { path = "../orchestra-core" }
 ratatui = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = { workspace = true }
+crossterm = { workspace = true, features = ["event-stream"] }

@@ -2,21 +2,30 @@
 //!
 //! Deux modes :
 //! - `orchestra init [chemin]` → assistant de scaffolding (Phase 2, voir [`wizard`]) ;
-//! - `orchestra [chemin]`      → tableau de bord TUI (Phase 1, voir [`dashboard`]).
+//! - `orchestra [chemin]`      → tableau de bord TUI (radar vivant depuis la Phase 3).
 //!
-//! Le dashboard reste une coquille (radar vide) tant que le runtime d'agents (Phase 3)
-//! n'est pas branché.
+//! La boucle du dashboard est asynchrone : elle multiplexe (`tokio::select!`) l'entrée
+//! clavier, le flux d'événements des agents et un tick de rafraîchissement.
 
+mod app;
 mod dashboard;
 mod wizard;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use futures::StreamExt;
+use orchestra_core::events::AgentEvent;
 use orchestra_core::model::ContextSpace;
-use ratatui::crossterm::event::{self, Event, KeyCode};
+use orchestra_core::runtime;
+use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
 use ratatui::DefaultTerminal;
+use tokio::sync::mpsc::UnboundedReceiver;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+use crate::app::App;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     match args.first().map(String::as_str) {
@@ -37,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             // Mode dashboard : 1er argument = espace à ouvrir, sinon répertoire courant.
             let root = args.first().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-            run_dashboard(&root)
+            run_dashboard(&root).await
         }
     }
 }
@@ -50,28 +59,69 @@ fn print_usage() {
     println!("  orchestra --help          Affiche cette aide");
 }
 
-fn run_dashboard(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_dashboard(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // On tolère l'absence d'espace : le dashboard s'affiche quand même (état « vide »).
-    let space = ContextSpace::load(root).ok();
+    let mut app = App::new(ContextSpace::load(root).ok());
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, space);
+    let result = event_loop(&mut terminal, &mut app).await;
     ratatui::restore();
     result
 }
 
-fn run(
+/// Boucle d'affichage : dessine, puis attend le premier des trois flux (clavier / agents
+/// / tick). `rx` est le canal du runtime, présent uniquement entre le lancement de
+/// l'orchestre et la fin de tous les agents.
+async fn event_loop(
     terminal: &mut DefaultTerminal,
-    space: Option<ContextSpace>,
+    app: &mut App,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    loop {
-        terminal.draw(|frame| dashboard::render(frame, space.as_ref()))?;
+    let mut input = EventStream::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
 
-        if let Event::Key(key) = event::read()? {
-            if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-                break;
+    loop {
+        terminal.draw(|frame| dashboard::render(frame, app))?;
+
+        tokio::select! {
+            maybe_input = input.next() => {
+                match maybe_input {
+                    Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => break,
+                            KeyCode::Char('1') if app.can_launch() => {
+                                app.begin_run();
+                                rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(Ok(_)) => {}                 // resize & co. : redraw au prochain tour
+                    Some(Err(e)) => return Err(e.into()),
+                    None => break,                    // stdin fermé
+                }
             }
+            ev = recv_optional(rx.as_mut()) => {
+                match ev {
+                    Some(ev) => app.on_event(ev),
+                    None => {
+                        // Canal fermé : tous les agents ont terminé.
+                        app.mark_finished();
+                        rx = None;
+                    }
+                }
+            }
+            _ = tick.tick() => {}                     // rafraîchissement périodique
         }
     }
     Ok(())
+}
+
+/// Attend le prochain événement du runtime si un canal est ouvert ; sinon ne se résout
+/// jamais (branche `select!` neutralisée tant que l'orchestre n'est pas lancé).
+async fn recv_optional(rx: Option<&mut UnboundedReceiver<AgentEvent>>) -> Option<AgentEvent> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
 }

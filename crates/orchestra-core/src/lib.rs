@@ -8,6 +8,7 @@
 pub mod error;
 pub mod events;
 pub mod model;
+pub mod runtime;
 pub mod scaffold;
 
 pub use error::OrchestraError;
