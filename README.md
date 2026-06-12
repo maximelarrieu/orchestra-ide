@@ -149,8 +149,8 @@ validé). Outils et prompt dédiés, indépendants de la liste de Skills du proj
 
 | Touche | Action |
 |---|---|
-| `[1]` | Lancer l'orchestre (exécution autonome : chaque agent travaille une fois) |
-| `[5]` | **Converser** avec le chef d'orchestre (conversation persistante, voir ci-dessous) |
+| `[1]` | **Lancer une intention** : tu saisis un objectif → le coordinateur l'exécute en autonomie (one-shot) et rend un compte-rendu, sans dialogue |
+| `[5]` | **Converser** avec le chef d'orchestre (dialogue continu, voir ci-dessous) |
 | `[2]` | **Navigateur de documents** de l'espace (persona, ADRs, docs Markdown) avec **visualiseur Markdown** intégré |
 | `[3]` | **Changer d'Espace** (saisie d'un chemin, `Entrée` charge / `Échap` annule) |
 | `[4]` | **Éditer le persona** dans l'interface (`Ctrl+S` enregistre, `Échap` annule) |

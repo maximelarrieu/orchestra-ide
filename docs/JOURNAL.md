@@ -175,6 +175,15 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   *keyboard enhancement flags* (crossterm) pour distinguer Maj+Entrée sur les terminaux
   compatibles.
 
+## `[1]` repurposé en « Lancer une intention » (post-Phase 5) ✅
+
+- `[1]` ne lance plus une rafale autonome générique : il **saisit un objectif** puis
+  l'exécute **en one-shot** via le coordinateur (envoi d'un seul message dans une
+  `ChatHandle`, puis fermeture immédiate du canal → la tâche se termine et rend un
+  compte-rendu). Identité claire : `[1]` = tâche autonome, `[5]` = conversation.
+  `runtime::spawn` (rafale parallèle) reste disponible côté bibliothèque mais n'est plus
+  câblé à l'UI.
+
 ## Améliorations UX (post-Phase 5) ✅
 
 - `orchestra init` (Dev) : le **workspace est résolu en chemin absolu** (fini la fragilité

@@ -165,7 +165,7 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
     if app.events.is_empty() {
         let block = Block::bordered().title(" 🛰  ÉCRAN RADAR (FLUX D'ACTIVITÉ DES AGENTS) ");
         let hint = match (app.can_launch(), app.phase) {
-            (true, Phase::Idle) => "  Prêt. [1] lancer l'orchestre · [5] converser.",
+            (true, Phase::Idle) => "  Prêt. [1] lancer une intention · [5] converser.",
             (false, _) => "  Aucun agent dans cet espace (ou aucun espace chargé).",
             _ => "  En attente d'activité…",
         };
@@ -361,6 +361,13 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().dark_gray(),
         )));
         lines
+    } else if let Some(buf) = &app.intention {
+        vec![Line::from(vec![
+            Span::styled("🎯 Intention : ", Style::new().bold()),
+            Span::raw(buf.clone()),
+            Span::styled("▏", Style::new().cyan()),
+            Span::styled("   (Entrée = lancer · Échap = annuler)", Style::new().dark_gray()),
+        ])]
     } else if let Some(buf) = &app.input {
         vec![Line::from(vec![
             Span::styled("Chemin de l'espace : ", Style::new().bold()),
@@ -372,7 +379,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         vec![Line::from(Span::styled(notice.clone(), Style::new().yellow()))]
     } else {
         vec![Line::from(
-            "[1] Lancer  [5] Converser  [2] Documents  [3] Espace  [4] Persona  [q] Quitter",
+            "[1] Intention  [5] Converser  [2] Documents  [3] Espace  [4] Persona  [q] Quitter",
         )]
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);

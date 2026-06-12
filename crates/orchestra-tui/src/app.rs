@@ -55,6 +55,8 @@ pub struct App {
     pub view: View,
     /// Saisie en cours d'un chemin d'espace (`Some(tampon)`), ou `None` hors saisie.
     pub input: Option<String>,
+    /// Saisie en cours d'une intention pour `[1]` (`Some(tampon)`), ou `None`.
+    pub intention: Option<String>,
     /// Éditeur de persona ouvert (`Some`) ou fermé (`None`).
     pub editor: Option<Editor>,
     /// Documents de l'espace (rafraîchis à l'ouverture du navigateur).
@@ -91,6 +93,7 @@ impl App {
             llm_model: orchestra_core::llm::LlmClient::from_env().map(|c| c.model().to_string()),
             view: View::Radar,
             input: None,
+            intention: None,
             editor: None,
             docs: Vec::new(),
             doc_sel: 0,
@@ -256,6 +259,33 @@ impl App {
     /// Termine la saisie et renvoie le chemin saisi (vidé si vide).
     pub fn take_input(&mut self) -> Option<String> {
         self.input.take().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+
+    /// `[1]` — entre en saisie d'une intention (objectif à exécuter en autonomie).
+    pub fn start_intention(&mut self) {
+        self.intention = Some(String::new());
+        self.notice = None;
+    }
+
+    pub fn intention_push(&mut self, c: char) {
+        if let Some(buf) = self.intention.as_mut() {
+            buf.push(c);
+        }
+    }
+
+    pub fn intention_backspace(&mut self) {
+        if let Some(buf) = self.intention.as_mut() {
+            buf.pop();
+        }
+    }
+
+    pub fn cancel_intention(&mut self) {
+        self.intention = None;
+    }
+
+    /// Termine la saisie d'intention et renvoie l'objectif (vidé si vide).
+    pub fn take_intention(&mut self) -> Option<String> {
+        self.intention.take().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
 
     /// Vrai si un Espace valide est chargé : sans lui, pas d'agents à lancer.
@@ -431,6 +461,18 @@ mod tests {
         assert_eq!(app.input.as_deref(), Some("ac"));
         assert_eq!(app.take_input().as_deref(), Some("ac"));
         assert!(app.input.is_none(), "la saisie est consommée");
+    }
+
+    #[test]
+    fn intention_input_edit_and_take() {
+        let mut app = App::new(None);
+        app.start_intention();
+        app.intention_push('g');
+        app.intention_push('o');
+        app.intention_backspace();
+        app.intention_push('o');
+        assert_eq!(app.take_intention().as_deref(), Some("go"));
+        assert!(app.intention.is_none(), "la saisie est consommée");
     }
 
     #[test]

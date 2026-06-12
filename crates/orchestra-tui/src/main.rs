@@ -196,6 +196,24 @@ async fn event_loop(
                                 KeyCode::Char(c) => app.chat_push(c),
                                 _ => {}
                             }
+                        } else if app.intention.is_some() {
+                            // Saisie d'une intention : exécution one-shot par le coordinateur.
+                            match key.code {
+                                KeyCode::Esc => app.cancel_intention(),
+                                KeyCode::Enter => {
+                                    if let Some(goal) = app.take_intention() {
+                                        app.notice = None;
+                                        app.begin_run();
+                                        let handle =
+                                            runtime::start_conversation(app.space.as_ref().unwrap());
+                                        let _ = handle.user.send(goal); // une seule intention…
+                                        rx = Some(handle.events); // …puis `user` est lâché → one-shot
+                                    }
+                                }
+                                KeyCode::Backspace => app.intention_backspace(),
+                                KeyCode::Char(c) => app.intention_push(c),
+                                _ => {}
+                            }
                         } else if app.input.is_some() {
                             // Mode saisie d'un chemin d'espace : les touches alimentent le tampon.
                             match key.code {
@@ -224,13 +242,11 @@ async fn event_loop(
                                     if app.persona_incomplete() && app.llm_model.is_some() {
                                         // Évite un appel LLM voué à l'échec faute de contexte.
                                         app.notice = Some(
-                                            "⚠ Persona incomplet (« à compléter ») — édite .orchestra/persona.md puis relance [1]."
+                                            "⚠ Persona incomplet (« à compléter ») — édite-le ([4]) puis relance [1]."
                                                 .to_string(),
                                         );
                                     } else {
-                                        app.notice = None;
-                                        app.begin_run();
-                                        rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
+                                        app.start_intention(); // saisie de l'objectif à exécuter
                                     }
                                 }
                                 KeyCode::Char('5') if app.space.is_some() => {
