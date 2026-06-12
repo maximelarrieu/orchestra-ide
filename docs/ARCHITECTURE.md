@@ -210,6 +210,23 @@ Le runtime fusionne `skills::dev_tool_definitions` et `integrations::tool_defini
 dispatche chaque appel d'outil via `integrations::handles(name)`. Token GitHub lu depuis
 l'environnement (jamais en dur) ; seul son **nom de variable** est persisté dans la config.
 
+### Agent Documentaliste (Phase 5)
+
+Si `config.documentalist_enabled` est vrai, le runtime ajoute au roster un **Agent
+Documentaliste** (en plus de `config.agents`). Il reçoit un prompt orienté documentation et
+un jeu d'outils dédié (`skills::documentalist_tool_definitions` : `Read_File`,
+`Write_File_Validated`, `Write_Mermaid_Diagram`) — indépendant de la liste de Skills du
+projet. `Write_Mermaid_Diagram` écrit un `.md` contenant un bloc ` ```mermaid ` après
+validation du type de diagramme.
+
+### Finitions du dashboard (Phase 5)
+
+`App` porte une `View` (`Radar`/`Adrs`), un mode de saisie (`input: Option<String>`) et un
+message transitoire (`notice`). La boucle clavier route les touches vers le tampon de
+saisie quand il est actif, sinon vers les commandes : `[2]` bascule la vue ADRs, `[3]` ouvre
+la saisie d'un chemin d'espace (chargement via `ContextSpace::load` à l'`Entrée`, ce qui
+réinitialise l'`App` et stoppe l'orchestre courant).
+
 ### Flux d'un lancement (touche `[1]`)
 
 ```mermaid

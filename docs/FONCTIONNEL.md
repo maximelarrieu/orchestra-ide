@@ -81,8 +81,8 @@ Le tableau de bord (TUI) s'ouvre en 3 zones :
 | Touche | Action | État |
 |---|---|---|
 | `[1]` | Lancer l'orchestre → le radar défile en temps réel | ✅ actif |
-| `[2]` | Voir les ADRs | ⏳ à venir |
-| `[3]` | Changer d'Espace | ⏳ à venir |
+| `[2]` | Basculer radar ↔ liste des ADRs de l'espace | ✅ actif (5) |
+| `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
 | `q` / `Échap` | Quitter | ✅ actif |
 
 Quand l'orchestre tourne, l'en-tête indique `▶ N agent(s) en cours`, le radar liste les
@@ -102,8 +102,8 @@ démarrages, les logs et les fins d'agents, puis bascule en `✓ terminé`.
 | Intégration Git (statut, diff, branche, commit) | ✅ si configuré | 4b |
 | Intégration GitHub (issues, commentaire, PR) | ✅ si configuré + token | 4b |
 | Intégration Jira | ❌ | 4c |
-| Consultation des ADRs / changement d'Espace dans l'UI | ❌ | 5 |
-| Agent Documentaliste (doc auto, Mermaid) | ❌ | 5 |
+| Consultation des ADRs / changement d'Espace dans l'UI (`[2]`/`[3]`) | ✅ | 5 |
+| Agent Documentaliste (doc auto, Mermaid) | ✅ si activé | 5 |
 
 ### Activer le LLM — Claude ou Gemini, au choix
 

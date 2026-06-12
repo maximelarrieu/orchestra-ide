@@ -11,8 +11,8 @@ Plan global en 5 phases :
 3. Runtime d'agents + flux temps réel → radar vivant ✅
 4a. Intégration LLM (Claude **ou** Gemini) + Skills Dev exécutables (tool use) ✅
 4b. Intégrations Git (local) + GitHub (REST) ✅
-4c. Intégration Jira ⏳
-5. Agent Documentaliste (Doc_Auto_Update, Mermaid) + finitions ⏳
+4c. Intégration Jira ⏳ (optionnel)
+5. Agent Documentaliste (Mermaid) + finitions ✅
 
 ---
 
@@ -118,7 +118,36 @@ boucle LLM nécessite une clé API (testée en local).
 (`status`, création de branche), exposition conditionnelle des Skills, validation de nom de
 branche ; `clippy` sans warning. GitHub REST testé en local (token requis).
 
-## Phase 4c — Intégration Jira ⏳ (à venir)
+## Phase 5 — Agent Documentaliste + finitions ✅
+
+**Livré**
+- Agent Documentaliste : activé par `documentalist_enabled`, rejoint l'orchestre avec un
+  prompt et un jeu d'outils dédiés (`Read_File`, `Write_File_Validated`,
+  `Write_Mermaid_Diagram`), indépendants de la liste de Skills du projet.
+- `skills::Write_Mermaid_Diagram` : écrit un `.md` avec un bloc ` ```mermaid ` ; type de
+  diagramme validé (graph/sequenceDiagram/classDiagram…), confiné au workspace.
+- Finitions dashboard : `[2]` bascule radar ↔ liste des ADRs ; `[3]` change d'Espace via
+  une saisie de chemin (chargement à l'`Entrée`, annulation à `Échap`, message de
+  succès/erreur).
+
+**Limites connues**
+- Pas de human-in-the-loop sur les actions des agents (autorisation par la config).
+- L'assistant `init` ne propose toujours pas les intégrations ni le Documentaliste.
+
+**Tests** : 27 verts (`cargo test --workspace`) — dont Skill Mermaid (validation + écriture),
+Documentaliste ajouté quand activé, bascule de vue ADRs, édition/consommation de la saisie,
+rendus headless (ADRs + mode saisie). `clippy` sans warning.
+
+## Améliorations UX (post-Phase 5) ✅
+
+- `orchestra init` (Dev) : le **workspace est résolu en chemin absolu** (fini la fragilité
+  du `.` selon le répertoire de lancement), et l'assistant **propose de configurer Git et
+  GitHub** (token jamais saisi — seul le nom de variable est enregistré). `InitOptions`
+  porte désormais les intégrations.
+- Dashboard : au lancement `[1]`, si le persona contient encore des « à compléter » **et**
+  qu'un LLM est actif, un avertissement s'affiche au lieu d'un appel LLM voué à l'échec.
+
+## Phase 4c — Intégration Jira ⏳ (optionnelle, à venir)
 
 **Visé**
 - Même schéma que GitHub : Skills Jira (créer / transitionner un ticket) exposés si

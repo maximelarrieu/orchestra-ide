@@ -87,13 +87,47 @@ async fn event_loop(
             maybe_input = input.next() => {
                 match maybe_input {
                     Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
-                        match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => break,
-                            KeyCode::Char('1') if app.can_launch() => {
-                                app.begin_run();
-                                rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
+                        if app.input.is_some() {
+                            // Mode saisie d'un chemin d'espace : les touches alimentent le tampon.
+                            match key.code {
+                                KeyCode::Esc => app.cancel_input(),
+                                KeyCode::Backspace => app.input_backspace(),
+                                KeyCode::Enter => {
+                                    if let Some(path) = app.take_input() {
+                                        match ContextSpace::load(Path::new(&path)) {
+                                            Ok(space) => {
+                                                let name = space.config.project_name.clone();
+                                                *app = App::new(Some(space));
+                                                app.notice = Some(format!("Espace chargé : {name}"));
+                                                rx = None; // stoppe l'orchestre précédent
+                                            }
+                                            Err(e) => app.notice = Some(format!("Échec du chargement : {e}")),
+                                        }
+                                    }
+                                }
+                                KeyCode::Char(c) => app.input_push(c),
+                                _ => {}
                             }
-                            _ => {}
+                        } else {
+                            match key.code {
+                                KeyCode::Char('q') | KeyCode::Esc => break,
+                                KeyCode::Char('1') if app.can_launch() => {
+                                    if app.persona_incomplete() && app.llm_model.is_some() {
+                                        // Évite un appel LLM voué à l'échec faute de contexte.
+                                        app.notice = Some(
+                                            "⚠ Persona incomplet (« à compléter ») — édite .orchestra/persona.md puis relance [1]."
+                                                .to_string(),
+                                        );
+                                    } else {
+                                        app.notice = None;
+                                        app.begin_run();
+                                        rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
+                                    }
+                                }
+                                KeyCode::Char('2') => app.toggle_adrs(),
+                                KeyCode::Char('3') => app.start_space_input(),
+                                _ => {}
+                            }
                         }
                     }
                     Some(Ok(_)) => {}                 // resize & co. : redraw au prochain tour

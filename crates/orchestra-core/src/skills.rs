@@ -23,6 +23,14 @@ use crate::llm::ToolSpec;
 pub const READ_FILE: &str = "Read_File";
 pub const WRITE_FILE: &str = "Write_File_Validated";
 pub const EXEC_COMMAND: &str = "Execute_Terminal_Command";
+/// Skill de l'Agent Documentaliste (Phase 5) : écrit un diagramme Mermaid.
+pub const WRITE_MERMAID: &str = "Write_Mermaid_Diagram";
+
+/// Types de diagrammes Mermaid reconnus (préfixe de la 1re ligne).
+const MERMAID_KINDS: &[&str] = &[
+    "graph", "flowchart", "sequenceDiagram", "classDiagram", "stateDiagram",
+    "erDiagram", "gantt", "pie", "journey", "mindmap", "timeline", "gitGraph",
+];
 
 const MAX_OUTPUT: usize = 12_000; // plafond de caractères renvoyés au modèle
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -47,6 +55,15 @@ impl SkillOutcome {
 /// réellement actionner. Chaque provider (Claude/Gemini) rend ces specs dans son format.
 pub fn dev_tool_definitions(enabled: &[String]) -> Vec<ToolSpec> {
     enabled
+        .iter()
+        .filter_map(|id| tool_definition(id))
+        .collect()
+}
+
+/// Jeu d'outils de l'Agent Documentaliste (Phase 5) : lecture/écriture de fichiers et
+/// génération de diagrammes Mermaid — indépendant de la liste de Skills du projet.
+pub fn documentalist_tool_definitions() -> Vec<ToolSpec> {
+    [READ_FILE, WRITE_FILE, WRITE_MERMAID]
         .iter()
         .filter_map(|id| tool_definition(id))
         .collect()
@@ -89,6 +106,19 @@ fn tool_definition(id: &str) -> Option<ToolSpec> {
                 "required": ["command"]
             }),
         )),
+        WRITE_MERMAID => Some(spec(
+            WRITE_MERMAID,
+            "Écrit un fichier Markdown contenant un diagramme Mermaid (titre + bloc ```mermaid```).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Chemin relatif du fichier .md" },
+                    "title": { "type": "string", "description": "Titre du diagramme (optionnel)" },
+                    "diagram": { "type": "string", "description": "Source Mermaid (ex. débute par 'graph TD' ou 'sequenceDiagram')" }
+                },
+                "required": ["path", "diagram"]
+            }),
+        )),
         _ => None,
     }
 }
@@ -99,7 +129,8 @@ pub async fn execute_skill(name: &str, input: &Value, workspace: &Path) -> Skill
         READ_FILE => read_file(input, workspace),
         WRITE_FILE => write_file(input, workspace),
         EXEC_COMMAND => exec_command(input, workspace).await,
-        other => SkillOutcome::err(format!("Skill « {other} » non exécutable à ce stade (Phase 4a).")),
+        WRITE_MERMAID => write_mermaid(input, workspace),
+        other => SkillOutcome::err(format!("Skill « {other} » non exécutable à ce stade.")),
     }
 }
 
@@ -137,6 +168,42 @@ fn write_file(input: &Value, workspace: &Path) -> SkillOutcome {
         Ok(()) => SkillOutcome::ok(format!("écrit {} octets dans {rel}", content.len())),
         Err(e) => SkillOutcome::err(format!("écriture impossible ({rel}) : {e}")),
     }
+}
+
+fn write_mermaid(input: &Value, workspace: &Path) -> SkillOutcome {
+    let Some(rel) = input.get("path").and_then(Value::as_str) else {
+        return SkillOutcome::err("paramètre `path` manquant.");
+    };
+    let Some(diagram) = input.get("diagram").and_then(Value::as_str) else {
+        return SkillOutcome::err("paramètre `diagram` manquant.");
+    };
+    let diagram = diagram.trim();
+    if !is_known_mermaid(diagram) {
+        return SkillOutcome::err(
+            "diagramme Mermaid non reconnu (doit débuter par graph/flowchart/sequenceDiagram/classDiagram…).",
+        );
+    }
+    let title = input.get("title").and_then(Value::as_str).unwrap_or("Diagramme");
+    let path = match safe_join(workspace, rel) {
+        Ok(p) => p,
+        Err(e) => return SkillOutcome::err(e),
+    };
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return SkillOutcome::err(format!("création du dossier impossible : {e}"));
+        }
+    }
+    let content = format!("# {title}\n\n```mermaid\n{diagram}\n```\n");
+    match std::fs::write(&path, content) {
+        Ok(()) => SkillOutcome::ok(format!("diagramme Mermaid écrit dans {rel}")),
+        Err(e) => SkillOutcome::err(format!("écriture impossible ({rel}) : {e}")),
+    }
+}
+
+/// Vrai si la source Mermaid débute par un type de diagramme reconnu.
+fn is_known_mermaid(diagram: &str) -> bool {
+    let first = diagram.lines().next().unwrap_or("").trim();
+    MERMAID_KINDS.iter().any(|k| first.starts_with(k))
 }
 
 async fn exec_command(input: &Value, workspace: &Path) -> SkillOutcome {
@@ -230,6 +297,26 @@ mod tests {
         let r = read_file(&json!({"path": "notes/a.txt"}), &ws);
         assert!(!r.is_error);
         assert_eq!(r.text, "bonjour");
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn write_mermaid_validates_and_writes() {
+        let ws = std::env::temp_dir().join(format!("orch-mmd-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let bad = write_mermaid(&json!({ "path": "d.md", "diagram": "blobfoo x" }), &ws);
+        assert!(bad.is_error, "type inconnu doit être rejeté");
+
+        let ok = write_mermaid(
+            &json!({ "path": "docs/d.md", "title": "Flux", "diagram": "graph TD\n  A-->B" }),
+            &ws,
+        );
+        assert!(!ok.is_error, "{}", ok.text);
+        let written = std::fs::read_to_string(ws.join("docs/d.md")).unwrap();
+        assert!(written.contains("```mermaid"));
+        assert!(written.contains("A-->B"));
 
         let _ = std::fs::remove_dir_all(&ws);
     }

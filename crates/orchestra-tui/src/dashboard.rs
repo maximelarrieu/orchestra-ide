@@ -11,19 +11,22 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, Phase};
+use crate::app::{App, Phase, View};
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let [header, radar, menu] = Layout::vertical([
+    let [header, center, menu] = Layout::vertical([
         Constraint::Length(3), // en-tête
-        Constraint::Min(8),    // écran radar
+        Constraint::Min(8),    // zone centrale (radar / ADRs)
         Constraint::Length(4), // menu
     ])
     .areas(frame.area());
 
     render_header(frame, header, app);
-    render_radar(frame, radar, app);
-    render_menu(frame, menu);
+    match app.view {
+        View::Radar => render_radar(frame, center, app),
+        View::Adrs => render_adrs(frame, center, app),
+    }
+    render_menu(frame, menu, app);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
@@ -122,12 +125,52 @@ fn event_line(ev: &AgentEvent) -> Line<'static> {
     }
 }
 
-fn render_menu(frame: &mut Frame, area: Rect) {
+/// Vue ADRs : liste des Architecture Decision Records de l'espace chargé.
+fn render_adrs(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 📐 ADRs (DÉCISIONS D'ARCHITECTURE) ");
+    let lines: Vec<Line> = match &app.space {
+        Some(s) if !s.adrs.is_empty() => s
+            .adrs
+            .iter()
+            .map(|adr| {
+                Line::from(vec![
+                    Span::styled("  • ", Style::new().cyan()),
+                    Span::raw(adr.title.clone()),
+                ])
+            })
+            .collect(),
+        Some(_) => vec![Line::from(Span::styled(
+            "  Aucun ADR dans cet espace (dossier .orchestra/adr/ vide).",
+            Style::new().dark_gray(),
+        ))],
+        None => vec![Line::from(Span::styled(
+            "  Aucun espace chargé.",
+            Style::new().dark_gray(),
+        ))],
+    };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" 📋 OPTIONS & MENUS ");
-    let line = Line::from(
-        "[1] Lancer l'orchestre   [2] Voir les ADRs   [3] Changer d'Espace   [q] Quitter",
-    );
-    frame.render_widget(Paragraph::new(line).block(block), area);
+
+    // En saisie de chemin d'espace, l'invite remplace le menu.
+    let content = if let Some(buf) = &app.input {
+        Line::from(vec![
+            Span::styled("Chemin de l'espace : ", Style::new().bold()),
+            Span::raw(buf.clone()),
+            Span::styled("▏", Style::new().cyan()),
+            Span::styled("   (Entrée = charger · Échap = annuler)", Style::new().dark_gray()),
+        ])
+    } else if let Some(notice) = &app.notice {
+        Line::from(Span::styled(notice.clone(), Style::new().yellow()))
+    } else {
+        let adrs = if app.view == View::Adrs { "[2] Retour radar" } else { "[2] Voir les ADRs" };
+        Line::from(format!(
+            "[1] Lancer l'orchestre   {adrs}   [3] Changer d'Espace   [q] Quitter"
+        ))
+    };
+    frame.render_widget(Paragraph::new(content).block(block), area);
 }
 
 #[cfg(test)]
@@ -174,5 +217,20 @@ mod tests {
         render_at(80, 24);
         render_at(40, 12);
         render_at(20, 6); // radar quasi inexistant
+    }
+
+    /// La vue ADRs et le mode saisie (finitions Phase 5) doivent aussi se rendre sans panique.
+    #[test]
+    fn renders_adrs_view_and_input_mode() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        let mut app = demo_app();
+        app.toggle_adrs(); // vue ADRs
+        terminal.draw(|f| render(f, &app)).unwrap();
+
+        app.toggle_adrs(); // retour radar
+        app.start_space_input(); // invite de saisie dans le menu
+        app.input_push('x');
+        terminal.draw(|f| render(f, &app)).unwrap();
     }
 }

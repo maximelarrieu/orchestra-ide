@@ -70,11 +70,18 @@ fn spawn_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>) -> Unbounde
     let (tx, rx) = mpsc::unbounded_channel();
     let ctx = AgentContext::from_space(space);
 
-    for (idx, agent) in space.config.agents.iter().cloned().enumerate() {
+    // Roster : agents de l'espace + l'Agent Documentaliste si activé (Phase 5).
+    let mut roster: Vec<(String, bool)> =
+        space.config.agents.iter().cloned().map(|a| (a, false)).collect();
+    if space.config.documentalist_enabled {
+        roster.push(("Agent_Documentaliste".to_string(), true));
+    }
+
+    for (idx, (agent, is_doc)) in roster.into_iter().enumerate() {
         let tx = tx.clone();
         let ctx = ctx.clone();
         let client = client.clone();
-        tokio::spawn(run_agent(agent, idx, ctx, client, tx));
+        tokio::spawn(run_agent(agent, idx, is_doc, ctx, client, tx));
     }
     rx
 }
@@ -83,6 +90,7 @@ fn spawn_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>) -> Unbounde
 async fn run_agent(
     agent: String,
     idx: usize,
+    documentalist: bool,
     ctx: AgentContext,
     client: Option<Arc<LlmClient>>,
     tx: UnboundedSender<AgentEvent>,
@@ -92,7 +100,7 @@ async fn run_agent(
     let _ = tx.send(AgentEvent::Started { agent: agent.clone() });
 
     let handled = match &client {
-        Some(c) => match llm_agent_loop(c, &agent, &ctx, &tx).await {
+        Some(c) => match llm_agent_loop(c, &agent, documentalist, &ctx, &tx).await {
             Ok(()) => true,
             Err(e) => {
                 // Repli : l'API a échoué (réseau, quota…) → flux simulé pour ne pas figer.
@@ -119,17 +127,27 @@ async fn run_agent(
 async fn llm_agent_loop(
     client: &LlmClient,
     agent: &str,
+    documentalist: bool,
     ctx: &AgentContext,
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<(), crate::llm::LlmError> {
-    let system = build_system_prompt(agent, ctx);
-    let mut tools = skills::dev_tool_definitions(&ctx.skills);
-    tools.extend(integrations::tool_definitions(&ctx.integ)); // Git/GitHub si configurés
-    let mut conv: Vec<Msg> = vec![Msg::User(
+    let system = build_system_prompt(agent, documentalist, ctx);
+    let tools = if documentalist {
+        // Le Documentaliste a ses propres outils (lecture/écriture + Mermaid).
+        skills::documentalist_tool_definitions()
+    } else {
+        let mut t = skills::dev_tool_definitions(&ctx.skills);
+        t.extend(integrations::tool_definitions(&ctx.integ)); // Git/GitHub si configurés
+        t
+    };
+    let intention = if documentalist {
+        "Mets à jour la documentation du projet et produis/actualise les diagrammes Mermaid \
+         pertinents. Lis les fichiers utiles, puis écris la doc et les diagrammes."
+    } else {
         "Avance concrètement sur l'objectif de cet espace. Utilise tes outils quand c'est \
          utile et explique brièvement chaque action."
-            .to_string(),
-    )];
+    };
+    let mut conv: Vec<Msg> = vec![Msg::User(intention.to_string())];
 
     for _ in 0..MAX_TURNS {
         let blocks = client.complete(&system, &tools, &conv).await?;
@@ -169,14 +187,26 @@ async fn llm_agent_loop(
 }
 
 /// Construit le prompt système d'un agent à partir de l'espace de contexte.
-fn build_system_prompt(agent: &str, ctx: &AgentContext) -> String {
-    let mut s = format!(
-        "Tu es « {agent} », un agent de l'orchestre Orchestra IDE travaillant sur le projet \
-         « {} » (type : {}). Réponds en français, de façon concise. Mène la tâche à son terme \
-         en utilisant tes outils quand c'est pertinent ; n'invente pas de résultats d'outils.",
-        ctx.project_name,
-        ctx.project_type.label(),
-    );
+fn build_system_prompt(agent: &str, documentalist: bool, ctx: &AgentContext) -> String {
+    let mut s = if documentalist {
+        format!(
+            "Tu es l'Agent Documentaliste d'Orchestra IDE pour le projet « {} » (type : {}). \
+             Ta mission : maintenir la documentation à jour et produire des diagrammes Mermaid \
+             clairs. Lis les fichiers pertinents, puis écris/mets à jour la doc \
+             (Write_File_Validated) et les diagrammes (Write_Mermaid_Diagram). Réponds en \
+             français, de façon concise ; n'invente pas de résultats d'outils.",
+            ctx.project_name,
+            ctx.project_type.label(),
+        )
+    } else {
+        format!(
+            "Tu es « {agent} », un agent de l'orchestre Orchestra IDE travaillant sur le projet \
+             « {} » (type : {}). Réponds en français, de façon concise. Mène la tâche à son terme \
+             en utilisant tes outils quand c'est pertinent ; n'invente pas de résultats d'outils.",
+            ctx.project_name,
+            ctx.project_type.label(),
+        )
+    };
     if let Some(persona) = &ctx.persona {
         s.push_str("\n\n## Contexte / persona\n");
         s.push_str(persona);
@@ -235,6 +265,8 @@ fn scripted_steps(agent: &str) -> &'static [&'static str] {
         &["exécution de la suite de tests…", "42 tests passés, 0 échec"]
     } else if key.contains("archi") {
         &["analyse des contraintes…", "plan d'implémentation rédigé"]
+    } else if key.contains("documental") {
+        &["lecture des sources…", "mise à jour de la doc", "diagramme Mermaid généré"]
     } else {
         &["initialisation…", "traitement en cours…", "tâche accomplie"]
     }
@@ -285,5 +317,28 @@ mod tests {
         let space = space_with_agents(&[]);
         let mut rx = spawn_inner(&space, None);
         assert!(rx.recv().await.is_none(), "aucun agent → canal fermé d'emblée");
+    }
+
+    #[tokio::test]
+    async fn documentalist_adds_one_agent_when_enabled() {
+        // Espace sans agent classique, mais Documentaliste activé → exactement 1 agent.
+        let mut space = space_with_agents(&[]);
+        space.config.documentalist_enabled = true;
+        let mut rx = spawn_inner(&space, None);
+
+        let (mut started, mut done) = (0, 0);
+        let mut saw_doc = false;
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                AgentEvent::Started { agent } => {
+                    started += 1;
+                    saw_doc |= agent.contains("Documentaliste");
+                }
+                AgentEvent::Done { .. } => done += 1,
+                AgentEvent::Log { .. } => {}
+            }
+        }
+        assert_eq!((started, done), (1, 1));
+        assert!(saw_doc, "l'Agent Documentaliste doit être lancé");
     }
 }
