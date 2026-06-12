@@ -185,6 +185,14 @@ Les modifications sont **enregistrées dans `.orchestra/config.json`** (via le c
 `ContextSpace::save_config`). Le runtime utilise le **rôle** (dans le prompt système) et les
 **skills propres** de chaque agent (repli sur les skills de l'espace s'il n'en a pas).
 
+> 🔌 **Skill exécutable vs étiquette.** Un skill n'agit que s'il est **enregistré** (du code
+> Rust derrière). Le menu marque les skills **exécutables** (en vert) ; les autres restent
+> des étiquettes « (inactif) ». Le registre (`orchestra-core::skills`) est la source de
+> vérité ; ajouter un skill = une entrée au catalogue `EXECUTABLE_SKILLS` + un bras dans
+> `tool_definition` et `execute_skill`. Skills exécutables : `Read_File`,
+> `Write_File_Validated`, `Execute_Terminal_Command`, `Write_Mermaid_Diagram`, **`Web_Fetch`**
+> (lire une URL), + Git/GitHub si l'intégration est configurée.
+
 ### Converser avec le chef d'orchestre (`[5]`)
 
 Au-delà de l'exécution autonome (`[1]`), `[5]` ouvre une **conversation persistante** avec

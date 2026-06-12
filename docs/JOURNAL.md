@@ -184,6 +184,17 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - La zone centrale conserve le système de vues existant (radar/docs/agents/éditeur), rendu
   désormais dans le panneau central plutôt qu'en plein écran.
 
+## Registre de skills exécutables (post-Phase 5) ✅
+
+- Les skills sont **activés systématiquement** via un registre : id → définition
+  ([`tool_definition`]) + exécution ([`execute_skill`]), source de vérité
+  `skills::EXECUTABLE_SKILLS`. Un skill assigné à un agent (menu `[6]`) devient un **vrai
+  outil** s'il est dans le registre ; sinon il reste une étiquette.
+- `skills::is_executable(id)` exposé ; le menu Agents marque les skills **exécutables** (vert)
+  vs **(inactif)** (gris).
+- Nouveau skill exécutable **`Web_Fetch`** (lit une URL http/https) — démontre l'extensibilité
+  (1 entrée au catalogue + 1 bras dans chaque match). `dev_tool_definitions` → `tool_specs`.
+
 ## Gestionnaire d'agents (post-Phase 5) ✅
 
 - **Modèle structuré** : `config.agents` passe de `Vec<String>` à `Vec<AgentDef { name, role,

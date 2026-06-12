@@ -133,17 +133,29 @@ fn render_agents(frame: &mut Frame, area: Rect, app: &App) {
                 ]));
             }
             if let Some(a) = s.config.agents.get(app.agent_sel) {
-                let skills = if a.skills.is_empty() { "(aucun)".to_string() } else { a.skills.join(", ") };
                 let (inv, secs) = app
                     .agent_stats
                     .get(&a.name)
                     .map(|st| (st.invocations, st.thinking.as_secs()))
                     .unwrap_or((0, 0));
                 lines.push(Line::raw(""));
-                lines.push(Line::from(vec![
-                    Span::styled("Skills : ", Style::new().bold()),
-                    Span::raw(skills),
-                ]));
+                // Skills : exécutables en vert, simples étiquettes en gris « (inactif) ».
+                let mut spans = vec![Span::styled("Skills : ", Style::new().bold())];
+                if a.skills.is_empty() {
+                    spans.push(Span::styled("(aucun)", Style::new().dark_gray()));
+                } else {
+                    for (i, sk) in a.skills.iter().enumerate() {
+                        if i > 0 {
+                            spans.push(Span::raw(", "));
+                        }
+                        if orchestra_core::skills::is_executable(sk) {
+                            spans.push(Span::styled(sk.clone(), Style::new().green()));
+                        } else {
+                            spans.push(Span::styled(format!("{sk} (inactif)"), Style::new().dark_gray()));
+                        }
+                    }
+                }
+                lines.push(Line::from(spans));
                 lines.push(Line::from(vec![
                     Span::styled("Stats (session) : ", Style::new().bold()),
                     Span::raw(format!("{inv} invocation(s) · {secs}s de réflexion")),

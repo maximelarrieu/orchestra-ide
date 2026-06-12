@@ -156,7 +156,7 @@ fn agent_tools(agent: &RosterAgent, ctx: &AgentContext) -> Vec<ToolSpec> {
         return skills::documentalist_tool_definitions();
     }
     let own = if agent.skills.is_empty() { &ctx.skills } else { &agent.skills };
-    let mut t = skills::dev_tool_definitions(own);
+    let mut t = skills::tool_specs(own); // skills exécutables assignés (registre)
     t.extend(integrations::tool_definitions(&ctx.integ)); // Git/GitHub si configurés
     t
 }
