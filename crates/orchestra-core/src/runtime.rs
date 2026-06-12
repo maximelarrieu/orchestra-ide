@@ -173,6 +173,7 @@ async fn run_agent_turn(
     let mut final_text = String::new();
 
     for _ in 0..MAX_TURNS {
+        let _ = tx.send(AgentEvent::Thinking { agent: label.to_string() });
         let blocks = client.complete(system, tools, conv).await?;
 
         let mut calls: Vec<(String, String, Value)> = Vec::new();
@@ -299,6 +300,7 @@ async fn run_coordinator_turn(
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<(), crate::llm::LlmError> {
     for _ in 0..MAX_TURNS {
+        let _ = tx.send(AgentEvent::Thinking { agent: COORDINATOR.to_string() });
         let blocks = client.complete(system, tools, conv).await?;
 
         let mut calls: Vec<(String, String, Value)> = Vec::new();
@@ -516,7 +518,7 @@ mod tests {
             match ev {
                 AgentEvent::Started { .. } => started += 1,
                 AgentEvent::Done { .. } => done += 1,
-                AgentEvent::Log { .. } => {}
+                AgentEvent::Log { .. } | AgentEvent::Thinking { .. } => {}
             }
         }
         assert_eq!(started, 2, "chaque agent démarre une fois");
@@ -566,7 +568,7 @@ mod tests {
                     saw_doc |= agent.contains("Documentaliste");
                 }
                 AgentEvent::Done { .. } => done += 1,
-                AgentEvent::Log { .. } => {}
+                AgentEvent::Log { .. } | AgentEvent::Thinking { .. } => {}
             }
         }
         assert_eq!((started, done), (1, 1));

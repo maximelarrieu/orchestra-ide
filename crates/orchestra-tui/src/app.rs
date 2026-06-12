@@ -65,9 +65,16 @@ pub struct App {
     pub chat: Option<String>,
     /// Défilement du radar : nombre de lignes remontées depuis le bas (0 = suit le bas).
     pub radar_scroll: usize,
+    /// Agent dont un appel LLM est en cours (`Some`) — pilote l'indicateur « réfléchit… ».
+    pub busy: Option<String>,
+    /// Compteur d'animation du spinner (incrémenté à chaque tick).
+    pub spinner: usize,
     /// Message transitoire affiché à l'utilisateur (succès/erreur d'une action).
     pub notice: Option<String>,
 }
+
+/// Cadres du spinner d'activité (braille).
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 impl App {
     pub fn new(space: Option<ContextSpace>) -> Self {
@@ -86,8 +93,20 @@ impl App {
             viewer: None,
             chat: None,
             radar_scroll: 0,
+            busy: None,
+            spinner: 0,
             notice: None,
         }
+    }
+
+    /// Avance l'animation du spinner (appelé au tick de rafraîchissement).
+    pub fn tick(&mut self) {
+        self.spinner = self.spinner.wrapping_add(1);
+    }
+
+    /// Cadre courant du spinner.
+    pub fn spinner_frame(&self) -> &'static str {
+        SPINNER[self.spinner % SPINNER.len()]
     }
 
     /// Fait défiler le radar (delta>0 = remonter dans l'historique). Borné en bas à 0 ; la
@@ -253,14 +272,22 @@ impl App {
         self.done = 0;
         self.phase = Phase::Running;
         self.radar_scroll = 0;
+        self.busy = None;
     }
 
     /// Intègre un événement du runtime dans l'état (compteurs + historique borné).
     pub fn on_event(&mut self, ev: AgentEvent) {
+        // « Thinking » ne va pas dans l'historique : il pilote seulement l'indicateur.
+        if let AgentEvent::Thinking { agent } = &ev {
+            self.busy = Some(agent.clone());
+            return;
+        }
+        self.busy = None; // une sortie est apparue → plus en attente
+
         match &ev {
             AgentEvent::Started { .. } => self.started += 1,
             AgentEvent::Done { .. } => self.done += 1,
-            AgentEvent::Log { .. } => {}
+            _ => {}
         }
         self.events.push(ev);
         if self.events.len() > HISTORY_CAP {
@@ -270,6 +297,7 @@ impl App {
 
     /// Signalé par la boucle principale quand le canal se ferme (tous les agents finis).
     pub fn mark_finished(&mut self) {
+        self.busy = None;
         if self.phase == Phase::Running {
             self.phase = Phase::Finished;
         }
@@ -327,6 +355,18 @@ mod tests {
         let mut app = App::new(None);
         app.docs_move(5); // liste vide → reste à 0
         assert_eq!(app.doc_sel, 0);
+    }
+
+    #[test]
+    fn thinking_sets_busy_without_polluting_history() {
+        let mut app = App::new(None);
+        app.on_event(AgentEvent::Thinking { agent: "Coordinateur".into() });
+        assert_eq!(app.busy.as_deref(), Some("Coordinateur"));
+        assert!(app.events.is_empty(), "Thinking ne va pas dans l'historique");
+        // Une sortie efface l'indicateur d'attente.
+        app.on_event(AgentEvent::Log { agent: "Coordinateur".into(), msg: "ok".into() });
+        assert!(app.busy.is_none());
+        assert_eq!(app.events.len(), 1);
     }
 
     #[test]

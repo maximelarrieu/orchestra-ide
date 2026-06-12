@@ -9,6 +9,8 @@
 pub enum AgentEvent {
     /// L'agent vient de démarrer sa tâche.
     Started { agent: String },
+    /// L'agent attend une réponse du modèle (appel LLM en cours) — pilote le spinner.
+    Thinking { agent: String },
     /// Ligne de log d'un agent (ex. « 12 nouvelles annonces trouvées »).
     Log { agent: String, msg: String },
     /// L'agent a terminé sa tâche.
@@ -16,10 +18,11 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
-    /// Nom de l'agent à l'origine de l'événement (commun aux trois variantes).
+    /// Nom de l'agent à l'origine de l'événement (commun aux variantes).
     pub fn agent(&self) -> &str {
         match self {
             AgentEvent::Started { agent }
+            | AgentEvent::Thinking { agent }
             | AgentEvent::Log { agent, .. }
             | AgentEvent::Done { agent } => agent,
         }

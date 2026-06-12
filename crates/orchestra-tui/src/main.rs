@@ -255,7 +255,7 @@ async fn event_loop(
                     }
                 }
             }
-            _ = tick.tick() => {}                     // rafraîchissement périodique
+            _ = tick.tick() => { app.tick(); }        // rafraîchissement + animation spinner
         }
     }
     Ok(())

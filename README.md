@@ -175,7 +175,8 @@ quitte la conversation.
 Le radar **rend le Markdown** des réponses (titres, listes, citations, blocs de code) et se
 **défile** : `PgUp`/`PgDn` (ou `↑`/`↓`) pour remonter dans l'historique de la conversation,
 retour automatique en bas à chaque nouveau message. Les interlocuteurs sont colorés : 🟢
-**Vous**, 🟣 **Coordinateur**, 🔵 **agents**.
+**Vous**, 🟣 **Coordinateur**, 🔵 **agents**. Pendant qu'un agent attend le modèle, un
+**indicateur animé** « ⠋ {agent} réfléchit… » montre ce qui travaille en arrière-plan.
 
 Dans le navigateur `[2]` : `↑↓` choisir, `Entrée` ouvrir un document dans le visualiseur
 (Markdown rendu : titres, listes, citations, blocs de code, gras/`code`), `↑↓` y défiler,

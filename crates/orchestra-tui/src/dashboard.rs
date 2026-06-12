@@ -117,7 +117,12 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         None => ("Aucun espace chargé".to_string(), "—"),
     };
 
-    let status = if app.chat.is_some() {
+    let status = if let Some(agent) = &app.busy {
+        Span::styled(
+            format!("{} {agent} réfléchit…", app.spinner_frame()),
+            Style::new().magenta().bold(),
+        )
+    } else if app.chat.is_some() {
         Span::styled("💬 conversation", Style::new().magenta().bold())
     } else {
         match app.phase {
@@ -186,6 +191,13 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
     for ev in &app.events {
         event_rows(ev, inner_w, &mut rows);
     }
+    // Indicateur transitoire d'activité en bas du flux (« … réfléchit »).
+    if let Some(agent) = &app.busy {
+        rows.push(Line::from(vec![
+            Span::styled(format!("  {} ", app.spinner_frame()), Style::new().magenta().bold()),
+            Span::styled(format!("{agent} réfléchit…"), Style::new().dark_gray()),
+        ]));
+    }
     let total = rows.len();
     let max_scroll = total.saturating_sub(visible);
     let scroll = app.radar_scroll.min(max_scroll);
@@ -223,6 +235,8 @@ fn event_rows(ev: &AgentEvent, width: usize, rows: &mut Vec<Line<'static>>) {
             Span::styled(agent.clone(), speaker_style(agent).bold()),
             Span::styled(" — terminé", Style::new().green()),
         ])),
+        // « Thinking » n'est jamais stocké dans l'historique (cf. App::on_event).
+        AgentEvent::Thinking { .. } => {}
         AgentEvent::Log { agent, msg } => {
             let prefix = format!("{agent} : ");
             let indent = 2 + prefix.chars().count();
