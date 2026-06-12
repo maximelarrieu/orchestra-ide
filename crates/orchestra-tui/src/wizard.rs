@@ -47,7 +47,8 @@ pub fn run(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ws) = &space.config.workspace_path {
         println!("  Workspace   : {}", ws.display());
     }
-    println!("  Agents      : {}", space.config.agents.join(", "));
+    let agent_names: Vec<&str> = space.config.agents.iter().map(|a| a.name.as_str()).collect();
+    println!("  Agents      : {}", agent_names.join(", "));
     println!("  Skills      : {}", space.config.skills.join(", "));
     println!(
         "  Documentaliste : {}",

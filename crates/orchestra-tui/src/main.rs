@@ -159,6 +159,28 @@ async fn event_loop(
                                 }
                                 _ => {}
                             }
+                        } else if app.agent_prompt.is_some() {
+                            // Saisie d'un champ d'agent (nom / rôle / skills / ajout).
+                            match key.code {
+                                KeyCode::Esc => app.cancel_agent_prompt(),
+                                KeyCode::Enter => app.submit_agent_prompt(),
+                                KeyCode::Backspace => app.agent_prompt_backspace(),
+                                KeyCode::Char(c) => app.agent_prompt_push(c),
+                                _ => {}
+                            }
+                        } else if app.view == View::Agents {
+                            // Gestionnaire d'agents : sélection + édition.
+                            match key.code {
+                                KeyCode::Up => app.agents_move(-1),
+                                KeyCode::Down => app.agents_move(1),
+                                KeyCode::Char('r') => app.start_agent_rename(),
+                                KeyCode::Char('o') => app.start_agent_role(),
+                                KeyCode::Char('s') => app.start_agent_skills(),
+                                KeyCode::Char('a') => app.start_agent_add(),
+                                KeyCode::Char('d') => app.delete_selected_agent(),
+                                KeyCode::Esc | KeyCode::Char('6') => app.toggle_agents(),
+                                _ => {}
+                            }
                         } else if app.view == View::Docs {
                             // Navigateur de documents : sélection + ouverture.
                             match key.code {
@@ -266,6 +288,7 @@ async fn event_loop(
                                 KeyCode::Char('2') => app.toggle_docs(),
                                 KeyCode::Char('3') => app.start_space_input(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
+                                KeyCode::Char('6') if app.space.is_some() => app.toggle_agents(),
                                 KeyCode::PageUp => app.radar_scroll_by(10),
                                 KeyCode::PageDown => app.radar_scroll_by(-10),
                                 KeyCode::Up => app.radar_scroll_by(3),

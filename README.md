@@ -154,7 +154,28 @@ validé). Outils et prompt dédiés, indépendants de la liste de Skills du proj
 | `[2]` | **Navigateur de documents** de l'espace (persona, ADRs, docs Markdown) avec **visualiseur Markdown** intégré |
 | `[3]` | **Changer d'Espace** (saisie d'un chemin, `Entrée` charge / `Échap` annule) |
 | `[4]` | **Éditer le persona** dans l'interface (`Ctrl+S` enregistre, `Échap` annule) |
+| `[6]` | **Gérer les agents** : rôle, skills, stats de session ; renommer/éditer/ajouter/supprimer |
 | `q` / `Échap` | Quitter |
+
+### Gérer les agents (`[6]`)
+
+Chaque agent est désormais un objet **`{ nom, rôle, skills }`** (modèle rétro-compatible avec
+les anciennes configs où l'agent n'était qu'un nom). Le menu `[6]` liste les agents et, pour
+le sélectionné, affiche **rôle, skills et stats de session** (invocations + temps de
+réflexion). Tu peux le rendre modulable :
+
+| Touche | Action |
+|---|---|
+| `↑`/`↓` | choisir un agent |
+| `r` | renommer |
+| `o` | modifier le rôle (oriente son prompt) |
+| `s` | modifier ses skills (liste séparée par des virgules) |
+| `a` | ajouter un agent |
+| `d` | supprimer l'agent sélectionné |
+
+Les modifications sont **enregistrées dans `.orchestra/config.json`** (via le cœur,
+`ContextSpace::save_config`). Le runtime utilise le **rôle** (dans le prompt système) et les
+**skills propres** de chaque agent (repli sur les skills de l'espace s'il n'en a pas).
 
 ### Converser avec le chef d'orchestre (`[5]`)
 

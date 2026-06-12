@@ -85,6 +85,7 @@ Le tableau de bord (TUI) s'ouvre en 3 zones :
 | `[2]` | Navigateur de documents (persona/ADRs/docs) + visualiseur Markdown | ✅ actif |
 | `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
 | `[4]` | Éditer le persona dans l'interface (`Ctrl+S` enregistre) | ✅ actif |
+| `[6]` | Gérer les agents (rôle, skills, stats ; renommer/éditer/ajouter/supprimer) | ✅ actif |
 | `q` / `Échap` | Quitter | ✅ actif |
 
 Quand l'orchestre tourne, l'en-tête indique `▶ N agent(s) en cours`, le radar liste les
@@ -107,6 +108,7 @@ démarrages, les logs et les fins d'agents, puis bascule en `✓ terminé`.
 | Changement d'Espace dans l'UI (`[3]`) | ✅ | 5 |
 | Navigateur de documents + visualiseur Markdown (`[2]`) | ✅ | post-5 |
 | Éditeur de persona intégré (`[4]`) | ✅ | post-5 |
+| Gestionnaire d'agents (rôle/skills/stats, éditable) (`[6]`) | ✅ | post-5 |
 | Agent Documentaliste (doc auto, Mermaid) | ✅ si activé | 5 |
 
 ### Activer le LLM — Claude ou Gemini, au choix

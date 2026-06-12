@@ -25,13 +25,57 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub skills: Vec<String>,
 
-    /// Noms des agents composant l'orchestre.
+    /// Agents composant l'orchestre (nom, rôle, skills propres).
     #[serde(default)]
-    pub agents: Vec<String>,
+    pub agents: Vec<AgentDef>,
 
     /// Intégrations écosystème (Phase 4) — toutes optionnelles.
     #[serde(default)]
     pub integrations: Integrations,
+}
+
+/// Définition d'un agent : nom, rôle (qui oriente son prompt) et skills propres.
+///
+/// Rétro-compatible : un agent écrit comme une simple chaîne dans `config.json`
+/// (`"agents": ["Agent_Tuteur"]`) est chargé comme `AgentDef { name, role: "", skills: [] }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgentDef {
+    pub name: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
+}
+
+impl AgentDef {
+    /// Crée un agent depuis un nom (rôle/skills vides).
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into(), role: String::new(), skills: Vec::new() }
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentDef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Name(String),
+            Full {
+                name: String,
+                #[serde(default)]
+                role: String,
+                #[serde(default)]
+                skills: Vec<String>,
+            },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Name(name) => AgentDef { name, role: String::new(), skills: Vec::new() },
+            Repr::Full { name, role, skills } => AgentDef { name, role, skills },
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -81,6 +125,10 @@ mod tests {
         let cfg: ProjectConfig = serde_json::from_str(raw).expect("config valide");
         assert_eq!(cfg.project_type, ProjectType::Immobilier);
         assert_eq!(cfg.skills.len(), 3);
+        // Rétro-compat : agents écrits en chaînes → AgentDef (rôle/skills vides).
+        assert_eq!(cfg.agents.len(), 2);
+        assert_eq!(cfg.agents[0].name, "Agent_Scraper");
+        assert!(cfg.agents[0].role.is_empty());
         // Champs absents → valeurs par défaut (serde(default)).
         assert!(cfg.workspace_path.is_none());
         assert!(!cfg.documentalist_enabled);

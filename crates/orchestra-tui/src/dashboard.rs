@@ -38,9 +38,58 @@ pub fn render(frame: &mut Frame, app: &App) {
         match app.view {
             View::Radar => render_radar(frame, center, app),
             View::Docs => render_docs_list(frame, center, app),
+            View::Agents => render_agents(frame, center, app),
         }
     }
     render_menu(frame, menu, app);
+}
+
+/// Gestionnaire d'agents : liste + fiche (rôle, skills, stats de session).
+fn render_agents(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 📇 GESTION DES AGENTS ");
+    let mut lines: Vec<Line> = Vec::new();
+    match &app.space {
+        Some(s) if !s.config.agents.is_empty() => {
+            for (i, a) in s.config.agents.iter().enumerate() {
+                let selected = i == app.agent_sel;
+                let role = if a.role.is_empty() { "(rôle non défini)".to_string() } else { a.role.clone() };
+                lines.push(Line::from(vec![
+                    Span::raw(if selected { "▶ " } else { "  " }),
+                    Span::styled(
+                        a.name.clone(),
+                        if selected { Style::new().cyan().bold() } else { Style::new().cyan() },
+                    ),
+                    Span::styled(format!(" — {role}"), Style::new().dark_gray()),
+                ]));
+            }
+            if let Some(a) = s.config.agents.get(app.agent_sel) {
+                let skills = if a.skills.is_empty() { "(aucun)".to_string() } else { a.skills.join(", ") };
+                let (inv, secs) = app
+                    .agent_stats
+                    .get(&a.name)
+                    .map(|st| (st.invocations, st.thinking.as_secs()))
+                    .unwrap_or((0, 0));
+                lines.push(Line::raw(""));
+                lines.push(Line::from(vec![
+                    Span::styled("Skills : ", Style::new().bold()),
+                    Span::raw(skills),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("Stats (session) : ", Style::new().bold()),
+                    Span::raw(format!("{inv} invocation(s) · {secs}s de réflexion")),
+                ]));
+            }
+        }
+        Some(_) => lines.push(Line::from(Span::styled(
+            "  Aucun agent. Appuie sur [a] pour en ajouter.",
+            Style::new().dark_gray(),
+        ))),
+        None => lines.push(Line::from(Span::styled(
+            "  Aucun espace chargé.",
+            Style::new().dark_gray(),
+        ))),
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Navigateur des documents de l'espace (persona / ADRs / docs), avec sélection.
@@ -340,6 +389,18 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             "📚 Documents — ↑↓ choisir · Entrée ouvrir · Échap retour",
             Style::new().cyan(),
         ))]
+    } else if let Some((field, buf)) = &app.agent_prompt {
+        vec![Line::from(vec![
+            Span::styled(format!("{} : ", field.label()), Style::new().bold()),
+            Span::raw(buf.clone()),
+            Span::styled("▏", Style::new().cyan()),
+            Span::styled("   (Entrée = valider · Échap = annuler)", Style::new().dark_gray()),
+        ])]
+    } else if app.view == View::Agents {
+        vec![Line::from(Span::styled(
+            "📇 Agents — ↑↓ choisir · [r] renommer · [o] rôle · [s] skills · [a] ajouter · [d] supprimer · Échap",
+            Style::new().cyan(),
+        ))]
     } else if let Some(buf) = &app.chat {
         // Saisie de message, potentiellement sur plusieurs lignes (Maj+Entrée).
         let mut lines = Vec::new();
@@ -379,7 +440,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         vec![Line::from(Span::styled(notice.clone(), Style::new().yellow()))]
     } else {
         vec![Line::from(
-            "[1] Intention  [5] Converser  [2] Documents  [3] Espace  [4] Persona  [q] Quitter",
+            "[1] Intention  [5] Chat  [2] Docs  [3] Espace  [4] Persona  [6] Agents  [q] Quitter",
         )]
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -388,7 +449,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orchestra_core::model::config::ProjectConfig;
+    use orchestra_core::model::config::{AgentDef, ProjectConfig};
     use orchestra_core::model::project_type::ProjectType;
     use orchestra_core::model::ContextSpace;
     use ratatui::backend::TestBackend;
@@ -404,7 +465,7 @@ mod tests {
                 workspace_path: None,
                 documentalist_enabled: false,
                 skills: vec![],
-                agents: vec!["Agent_Scraper".to_string()],
+                agents: vec![AgentDef::new("Agent_Scraper")],
                 integrations: Default::default(),
             },
             persona: None,
@@ -443,6 +504,18 @@ mod tests {
         app.toggle_docs(); // retour radar
         app.start_space_input(); // invite de saisie dans le menu
         app.input_push('x');
+        terminal.draw(|f| render(f, &app)).unwrap();
+    }
+
+    /// Le gestionnaire d'agents (liste + fiche) et la saisie d'un champ doivent se rendre.
+    #[test]
+    fn renders_agents_view_and_prompt() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut app = demo_app();
+        app.toggle_agents();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        app.start_agent_rename();
+        app.agent_prompt_push('Z');
         terminal.draw(|f| render(f, &app)).unwrap();
     }
 

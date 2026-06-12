@@ -175,6 +175,19 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   *keyboard enhancement flags* (crossterm) pour distinguer Maj+Entrée sur les terminaux
   compatibles.
 
+## Gestionnaire d'agents (post-Phase 5) ✅
+
+- **Modèle structuré** : `config.agents` passe de `Vec<String>` à `Vec<AgentDef { name, role,
+  skills }>`, avec **désérialisation rétro-compatible** (un agent écrit en chaîne reste
+  valide). `default_agents` fournit nom + rôle + skills par type.
+- **Runtime** : chaque agent utilise son **rôle** (injecté dans le prompt système) et ses
+  **skills propres** (repli sur les skills de l'espace s'il n'en a pas) ; le coordinateur
+  expose le rôle dans ses outils de délégation.
+- **Menu `[6]` Agents** : liste + fiche (rôle, skills, **stats de session** : invocations +
+  temps de réflexion) ; édition complète — renommer, rôle, skills, ajouter, supprimer —
+  **persistée dans `config.json`** via `ContextSpace::save_config` (l'écriture reste au cœur).
+- `[1]` pré-remplit aussi une **intention d'exemple** selon le type de projet.
+
 ## `[1]` repurposé en « Lancer une intention » (post-Phase 5) ✅
 
 - `[1]` ne lance plus une rafale autonome générique : il **saisit un objectif** puis
