@@ -10,7 +10,8 @@ Plan global en 5 phases :
 2. Commande `orchestra init` (scaffolding interactif) ✅
 3. Runtime d'agents + flux temps réel → radar vivant ✅
 4a. Intégration LLM (Claude **ou** Gemini) + Skills Dev exécutables (tool use) ✅
-4b. Intégrations écosystème : Git / GitHub / Jira ⏳
+4b. Intégrations Git (local) + GitHub (REST) ✅
+4c. Intégration Jira ⏳
 5. Agent Documentaliste (Doc_Auto_Update, Mermaid) + finitions ⏳
 
 ---
@@ -95,11 +96,33 @@ Plan global en 5 phases :
 anti-évasion, exécution shell) et runtime hors-ligne ; `clippy` sans warning. La vraie
 boucle LLM nécessite une clé API (testée en local).
 
-## Phase 4b — Intégrations écosystème ⏳ (à venir)
+## Phase 4b — Intégrations Git + GitHub ✅
+
+**Livré**
+- `orchestra-core::integrations` : Skills d'intégration exposés au LLM **uniquement si
+  configurés** dans `config.integrations`.
+  - Git local : `Git_Status`, `Git_Diff`, `Git_Create_Branch`, `Git_Commit` (binaire `git`,
+    workspace, délai/plafond ; nom de branche validé).
+  - GitHub REST : `GitHub_List_Issues`, `GitHub_Create_Issue_Comment`,
+    `GitHub_Create_Pull_Request` (token via `token_env_var`, jamais en dur ; exposés
+    seulement si le token est présent).
+- `runtime` : fusion des outils Dev + intégrations, dispatch par `integrations::handles`.
+
+**Limites connues**
+- Actions sortantes (PR/commentaire) et modifiantes (commit/branche) sans confirmation
+  interactive (human-in-the-loop prévu plus tard) — autorisation par la config de l'espace.
+- L'assistant `init` ne configure pas encore les intégrations (édition manuelle de
+  `config.json`).
+
+**Tests** : 21 verts (`cargo test --workspace`) — dont Git réel sur dépôt temporaire
+(`status`, création de branche), exposition conditionnelle des Skills, validation de nom de
+branche ; `clippy` sans warning. GitHub REST testé en local (token requis).
+
+## Phase 4c — Intégration Jira ⏳ (à venir)
 
 **Visé**
-- Git / GitHub / Jira (tokens via variables d'environnement, jamais en clair), exposés
-  comme Skills supplémentaires au LLM.
+- Même schéma que GitHub : Skills Jira (créer / transitionner un ticket) exposés si
+  `integrations.jira` est configuré, token via variable d'environnement.
 
 ## Phase 5 — Documentaliste + finitions ⏳ (à venir)
 

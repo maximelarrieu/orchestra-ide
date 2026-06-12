@@ -34,10 +34,10 @@ pub struct SkillOutcome {
 }
 
 impl SkillOutcome {
-    fn ok(text: impl Into<String>) -> Self {
+    pub(crate) fn ok(text: impl Into<String>) -> Self {
         Self { text: truncate(text.into()), is_error: false }
     }
-    fn err(text: impl Into<String>) -> Self {
+    pub(crate) fn err(text: impl Into<String>) -> Self {
         Self { text: truncate(text.into()), is_error: true }
     }
 }

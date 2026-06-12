@@ -7,6 +7,7 @@
 
 pub mod error;
 pub mod events;
+pub mod integrations;
 pub mod llm;
 pub mod model;
 pub mod runtime;
