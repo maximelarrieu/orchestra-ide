@@ -149,11 +149,33 @@ validé). Outils et prompt dédiés, indépendants de la liste de Skills du proj
 
 | Touche | Action |
 |---|---|
-| `[1]` | Lancer l'orchestre |
+| `[1]` | Lancer l'orchestre (exécution autonome : chaque agent travaille une fois) |
+| `[5]` | **Converser** avec le chef d'orchestre (conversation persistante, voir ci-dessous) |
 | `[2]` | **Navigateur de documents** de l'espace (persona, ADRs, docs Markdown) avec **visualiseur Markdown** intégré |
 | `[3]` | **Changer d'Espace** (saisie d'un chemin, `Entrée` charge / `Échap` annule) |
 | `[4]` | **Éditer le persona** dans l'interface (`Ctrl+S` enregistre, `Échap` annule) |
 | `q` / `Échap` | Quitter |
+
+### Converser avec le chef d'orchestre (`[5]`)
+
+Au-delà de l'exécution autonome (`[1]`), `[5]` ouvre une **conversation persistante** avec
+un **agent coordinateur**. Tu écris un message (ligne de saisie en bas, `Entrée` pour
+envoyer), il te répond, **peut te poser des questions**, et surtout **délègue aux agents
+spécialisés** : chaque agent de l'espace (Tuteur, Correcteur, Documentaliste…) est exposé au
+coordinateur comme un *outil* qu'il invoque selon le besoin ; tu vois leur activité défiler,
+puis le coordinateur synthétise. L'historique est conservé d'un tour à l'autre. `Échap`
+quitte la conversation.
+
+```
+[5] → « Fais-moi une leçon de 10 min sur les verbes à particule séparable »
+   → le coordinateur délègue à Agent_Tuteur, récupère son retour, te répond et te questionne
+   → tu réponds → … (conversation continue)
+```
+
+Le radar **rend le Markdown** des réponses (titres, listes, citations, blocs de code) et se
+**défile** : `PgUp`/`PgDn` (ou `↑`/`↓`) pour remonter dans l'historique de la conversation,
+retour automatique en bas à chaque nouveau message. Les interlocuteurs sont colorés : 🟢
+**Vous**, 🟣 **Coordinateur**, 🔵 **agents**.
 
 Dans le navigateur `[2]` : `↑↓` choisir, `Entrée` ouvrir un document dans le visualiseur
 (Markdown rendu : titres, listes, citations, blocs de code, gras/`code`), `↑↓` y défiler,

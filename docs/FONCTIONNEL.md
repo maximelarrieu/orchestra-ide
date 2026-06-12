@@ -80,7 +80,8 @@ Le tableau de bord (TUI) s'ouvre en 3 zones :
 
 | Touche | Action | État |
 |---|---|---|
-| `[1]` | Lancer l'orchestre → le radar défile en temps réel | ✅ actif |
+| `[1]` | Lancer l'orchestre (autonome : chaque agent travaille une fois) | ✅ actif |
+| `[5]` | Converser avec le chef d'orchestre (délègue aux agents, historique conservé) | ✅ actif |
 | `[2]` | Navigateur de documents (persona/ADRs/docs) + visualiseur Markdown | ✅ actif |
 | `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
 | `[4]` | Éditer le persona dans l'interface (`Ctrl+S` enregistre) | ✅ actif |

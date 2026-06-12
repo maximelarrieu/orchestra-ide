@@ -50,6 +50,64 @@ pub fn to_lines(md: &str) -> Vec<Line<'static>> {
     out
 }
 
+/// Variante « bloc » pour un affichage qui gère lui-même le retour à la ligne (radar) :
+/// renvoie, par ligne source, un style et le texte prêt à wrapper. Le style de bloc
+/// (titre, citation, code…) est conservé ; les marqueurs en ligne (`**`, `` ` ``) sont
+/// retirés du texte (le style en ligne n'est pas appliqué après wrapping).
+pub fn styled_blocks(md: &str) -> Vec<(Style, String)> {
+    let mut out = Vec::new();
+    let mut in_code = false;
+    for raw in md.split('\n') {
+        let trimmed = raw.trim_start();
+        if trimmed.starts_with("```") {
+            in_code = !in_code;
+            out.push((Style::new().dark_gray(), raw.to_string()));
+            continue;
+        }
+        if in_code {
+            out.push((Style::new().dark_gray(), raw.to_string()));
+            continue;
+        }
+        if let Some(block) = heading_block(trimmed) {
+            out.push(block);
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            out.push((Style::default(), format!("• {}", strip_inline(rest))));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("> ") {
+            out.push((Style::new().dark_gray(), format!("▏ {}", strip_inline(rest))));
+            continue;
+        }
+        if trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-') {
+            out.push((Style::new().dark_gray(), "─".repeat(24)));
+            continue;
+        }
+        out.push((Style::default(), strip_inline(raw)));
+    }
+    out
+}
+
+fn heading_block(t: &str) -> Option<(Style, String)> {
+    let level = t.chars().take_while(|&c| c == '#').count();
+    if level == 0 || level > 6 || !t[level..].starts_with(' ') {
+        return None;
+    }
+    let rest = strip_inline(t[level..].trim_start());
+    let style = match level {
+        1 => Style::new().cyan().bold(),
+        2 => Style::new().magenta().bold(),
+        _ => Style::new().bold(),
+    };
+    Some((style, format!("{} {rest}", "#".repeat(level))))
+}
+
+/// Retire les marqueurs en ligne `**` et `` ` `` (pour un affichage propre sans style).
+fn strip_inline(s: &str) -> String {
+    s.replace("**", "").replace('`', "")
+}
+
 fn heading(t: &str) -> Option<Line<'static>> {
     let level = t.chars().take_while(|&c| c == '#').count();
     if level == 0 || level > 6 || !t[level..].starts_with(' ') {
@@ -133,5 +191,16 @@ mod tests {
         // '#texte' sans espace n'est pas un titre.
         let lines = to_lines("#pasuntitre");
         assert_eq!(plain(&lines[0]), "#pasuntitre");
+    }
+
+    #[test]
+    fn styled_blocks_detects_blocks_and_strips_inline() {
+        let blocks = styled_blocks("# Titre\n- a\n> note\ntexte **gras** et `code`");
+        let texts: Vec<&str> = blocks.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(texts[0], "# Titre");
+        assert_eq!(texts[1], "• a");
+        assert_eq!(texts[2], "▏ note");
+        // Les marqueurs en ligne sont retirés du texte.
+        assert_eq!(texts[3], "texte gras et code");
     }
 }

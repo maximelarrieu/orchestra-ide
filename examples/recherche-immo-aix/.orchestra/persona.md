@@ -1,10 +1,12 @@
 # Persona — Recherche immobilière (Aix-en-Provence)
 
 ## Critères stricts
-- **Budget max** : à compléter
-- **Surface min (m²)** : à compléter
-- **Quartiers cibles** : à compléter
-- **Diagnostics minimum (DPE)** : à compléter
+- **Type** : Location
+- **Budget max** : 1500€/mois
+- **Surface min (m²)** : 70m2
+- **Quartiers cibles** : Aix-en-provence et alentours
+- **Diagnostics minimum (DPE)** : C
+- **Préférences** : Balcon, Parking, Fibre, Chargeur voiture électrique, Garage
 
 ## Sources
 - LeBonCoin, SeLoger

@@ -22,7 +22,7 @@ use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime;
 use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::app::{App, View};
 
@@ -81,6 +81,8 @@ async fn event_loop(
     let mut input = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
+    // `Some` pendant une conversation : canal pour envoyer les messages au coordinateur.
+    let mut chat_tx: Option<UnboundedSender<String>> = None;
 
     loop {
         terminal.draw(|frame| dashboard::render(frame, app))?;
@@ -154,6 +156,28 @@ async fn event_loop(
                                 KeyCode::Esc | KeyCode::Char('2') => app.toggle_docs(),
                                 _ => {}
                             }
+                        } else if app.chat.is_some() {
+                            // Conversation : saisie d'un message + envoi au coordinateur.
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.end_chat();
+                                    chat_tx = None; // ferme le canal → termine la conversation
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(msg) = app.chat_submit() {
+                                        if let Some(tx) = &chat_tx {
+                                            let _ = tx.send(msg);
+                                        }
+                                    }
+                                }
+                                KeyCode::PageUp => app.radar_scroll_by(10),
+                                KeyCode::PageDown => app.radar_scroll_by(-10),
+                                KeyCode::Up => app.radar_scroll_by(3),
+                                KeyCode::Down => app.radar_scroll_by(-3),
+                                KeyCode::Backspace => app.chat_backspace(),
+                                KeyCode::Char(c) => app.chat_push(c),
+                                _ => {}
+                            }
                         } else if app.input.is_some() {
                             // Mode saisie d'un chemin d'espace : les touches alimentent le tampon.
                             match key.code {
@@ -191,9 +215,27 @@ async fn event_loop(
                                         rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
                                     }
                                 }
+                                KeyCode::Char('5') if app.space.is_some() => {
+                                    if app.persona_incomplete() && app.llm_model.is_some() {
+                                        app.notice = Some(
+                                            "⚠ Persona incomplet (« à compléter ») — édite-le ([4]) puis relance [5]."
+                                                .to_string(),
+                                        );
+                                    } else {
+                                        app.notice = None;
+                                        app.start_chat();
+                                        let handle = runtime::start_conversation(app.space.as_ref().unwrap());
+                                        rx = Some(handle.events);
+                                        chat_tx = Some(handle.user);
+                                    }
+                                }
                                 KeyCode::Char('2') => app.toggle_docs(),
                                 KeyCode::Char('3') => app.start_space_input(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
+                                KeyCode::PageUp => app.radar_scroll_by(10),
+                                KeyCode::PageDown => app.radar_scroll_by(-10),
+                                KeyCode::Up => app.radar_scroll_by(3),
+                                KeyCode::Down => app.radar_scroll_by(-3),
                                 _ => {}
                             }
                         }

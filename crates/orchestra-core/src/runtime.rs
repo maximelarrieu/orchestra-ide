@@ -14,16 +14,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 
 use crate::events::AgentEvent;
 use crate::integrations::{self, IntegrationConn};
-use crate::llm::{Block, LlmClient, Msg, ToolResult};
+use crate::llm::{Block, LlmClient, Msg, ToolResult, ToolSpec};
 use crate::model::project_type::ProjectType;
 use crate::model::space::ContextSpace;
 use crate::skills;
+
+/// Nom affiché du chef d'orchestre dans le flux de conversation.
+const COORDINATOR: &str = "Coordinateur";
 
 /// Nombre maximal de tours LLM ↔ outils par agent (garde-fou anti-boucle).
 const MAX_TURNS: usize = 6;
@@ -121,9 +124,18 @@ async fn run_agent(
     let _ = tx.send(AgentEvent::Done { agent });
 }
 
-/// Boucle agentique réelle (provider-agnostique) : le modèle raisonne, demande des outils
-/// (Skills Dev), on les exécute, on lui renvoie les résultats, jusqu'à la fin ou la limite
-/// de tours.
+/// Outils d'un agent selon son rôle (Documentaliste vs agent standard).
+fn agent_tools(documentalist: bool, ctx: &AgentContext) -> Vec<ToolSpec> {
+    if documentalist {
+        skills::documentalist_tool_definitions()
+    } else {
+        let mut t = skills::dev_tool_definitions(&ctx.skills);
+        t.extend(integrations::tool_definitions(&ctx.integ)); // Git/GitHub si configurés
+        t
+    }
+}
+
+/// Boucle agentique autonome d'un agent (mode `[1] Lancer`) : objectif implicite + tours.
 async fn llm_agent_loop(
     client: &LlmClient,
     agent: &str,
@@ -132,14 +144,7 @@ async fn llm_agent_loop(
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<(), crate::llm::LlmError> {
     let system = build_system_prompt(agent, documentalist, ctx);
-    let tools = if documentalist {
-        // Le Documentaliste a ses propres outils (lecture/écriture + Mermaid).
-        skills::documentalist_tool_definitions()
-    } else {
-        let mut t = skills::dev_tool_definitions(&ctx.skills);
-        t.extend(integrations::tool_definitions(&ctx.integ)); // Git/GitHub si configurés
-        t
-    };
+    let tools = agent_tools(documentalist, ctx);
     let intention = if documentalist {
         "Mets à jour la documentation du projet et produis/actualise les diagrammes Mermaid \
          pertinents. Lis les fichiers utiles, puis écris la doc et les diagrammes."
@@ -148,27 +153,49 @@ async fn llm_agent_loop(
          utile et explique brièvement chaque action."
     };
     let mut conv: Vec<Msg> = vec![Msg::User(intention.to_string())];
+    run_agent_turn(client, &system, &tools, &mut conv, agent, ctx, tx).await?;
+    Ok(())
+}
+
+/// Un « tour » agentique réutilisable (provider-agnostique) : le modèle raisonne, demande
+/// des outils, on les exécute, on lui renvoie les résultats, jusqu'à une réponse finale ou
+/// la limite de tours. Émet les événements sur `tx` et renvoie le texte produit (utile au
+/// coordinateur pour récupérer le retour d'un sous-agent).
+async fn run_agent_turn(
+    client: &LlmClient,
+    system: &str,
+    tools: &[ToolSpec],
+    conv: &mut Vec<Msg>,
+    label: &str,
+    ctx: &AgentContext,
+    tx: &UnboundedSender<AgentEvent>,
+) -> Result<String, crate::llm::LlmError> {
+    let mut final_text = String::new();
 
     for _ in 0..MAX_TURNS {
-        let blocks = client.complete(&system, &tools, &conv).await?;
+        let blocks = client.complete(system, tools, conv).await?;
 
-        // Émettre le texte et repérer les appels d'outils.
         let mut calls: Vec<(String, String, Value)> = Vec::new();
         for block in &blocks {
             match block {
-                Block::Text(t) => emit_log(tx, agent, t.trim()),
+                Block::Text(t) => {
+                    emit_log(tx, label, t.trim());
+                    if !t.trim().is_empty() {
+                        final_text.push_str(t.trim());
+                        final_text.push('\n');
+                    }
+                }
                 Block::ToolUse { id, name, input } => {
-                    emit_log(tx, agent, &format!("🔧 {name} {}", brief(input)));
+                    emit_log(tx, label, &format!("🔧 {name} {}", brief(input)));
                     calls.push((id.clone(), name.clone(), input.clone()));
                 }
             }
         }
 
         if calls.is_empty() {
-            return Ok(()); // l'agent a fini (réponse finale, sans nouvel outil)
+            return Ok(final_text); // réponse finale, sans nouvel outil
         }
 
-        // Réinjecter le tour assistant, puis exécuter les outils demandés.
         conv.push(Msg::Assistant(blocks));
         let mut results = Vec::with_capacity(calls.len());
         for (id, name, input) in calls {
@@ -182,8 +209,190 @@ async fn llm_agent_loop(
         conv.push(Msg::Tool(results));
     }
 
-    emit_log(tx, agent, "limite de tours atteinte — arrêt.");
+    emit_log(tx, label, "limite de tours atteinte — arrêt.");
+    Ok(final_text)
+}
+
+// --- Conversation avec le chef d'orchestre (coordinateur) ---------------------------
+
+/// Poignée d'une conversation : on envoie des messages utilisateur sur `user`, on reçoit
+/// les événements (réponses du coordinateur et activité des sous-agents) sur `events`.
+/// Fermer `user` (le `Sender`) met fin à la conversation.
+pub struct ChatHandle {
+    pub user: UnboundedSender<String>,
+    pub events: UnboundedReceiver<AgentEvent>,
+}
+
+/// Démarre une conversation avec le coordinateur de l'espace.
+pub fn start_conversation(space: &ContextSpace) -> ChatHandle {
+    start_conversation_inner(space, LlmClient::from_env().map(Arc::new))
+}
+
+/// Cœur testable : client LLM injecté (les tests passent `None`).
+fn start_conversation_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>) -> ChatHandle {
+    let (user_tx, user_rx) = mpsc::unbounded_channel();
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let ctx = AgentContext::from_space(space);
+
+    let mut roster: Vec<(String, bool)> =
+        space.config.agents.iter().cloned().map(|a| (a, false)).collect();
+    if space.config.documentalist_enabled {
+        roster.push(("Agent_Documentaliste".to_string(), true));
+    }
+
+    tokio::spawn(conversation_task(ctx, roster, client, user_rx, event_tx));
+    ChatHandle { user: user_tx, events: event_rx }
+}
+
+/// Boucle de conversation : attend un message utilisateur, le confie au coordinateur, puis
+/// recommence. Se termine quand le `Sender` utilisateur est fermé (l'UI quitte le chat).
+async fn conversation_task(
+    ctx: AgentContext,
+    roster: Vec<(String, bool)>,
+    client: Option<Arc<LlmClient>>,
+    mut user_rx: UnboundedReceiver<String>,
+    tx: UnboundedSender<AgentEvent>,
+) {
+    let _ = tx.send(AgentEvent::Started { agent: COORDINATOR.to_string() });
+    let _ = tx.send(AgentEvent::Log {
+        agent: COORDINATOR.to_string(),
+        msg: "Prêt. Pose ta question ou donne ta consigne.".to_string(),
+    });
+
+    let system = coordinator_prompt(&ctx, &roster);
+    let tools: Vec<ToolSpec> = roster.iter().map(|(name, _)| delegation_tool(name)).collect();
+    let mut conv: Vec<Msg> = Vec::new();
+
+    while let Some(user_msg) = user_rx.recv().await {
+        // Écho du message utilisateur pour une lecture « chat » du flux.
+        let _ = tx.send(AgentEvent::Log { agent: "Vous".to_string(), msg: user_msg.clone() });
+
+        match &client {
+            Some(c) => {
+                conv.push(Msg::User(user_msg));
+                if let Err(e) =
+                    run_coordinator_turn(c, &system, &tools, &mut conv, &ctx, &roster, &tx).await
+                {
+                    emit_log(&tx, COORDINATOR, &format!("⚠ LLM injoignable ({e})"));
+                }
+            }
+            None => emit_log(
+                &tx,
+                COORDINATOR,
+                "(mode simulé) Définis ANTHROPIC_API_KEY ou GEMINI_API_KEY pour une vraie conversation.",
+            ),
+        }
+    }
+
+    let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
+}
+
+/// Un tour du coordinateur : il répond et/ou délègue à des sous-agents (chaque agent est
+/// exposé comme un outil). Boucle jusqu'à une réponse finale à l'utilisateur.
+async fn run_coordinator_turn(
+    client: &LlmClient,
+    system: &str,
+    tools: &[ToolSpec],
+    conv: &mut Vec<Msg>,
+    ctx: &AgentContext,
+    roster: &[(String, bool)],
+    tx: &UnboundedSender<AgentEvent>,
+) -> Result<(), crate::llm::LlmError> {
+    for _ in 0..MAX_TURNS {
+        let blocks = client.complete(system, tools, conv).await?;
+
+        let mut calls: Vec<(String, String, Value)> = Vec::new();
+        for block in &blocks {
+            match block {
+                Block::Text(t) => emit_log(tx, COORDINATOR, t.trim()),
+                Block::ToolUse { id, name, input } => {
+                    emit_log(tx, COORDINATOR, &format!("→ délègue à {name}"));
+                    calls.push((id.clone(), name.clone(), input.clone()));
+                }
+            }
+        }
+
+        if calls.is_empty() {
+            return Ok(()); // le coordinateur a répondu à l'utilisateur
+        }
+
+        conv.push(Msg::Assistant(blocks));
+        let mut results = Vec::with_capacity(calls.len());
+        for (id, agent, input) in calls {
+            let instruction = input
+                .get("instruction")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let text = run_subagent(client, ctx, roster, &agent, &instruction, tx)
+                .await
+                .unwrap_or_else(|e| format!("(échec du sous-agent : {e})"));
+            results.push(ToolResult { id, name: agent, content: text, is_error: false });
+        }
+        conv.push(Msg::Tool(results));
+    }
     Ok(())
+}
+
+/// Exécute un sous-agent sur une instruction du coordinateur, en émettant son activité, et
+/// renvoie le texte produit (transmis au coordinateur comme résultat d'outil).
+async fn run_subagent(
+    client: &LlmClient,
+    ctx: &AgentContext,
+    roster: &[(String, bool)],
+    agent: &str,
+    instruction: &str,
+    tx: &UnboundedSender<AgentEvent>,
+) -> Result<String, crate::llm::LlmError> {
+    let documentalist = roster.iter().find(|(n, _)| n == agent).map(|(_, d)| *d).unwrap_or(false);
+    let _ = tx.send(AgentEvent::Started { agent: agent.to_string() });
+
+    let system = build_system_prompt(agent, documentalist, ctx);
+    let tools = agent_tools(documentalist, ctx);
+    let mut conv: Vec<Msg> = vec![Msg::User(instruction.to_string())];
+    let text = run_agent_turn(client, &system, &tools, &mut conv, agent, ctx, tx).await;
+
+    let _ = tx.send(AgentEvent::Done { agent: agent.to_string() });
+    text
+}
+
+/// Outil de délégation exposé au coordinateur pour solliciter un agent (un par agent).
+fn delegation_tool(agent: &str) -> ToolSpec {
+    ToolSpec {
+        name: agent.to_string(),
+        description: format!(
+            "Délègue une tâche à l'agent « {agent} ». Fournis une instruction claire et autonome ; \
+             tu recevras son compte rendu."
+        ),
+        parameters: json!({
+            "type": "object",
+            "properties": { "instruction": { "type": "string", "description": "Instruction pour l'agent" } },
+            "required": ["instruction"]
+        }),
+    }
+}
+
+/// Prompt système du coordinateur : rôle + roster des agents délégables.
+fn coordinator_prompt(ctx: &AgentContext, roster: &[(String, bool)]) -> String {
+    let agents = roster
+        .iter()
+        .map(|(n, _)| format!("« {n} »"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut s = format!(
+        "Tu es le chef d'orchestre d'Orchestra IDE pour le projet « {} » (type : {}). Tu \
+         dialogues en français avec l'utilisateur. Tu peux solliciter des agents spécialisés \
+         via les outils (un par agent) : {agents}. Délègue quand c'est pertinent, synthétise \
+         leurs retours, et pose des questions à l'utilisateur si besoin. Quand tu peux répondre \
+         directement, fais-le sans outil. Sois concis.",
+        ctx.project_name,
+        ctx.project_type.label(),
+    );
+    if let Some(persona) = &ctx.persona {
+        s.push_str("\n\n## Contexte / persona\n");
+        s.push_str(persona);
+    }
+    s
 }
 
 /// Construit le prompt système d'un agent à partir de l'espace de contexte.
@@ -214,14 +423,16 @@ fn build_system_prompt(agent: &str, documentalist: bool, ctx: &AgentContext) -> 
     s
 }
 
-/// Émet une ligne de log non vide, en limitant la longueur affichée sur le radar.
+/// Émet une ligne de log non vide. On conserve le **texte complet** (multi-ligne) ; le
+/// rendu (côté UI) se charge du retour à la ligne et du défilement. Un plafond large évite
+/// seulement les cas pathologiques.
 fn emit_log(tx: &UnboundedSender<AgentEvent>, agent: &str, msg: &str) {
+    let msg = msg.trim();
     if msg.is_empty() {
         return;
     }
-    let msg = msg.lines().next().unwrap_or(msg);
-    let msg = if msg.chars().count() > 200 {
-        format!("{}…", msg.chars().take(200).collect::<String>())
+    let msg = if msg.chars().count() > 4000 {
+        format!("{}…", msg.chars().take(4000).collect::<String>())
     } else {
         msg.to_string()
     };
@@ -317,6 +528,26 @@ mod tests {
         let space = space_with_agents(&[]);
         let mut rx = spawn_inner(&space, None);
         assert!(rx.recv().await.is_none(), "aucun agent → canal fermé d'emblée");
+    }
+
+    #[tokio::test]
+    async fn conversation_echoes_user_and_replies_offline() {
+        let space = space_with_agents(&["Agent_Tuteur"]);
+        let ChatHandle { user, mut events } = start_conversation_inner(&space, None);
+
+        user.send("bonjour".to_string()).unwrap();
+        drop(user); // fin de conversation après traitement du message
+
+        let mut saw_user = false;
+        let mut saw_coordinator = false;
+        while let Some(ev) = events.recv().await {
+            if let AgentEvent::Log { agent, .. } = ev {
+                saw_user |= agent == "Vous";
+                saw_coordinator |= agent == COORDINATOR;
+            }
+        }
+        assert!(saw_user, "le message utilisateur est ré-émis dans le flux");
+        assert!(saw_coordinator, "le coordinateur répond (mode simulé hors-ligne)");
     }
 
     #[tokio::test]
