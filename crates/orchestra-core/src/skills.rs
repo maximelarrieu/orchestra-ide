@@ -25,6 +25,17 @@ pub const WRITE_FILE: &str = "Write_File_Validated";
 pub const EXEC_COMMAND: &str = "Execute_Terminal_Command";
 /// Skill de l'Agent Documentaliste (Phase 5) : écrit un diagramme Mermaid.
 pub const WRITE_MERMAID: &str = "Write_Mermaid_Diagram";
+/// Skill universel : lit le contenu d'une URL (http/https).
+pub const WEB_FETCH: &str = "Web_Fetch";
+
+/// Catalogue des skills **réellement exécutables** (source de vérité unique). Pour en
+/// ajouter un : une entrée ici + un bras dans [`tool_definition`] et dans [`execute_skill`].
+pub const EXECUTABLE_SKILLS: &[&str] = &[READ_FILE, WRITE_FILE, EXEC_COMMAND, WRITE_MERMAID, WEB_FETCH];
+
+/// Vrai si le skill est branché sur du code (et donc activable pour de vrai).
+pub fn is_executable(id: &str) -> bool {
+    EXECUTABLE_SKILLS.contains(&id)
+}
 
 /// Types de diagrammes Mermaid reconnus (préfixe de la 1re ligne).
 const MERMAID_KINDS: &[&str] = &[
@@ -50,10 +61,10 @@ impl SkillOutcome {
     }
 }
 
-/// Définitions d'outils neutres ([`ToolSpec`]) pour les Skills *exécutables* présents dans
-/// `enabled`. Les Skills inconnus/non-Dev sont ignorés : le LLM ne voit que ce qu'il peut
-/// réellement actionner. Chaque provider (Claude/Gemini) rend ces specs dans son format.
-pub fn dev_tool_definitions(enabled: &[String]) -> Vec<ToolSpec> {
+/// Définitions d'outils ([`ToolSpec`]) pour les skills *exécutables* présents dans
+/// `enabled` (registre [`tool_definition`]). Les skills sans implémentation sont ignorés :
+/// le LLM ne voit que ce qu'il peut réellement actionner.
+pub fn tool_specs(enabled: &[String]) -> Vec<ToolSpec> {
     enabled
         .iter()
         .filter_map(|id| tool_definition(id))
@@ -119,6 +130,15 @@ fn tool_definition(id: &str) -> Option<ToolSpec> {
                 "required": ["path", "diagram"]
             }),
         )),
+        WEB_FETCH => Some(spec(
+            WEB_FETCH,
+            "Récupère le contenu texte d'une URL (http/https) et le renvoie (tronqué).",
+            json!({
+                "type": "object",
+                "properties": { "url": { "type": "string", "description": "URL http(s) à lire" } },
+                "required": ["url"]
+            }),
+        )),
         _ => None,
     }
 }
@@ -130,7 +150,38 @@ pub async fn execute_skill(name: &str, input: &Value, workspace: &Path) -> Skill
         WRITE_FILE => write_file(input, workspace),
         EXEC_COMMAND => exec_command(input, workspace).await,
         WRITE_MERMAID => write_mermaid(input, workspace),
+        WEB_FETCH => web_fetch(input).await,
         other => SkillOutcome::err(format!("Skill « {other} » non exécutable à ce stade.")),
+    }
+}
+
+/// Récupère le contenu d'une URL http/https (sécurité : schémas limités, délai, plafond).
+async fn web_fetch(input: &Value) -> SkillOutcome {
+    let Some(url) = input.get("url").and_then(Value::as_str) else {
+        return SkillOutcome::err("paramètre `url` manquant.");
+    };
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return SkillOutcome::err("seules les URLs http(s) sont autorisées.");
+    }
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("orchestra-ide")
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return SkillOutcome::err(format!("client HTTP indisponible : {e}")),
+    };
+    match client.get(url).send().await {
+        Err(e) => SkillOutcome::err(format!("requête échouée : {e}")),
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                SkillOutcome::ok(body)
+            } else {
+                SkillOutcome::err(format!("HTTP {status}\n{body}"))
+            }
+        }
     }
 }
 
@@ -267,15 +318,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_definitions_only_for_executable_skills() {
+    fn tool_specs_only_for_executable_skills() {
         let enabled = vec![
             READ_FILE.to_string(),
-            "Web_Search".to_string(), // non-Dev → ignoré
+            "Web_Search".to_string(), // pas dans le registre → ignoré
             EXEC_COMMAND.to_string(),
+            WEB_FETCH.to_string(),
         ];
-        let defs = dev_tool_definitions(&enabled);
+        let defs = tool_specs(&enabled);
         let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(names, vec![READ_FILE, EXEC_COMMAND]);
+        assert_eq!(names, vec![READ_FILE, EXEC_COMMAND, WEB_FETCH]);
+        // Le registre distingue exécutable vs simple étiquette.
+        assert!(is_executable(READ_FILE) && is_executable(WEB_FETCH));
+        assert!(!is_executable("Web_Search"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_non_http() {
+        let out = web_fetch(&json!({ "url": "ftp://x" })).await;
+        assert!(out.is_error);
+        let missing = web_fetch(&json!({})).await;
+        assert!(missing.is_error);
     }
 
     #[test]

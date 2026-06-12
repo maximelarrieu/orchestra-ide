@@ -1,3 +1,4 @@
+use super::config::AgentDef;
 use super::project_type::ProjectType;
 
 /// Matrice des Skills activés par défaut selon le type de projet (spec §3).
@@ -17,17 +18,36 @@ pub fn default_skills(kind: ProjectType) -> Vec<String> {
     skills.iter().map(|s| s.to_string()).collect()
 }
 
-/// Composition par défaut de l'« orchestre » d'agents selon le type de projet.
-///
-/// Comme [`default_skills`], cette matrice pré-remplit `config.json` lors de
-/// `orchestra init` (Phase 2). Les agents ne sont que des noms pour l'instant ;
-/// le runtime qui les fait vivre arrive en Phase 3.
-pub fn default_agents(kind: ProjectType) -> Vec<String> {
-    let agents: &[&str] = match kind {
-        ProjectType::Dev => &["Agent_Architecte", "Agent_Codeur", "Agent_Testeur"],
-        ProjectType::Nutrition => &["Agent_Planificateur", "Agent_Nutritionniste"],
-        ProjectType::Langue => &["Agent_Tuteur", "Agent_Correcteur"],
-        ProjectType::Immobilier => &["Agent_Scraper", "Agent_Filtrage"],
+/// Composition par défaut de l'« orchestre » d'agents selon le type de projet : nom,
+/// rôle (qui oriente le prompt) et skills propres (par défaut ceux du type, modifiables
+/// ensuite agent par agent depuis l'interface).
+pub fn default_agents(kind: ProjectType) -> Vec<AgentDef> {
+    let roster: &[(&str, &str)] = match kind {
+        ProjectType::Dev => &[
+            ("Agent_Architecte", "Analyse les besoins et conçoit le plan d'implémentation."),
+            ("Agent_Codeur", "Écrit et modifie le code selon le plan."),
+            ("Agent_Testeur", "Écrit et exécute les tests, vérifie la qualité."),
+        ],
+        ProjectType::Nutrition => &[
+            ("Agent_Planificateur", "Construit des plans de repas adaptés aux objectifs."),
+            ("Agent_Nutritionniste", "Analyse les apports et conseille sur l'équilibre."),
+        ],
+        ProjectType::Langue => &[
+            ("Agent_Tuteur", "Donne des leçons et des exercices adaptés au niveau."),
+            ("Agent_Correcteur", "Corrige les réponses et explique les erreurs."),
+        ],
+        ProjectType::Immobilier => &[
+            ("Agent_Scraper", "Collecte les annonces depuis les sources configurées."),
+            ("Agent_Filtrage", "Filtre et classe les annonces selon les critères stricts."),
+        ],
     };
-    agents.iter().map(|s| s.to_string()).collect()
+    let skills = default_skills(kind);
+    roster
+        .iter()
+        .map(|(name, role)| AgentDef {
+            name: name.to_string(),
+            role: role.to_string(),
+            skills: skills.clone(),
+        })
+        .collect()
 }

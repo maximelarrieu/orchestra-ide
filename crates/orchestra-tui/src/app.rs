@@ -3,10 +3,50 @@
 //! Sépare la *logique* d'agrégation du flux (compteurs, historique) du *dessin*
 //! (`dashboard`). On peut ainsi tester l'agrégation sans terminal ni tokio.
 
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
 use orchestra_core::events::AgentEvent;
-use orchestra_core::model::{ContextSpace, DocKind, SpaceDoc};
+use orchestra_core::model::{AgentDef, ContextSpace, DocKind, ProjectType, SpaceDoc};
 
 use crate::editor::Editor;
+
+/// Statistiques de session d'un agent (cumulées tant que l'appli tourne).
+#[derive(Default)]
+pub struct AgentStat {
+    pub invocations: usize,
+    pub thinking: Duration,
+    thinking_start: Option<Instant>,
+}
+
+/// Statut « live » d'un agent, pour la sidebar de l'orchestre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveStatus {
+    Idle,
+    Thinking,
+    Working,
+    Done,
+}
+
+/// Champ d'agent en cours d'édition (saisie dans le menu Agents).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentField {
+    Name,
+    Role,
+    Skills,
+    Add,
+}
+
+impl AgentField {
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentField::Name => "Nouveau nom",
+            AgentField::Role => "Rôle",
+            AgentField::Skills => "Skills (séparés par des virgules)",
+            AgentField::Add => "Nom du nouvel agent",
+        }
+    }
+}
 
 /// Nombre d'événements conservés dans l'historique du radar (les plus anciens sont
 /// oubliés). Largement au-delà de ce qu'un écran affiche.
@@ -30,6 +70,8 @@ pub enum View {
     Radar,
     /// Navigateur des documents de l'espace (persona, ADRs, docs).
     Docs,
+    /// Gestionnaire d'agents (rôle, skills, stats, édition).
+    Agents,
 }
 
 /// Visualiseur Markdown ouvert sur un document.
@@ -53,6 +95,8 @@ pub struct App {
     pub view: View,
     /// Saisie en cours d'un chemin d'espace (`Some(tampon)`), ou `None` hors saisie.
     pub input: Option<String>,
+    /// Saisie en cours d'une intention pour `[1]` (`Some(tampon)`), ou `None`.
+    pub intention: Option<String>,
     /// Éditeur de persona ouvert (`Some`) ou fermé (`None`).
     pub editor: Option<Editor>,
     /// Documents de l'espace (rafraîchis à l'ouverture du navigateur).
@@ -63,10 +107,37 @@ pub struct App {
     pub viewer: Option<Viewer>,
     /// Conversation avec le coordinateur en cours : `Some(tampon de saisie)`.
     pub chat: Option<String>,
+    /// Index de l'agent sélectionné dans le gestionnaire d'agents.
+    pub agent_sel: usize,
+    /// Édition d'un champ d'agent en cours : `Some((champ, tampon))`.
+    pub agent_prompt: Option<(AgentField, String)>,
+    /// Stats de session par agent (clé = nom).
+    pub agent_stats: HashMap<String, AgentStat>,
+    /// Statut live par agent, pour la sidebar (clé = nom).
+    pub agent_status: HashMap<String, LiveStatus>,
     /// Défilement du radar : nombre de lignes remontées depuis le bas (0 = suit le bas).
     pub radar_scroll: usize,
+    /// Agent dont un appel LLM est en cours (`Some`) — pilote l'indicateur « réfléchit… ».
+    pub busy: Option<String>,
+    /// Début de l'attente courante (pour afficher le temps écoulé).
+    pub busy_since: Option<Instant>,
+    /// Compteur d'animation du spinner (incrémenté à chaque tick).
+    pub spinner: usize,
     /// Message transitoire affiché à l'utilisateur (succès/erreur d'une action).
     pub notice: Option<String>,
+}
+
+/// Cadres du spinner d'activité (braille).
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Exemple d'intention proposé par défaut selon le type de projet (`[1]`).
+fn default_intention(kind: ProjectType) -> &'static str {
+    match kind {
+        ProjectType::Dev => "Lis le README et propose 3 améliorations prioritaires du code.",
+        ProjectType::Nutrition => "Propose un plan de repas équilibré pour aujourd'hui selon mes critères.",
+        ProjectType::Langue => "Donne-moi une leçon de 15 min avec quelques exercices, puis corrige mes réponses.",
+        ProjectType::Immobilier => "Liste les annonces correspondant à mes critères et classe-les par pertinence.",
+    }
 }
 
 impl App {
@@ -80,14 +151,37 @@ impl App {
             llm_model: orchestra_core::llm::LlmClient::from_env().map(|c| c.model().to_string()),
             view: View::Radar,
             input: None,
+            intention: None,
             editor: None,
             docs: Vec::new(),
             doc_sel: 0,
             viewer: None,
             chat: None,
+            agent_sel: 0,
+            agent_prompt: None,
+            agent_stats: HashMap::new(),
+            agent_status: HashMap::new(),
             radar_scroll: 0,
+            busy: None,
+            busy_since: None,
+            spinner: 0,
             notice: None,
         }
+    }
+
+    /// Secondes écoulées depuis le début de l'attente courante (si un agent réfléchit).
+    pub fn busy_elapsed_secs(&self) -> Option<u64> {
+        self.busy_since.map(|t| t.elapsed().as_secs())
+    }
+
+    /// Avance l'animation du spinner (appelé au tick de rafraîchissement).
+    pub fn tick(&mut self) {
+        self.spinner = self.spinner.wrapping_add(1);
+    }
+
+    /// Cadre courant du spinner.
+    pub fn spinner_frame(&self) -> &'static str {
+        SPINNER[self.spinner % SPINNER.len()]
     }
 
     /// Fait défiler le radar (delta>0 = remonter dans l'historique). Borné en bas à 0 ; la
@@ -229,6 +323,39 @@ impl App {
         self.input.take().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
 
+    /// `[1]` — entre en saisie d'une intention, pré-remplie d'un exemple selon le type de
+    /// projet (l'utilisateur l'édite ou la valide telle quelle).
+    pub fn start_intention(&mut self) {
+        let example = self
+            .space
+            .as_ref()
+            .map(|s| default_intention(s.config.project_type))
+            .unwrap_or("");
+        self.intention = Some(example.to_string());
+        self.notice = None;
+    }
+
+    pub fn intention_push(&mut self, c: char) {
+        if let Some(buf) = self.intention.as_mut() {
+            buf.push(c);
+        }
+    }
+
+    pub fn intention_backspace(&mut self) {
+        if let Some(buf) = self.intention.as_mut() {
+            buf.pop();
+        }
+    }
+
+    pub fn cancel_intention(&mut self) {
+        self.intention = None;
+    }
+
+    /// Termine la saisie d'intention et renvoie l'objectif (vidé si vide).
+    pub fn take_intention(&mut self) -> Option<String> {
+        self.intention.take().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+
     /// Vrai si un Espace valide est chargé : sans lui, pas d'agents à lancer.
     pub fn can_launch(&self) -> bool {
         self.space
@@ -253,14 +380,51 @@ impl App {
         self.done = 0;
         self.phase = Phase::Running;
         self.radar_scroll = 0;
+        self.busy = None;
+        self.busy_since = None;
+        self.agent_status.clear(); // statuts live remis à zéro pour le nouveau run
     }
 
-    /// Intègre un événement du runtime dans l'état (compteurs + historique borné).
+    /// Intègre un événement du runtime dans l'état (compteurs + historique + stats agents).
     pub fn on_event(&mut self, ev: AgentEvent) {
+        // « Thinking » ne va pas dans l'historique : il pilote l'indicateur + chronomètre.
+        if let AgentEvent::Thinking { agent } = &ev {
+            self.busy = Some(agent.clone());
+            self.busy_since = Some(Instant::now());
+            self.agent_stats.entry(agent.clone()).or_default().thinking_start = Some(Instant::now());
+            self.agent_status.insert(agent.clone(), LiveStatus::Thinking);
+            return;
+        }
+        self.busy = None; // une sortie est apparue → plus en attente
+        self.busy_since = None;
+
+        // Statut live pour la sidebar de l'orchestre.
+        match &ev {
+            AgentEvent::Started { agent } | AgentEvent::Log { agent, .. } => {
+                self.agent_status.insert(agent.clone(), LiveStatus::Working);
+            }
+            AgentEvent::Done { agent } => {
+                self.agent_status.insert(agent.clone(), LiveStatus::Done);
+            }
+            AgentEvent::Thinking { .. } => {}
+        }
+
+        match &ev {
+            AgentEvent::Started { agent } => {
+                self.agent_stats.entry(agent.clone()).or_default().invocations += 1;
+            }
+            AgentEvent::Done { agent } | AgentEvent::Log { agent, .. } => {
+                let st = self.agent_stats.entry(agent.clone()).or_default();
+                if let Some(start) = st.thinking_start.take() {
+                    st.thinking += start.elapsed();
+                }
+            }
+            AgentEvent::Thinking { .. } => {}
+        }
         match &ev {
             AgentEvent::Started { .. } => self.started += 1,
             AgentEvent::Done { .. } => self.done += 1,
-            AgentEvent::Log { .. } => {}
+            _ => {}
         }
         self.events.push(ev);
         if self.events.len() > HISTORY_CAP {
@@ -268,8 +432,141 @@ impl App {
         }
     }
 
+    // --- Gestionnaire d'agents (`[6]`) ---------------------------------------------
+
+    /// `[6]` — bascule entre le radar et le gestionnaire d'agents.
+    pub fn toggle_agents(&mut self) {
+        if self.view == View::Agents {
+            self.view = View::Radar;
+            self.agent_prompt = None;
+            return;
+        }
+        self.agent_sel = 0;
+        self.agent_prompt = None;
+        self.notice = None;
+        self.view = View::Agents;
+    }
+
+    fn agent_count(&self) -> usize {
+        self.space.as_ref().map(|s| s.config.agents.len()).unwrap_or(0)
+    }
+
+    pub fn agents_move(&mut self, delta: isize) {
+        let n = self.agent_count();
+        if n == 0 {
+            return;
+        }
+        let next = (self.agent_sel as isize + delta).clamp(0, n as isize - 1);
+        self.agent_sel = next as usize;
+    }
+
+    /// Agent sélectionné (lecture).
+    pub fn selected_agent(&self) -> Option<&AgentDef> {
+        self.space.as_ref()?.config.agents.get(self.agent_sel)
+    }
+
+    pub fn start_agent_rename(&mut self) {
+        if let Some(a) = self.selected_agent() {
+            self.agent_prompt = Some((AgentField::Name, a.name.clone()));
+        }
+    }
+    pub fn start_agent_role(&mut self) {
+        if let Some(a) = self.selected_agent() {
+            self.agent_prompt = Some((AgentField::Role, a.role.clone()));
+        }
+    }
+    pub fn start_agent_skills(&mut self) {
+        if let Some(a) = self.selected_agent() {
+            self.agent_prompt = Some((AgentField::Skills, a.skills.join(", ")));
+        }
+    }
+    pub fn start_agent_add(&mut self) {
+        if self.space.is_some() {
+            self.agent_prompt = Some((AgentField::Add, String::new()));
+        }
+    }
+
+    pub fn agent_prompt_push(&mut self, c: char) {
+        if let Some((_, buf)) = self.agent_prompt.as_mut() {
+            buf.push(c);
+        }
+    }
+    pub fn agent_prompt_backspace(&mut self) {
+        if let Some((_, buf)) = self.agent_prompt.as_mut() {
+            buf.pop();
+        }
+    }
+    pub fn cancel_agent_prompt(&mut self) {
+        self.agent_prompt = None;
+    }
+
+    /// Valide la saisie en cours et persiste les agents dans `config.json` (via le cœur).
+    pub fn submit_agent_prompt(&mut self) {
+        let Some((field, buf)) = self.agent_prompt.take() else { return };
+        let value = buf.trim().to_string();
+        let sel = self.agent_sel;
+        let Some(space) = self.space.as_mut() else { return };
+        match field {
+            AgentField::Name => {
+                if !value.is_empty() {
+                    if let Some(a) = space.config.agents.get_mut(sel) {
+                        a.name = value;
+                    }
+                }
+            }
+            AgentField::Role => {
+                if let Some(a) = space.config.agents.get_mut(sel) {
+                    a.role = value;
+                }
+            }
+            AgentField::Skills => {
+                if let Some(a) = space.config.agents.get_mut(sel) {
+                    a.skills = value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+            }
+            AgentField::Add => {
+                if !value.is_empty() {
+                    space.config.agents.push(AgentDef::new(value));
+                    self.agent_sel = space.config.agents.len() - 1;
+                }
+            }
+        }
+        self.persist_config();
+    }
+
+    /// Supprime l'agent sélectionné et persiste.
+    pub fn delete_selected_agent(&mut self) {
+        let sel = self.agent_sel;
+        let Some(space) = self.space.as_mut() else { return };
+        if sel < space.config.agents.len() {
+            let removed = space.config.agents.remove(sel);
+            if self.agent_sel >= space.config.agents.len() {
+                self.agent_sel = space.config.agents.len().saturating_sub(1);
+            }
+            self.persist_config();
+            if self.notice.is_none() {
+                self.notice = Some(format!("Agent « {} » supprimé.", removed.name));
+            }
+        }
+    }
+
+    fn persist_config(&mut self) {
+        if let Some(space) = self.space.as_ref() {
+            match space.save_config() {
+                Ok(()) => self.notice = Some("Agents enregistrés.".into()),
+                Err(e) => self.notice = Some(format!("Échec enregistrement : {e}")),
+            }
+        }
+    }
+
     /// Signalé par la boucle principale quand le canal se ferme (tous les agents finis).
     pub fn mark_finished(&mut self) {
+        self.busy = None;
+        self.busy_since = None;
         if self.phase == Phase::Running {
             self.phase = Phase::Finished;
         }
@@ -330,6 +627,66 @@ mod tests {
     }
 
     #[test]
+    fn thinking_sets_busy_without_polluting_history() {
+        let mut app = App::new(None);
+        app.on_event(AgentEvent::Thinking { agent: "Coordinateur".into() });
+        assert_eq!(app.busy.as_deref(), Some("Coordinateur"));
+        assert!(app.events.is_empty(), "Thinking ne va pas dans l'historique");
+        // Une sortie efface l'indicateur d'attente.
+        app.on_event(AgentEvent::Log { agent: "Coordinateur".into(), msg: "ok".into() });
+        assert!(app.busy.is_none());
+        assert_eq!(app.events.len(), 1);
+    }
+
+    #[test]
+    fn agent_add_persists_to_config() {
+        use orchestra_core::model::project_type::ProjectType;
+        use orchestra_core::{scaffold_space, InitOptions};
+
+        let dir = std::env::temp_dir().join(format!("orch-agents-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        scaffold_space(
+            &dir,
+            InitOptions {
+                project_name: "T".into(),
+                project_type: ProjectType::Dev,
+                workspace_path: None,
+                documentalist_enabled: false,
+                integrations: Default::default(),
+            },
+        )
+        .unwrap();
+
+        let mut app = App::new(Some(ContextSpace::load(&dir).unwrap()));
+        app.toggle_agents();
+        app.start_agent_add();
+        for c in "Agent_X".chars() {
+            app.agent_prompt_push(c);
+        }
+        app.submit_agent_prompt();
+
+        let reloaded = ContextSpace::load(&dir).unwrap();
+        assert!(reloaded.config.agents.iter().any(|a| a.name == "Agent_X"),
+            "le nouvel agent doit être persisté dans config.json");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_status_tracks_agents_and_resets() {
+        let mut app = App::new(None);
+        app.on_event(AgentEvent::Started { agent: "A".into() });
+        assert_eq!(app.agent_status.get("A").copied(), Some(LiveStatus::Working));
+        app.on_event(AgentEvent::Thinking { agent: "A".into() });
+        assert_eq!(app.agent_status.get("A").copied(), Some(LiveStatus::Thinking));
+        app.on_event(AgentEvent::Done { agent: "A".into() });
+        assert_eq!(app.agent_status.get("A").copied(), Some(LiveStatus::Done));
+        app.begin_run();
+        assert!(app.agent_status.is_empty(), "un nouveau run réinitialise les statuts");
+    }
+
+    #[test]
     fn radar_scroll_clamps_at_zero() {
         let mut app = App::new(None);
         app.radar_scroll_by(5);
@@ -357,6 +714,16 @@ mod tests {
     }
 
     #[test]
+    fn chat_message_can_be_multiline() {
+        let mut app = App::new(None);
+        app.start_chat();
+        app.chat_push('a');
+        app.chat_push('\n'); // Maj+Entrée
+        app.chat_push('b');
+        assert_eq!(app.chat_submit().as_deref(), Some("a\nb"));
+    }
+
+    #[test]
     fn space_input_buffer_edit_and_take() {
         let mut app = App::new(None);
         app.start_space_input();
@@ -370,6 +737,18 @@ mod tests {
     }
 
     #[test]
+    fn intention_input_edit_and_take() {
+        let mut app = App::new(None);
+        app.start_intention();
+        app.intention_push('g');
+        app.intention_push('o');
+        app.intention_backspace();
+        app.intention_push('o');
+        assert_eq!(app.take_intention().as_deref(), Some("go"));
+        assert!(app.intention.is_none(), "la saisie est consommée");
+    }
+
+    #[test]
     fn empty_space_input_yields_none() {
         let mut app = App::new(None);
         app.start_space_input();
@@ -379,7 +758,7 @@ mod tests {
 
     #[test]
     fn detects_incomplete_persona() {
-        use orchestra_core::model::config::ProjectConfig;
+        use orchestra_core::model::config::{AgentDef, ProjectConfig};
         use orchestra_core::model::project_type::ProjectType;
         let mk = |persona: Option<&str>| {
             let space = ContextSpace {
@@ -390,7 +769,7 @@ mod tests {
                     workspace_path: None,
                     documentalist_enabled: false,
                     skills: vec![],
-                    agents: vec!["A".into()],
+                    agents: vec![AgentDef::new("A")],
                     integrations: Default::default(),
                 },
                 persona: persona.map(str::to_string),

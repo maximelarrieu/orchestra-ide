@@ -31,6 +31,39 @@ const COORDINATOR: &str = "Coordinateur";
 /// Nombre maximal de tours LLM ↔ outils par agent (garde-fou anti-boucle).
 const MAX_TURNS: usize = 6;
 
+/// Un agent prêt à tourner : nom, rôle, skills, et drapeau Documentaliste.
+#[derive(Clone)]
+struct RosterAgent {
+    name: String,
+    role: String,
+    skills: Vec<String>,
+    documentalist: bool,
+}
+
+/// Construit le roster d'un espace : agents configurés + Documentaliste si activé.
+fn roster(space: &ContextSpace) -> Vec<RosterAgent> {
+    let mut roster: Vec<RosterAgent> = space
+        .config
+        .agents
+        .iter()
+        .map(|a| RosterAgent {
+            name: a.name.clone(),
+            role: a.role.clone(),
+            skills: a.skills.clone(),
+            documentalist: false,
+        })
+        .collect();
+    if space.config.documentalist_enabled {
+        roster.push(RosterAgent {
+            name: "Agent_Documentaliste".to_string(),
+            role: String::new(),
+            skills: Vec::new(),
+            documentalist: true,
+        });
+    }
+    roster
+}
+
 /// Contexte transmis à chaque tâche agent (clonable, `Send`).
 #[derive(Clone)]
 struct AgentContext {
@@ -73,42 +106,34 @@ fn spawn_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>) -> Unbounde
     let (tx, rx) = mpsc::unbounded_channel();
     let ctx = AgentContext::from_space(space);
 
-    // Roster : agents de l'espace + l'Agent Documentaliste si activé (Phase 5).
-    let mut roster: Vec<(String, bool)> =
-        space.config.agents.iter().cloned().map(|a| (a, false)).collect();
-    if space.config.documentalist_enabled {
-        roster.push(("Agent_Documentaliste".to_string(), true));
-    }
-
-    for (idx, (agent, is_doc)) in roster.into_iter().enumerate() {
+    for (idx, agent) in roster(space).into_iter().enumerate() {
         let tx = tx.clone();
         let ctx = ctx.clone();
         let client = client.clone();
-        tokio::spawn(run_agent(agent, idx, is_doc, ctx, client, tx));
+        tokio::spawn(run_agent(agent, idx, ctx, client, tx));
     }
     rx
 }
 
 /// Cycle de vie d'un agent : `Started`, puis travail réel ou simulé, puis `Done`.
 async fn run_agent(
-    agent: String,
+    agent: RosterAgent,
     idx: usize,
-    documentalist: bool,
     ctx: AgentContext,
     client: Option<Arc<LlmClient>>,
     tx: UnboundedSender<AgentEvent>,
 ) {
     // Décalage de démarrage : les agents n'entrent pas tous en scène en même temps.
     sleep(Duration::from_millis(150 * idx as u64)).await;
-    let _ = tx.send(AgentEvent::Started { agent: agent.clone() });
+    let _ = tx.send(AgentEvent::Started { agent: agent.name.clone() });
 
     let handled = match &client {
-        Some(c) => match llm_agent_loop(c, &agent, documentalist, &ctx, &tx).await {
+        Some(c) => match llm_agent_loop(c, &agent, &ctx, &tx).await {
             Ok(()) => true,
             Err(e) => {
                 // Repli : l'API a échoué (réseau, quota…) → flux simulé pour ne pas figer.
                 let _ = tx.send(AgentEvent::Log {
-                    agent: agent.clone(),
+                    agent: agent.name.clone(),
                     msg: format!("⚠ LLM injoignable ({e}) — bascule en mode simulé"),
                 });
                 false
@@ -118,33 +143,34 @@ async fn run_agent(
     };
 
     if !handled {
-        simulate_agent(&agent, &tx).await;
+        simulate_agent(&agent.name, &tx).await;
     }
 
-    let _ = tx.send(AgentEvent::Done { agent });
+    let _ = tx.send(AgentEvent::Done { agent: agent.name });
 }
 
-/// Outils d'un agent selon son rôle (Documentaliste vs agent standard).
-fn agent_tools(documentalist: bool, ctx: &AgentContext) -> Vec<ToolSpec> {
-    if documentalist {
-        skills::documentalist_tool_definitions()
-    } else {
-        let mut t = skills::dev_tool_definitions(&ctx.skills);
-        t.extend(integrations::tool_definitions(&ctx.integ)); // Git/GitHub si configurés
-        t
+/// Outils d'un agent : Documentaliste → outils doc ; sinon ses skills propres (repli sur
+/// les skills de l'espace s'il n'en a pas) + intégrations Git/GitHub configurées.
+fn agent_tools(agent: &RosterAgent, ctx: &AgentContext) -> Vec<ToolSpec> {
+    if agent.documentalist {
+        return skills::documentalist_tool_definitions();
     }
+    let own = if agent.skills.is_empty() { &ctx.skills } else { &agent.skills };
+    let mut t = skills::tool_specs(own); // skills exécutables assignés (registre)
+    t.extend(integrations::tool_definitions(&ctx.integ)); // Git/GitHub si configurés
+    t
 }
 
-/// Boucle agentique autonome d'un agent (mode `[1] Lancer`) : objectif implicite + tours.
+/// Boucle agentique autonome d'un agent (sous-tâche) : objectif implicite + tours.
 async fn llm_agent_loop(
     client: &LlmClient,
-    agent: &str,
-    documentalist: bool,
+    agent: &RosterAgent,
     ctx: &AgentContext,
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<(), crate::llm::LlmError> {
-    let system = build_system_prompt(agent, documentalist, ctx);
-    let tools = agent_tools(documentalist, ctx);
+    let system = build_system_prompt(&agent.name, &agent.role, agent.documentalist, ctx);
+    let tools = agent_tools(agent, ctx);
+    let documentalist = agent.documentalist;
     let intention = if documentalist {
         "Mets à jour la documentation du projet et produis/actualise les diagrammes Mermaid \
          pertinents. Lis les fichiers utiles, puis écris la doc et les diagrammes."
@@ -153,7 +179,7 @@ async fn llm_agent_loop(
          utile et explique brièvement chaque action."
     };
     let mut conv: Vec<Msg> = vec![Msg::User(intention.to_string())];
-    run_agent_turn(client, &system, &tools, &mut conv, agent, ctx, tx).await?;
+    run_agent_turn(client, &system, &tools, &mut conv, &agent.name, ctx, tx).await?;
     Ok(())
 }
 
@@ -173,6 +199,7 @@ async fn run_agent_turn(
     let mut final_text = String::new();
 
     for _ in 0..MAX_TURNS {
+        let _ = tx.send(AgentEvent::Thinking { agent: label.to_string() });
         let blocks = client.complete(system, tools, conv).await?;
 
         let mut calls: Vec<(String, String, Value)> = Vec::new();
@@ -233,12 +260,7 @@ fn start_conversation_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>
     let (user_tx, user_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let ctx = AgentContext::from_space(space);
-
-    let mut roster: Vec<(String, bool)> =
-        space.config.agents.iter().cloned().map(|a| (a, false)).collect();
-    if space.config.documentalist_enabled {
-        roster.push(("Agent_Documentaliste".to_string(), true));
-    }
+    let roster = roster(space);
 
     tokio::spawn(conversation_task(ctx, roster, client, user_rx, event_tx));
     ChatHandle { user: user_tx, events: event_rx }
@@ -248,7 +270,7 @@ fn start_conversation_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>
 /// recommence. Se termine quand le `Sender` utilisateur est fermé (l'UI quitte le chat).
 async fn conversation_task(
     ctx: AgentContext,
-    roster: Vec<(String, bool)>,
+    roster: Vec<RosterAgent>,
     client: Option<Arc<LlmClient>>,
     mut user_rx: UnboundedReceiver<String>,
     tx: UnboundedSender<AgentEvent>,
@@ -260,7 +282,7 @@ async fn conversation_task(
     });
 
     let system = coordinator_prompt(&ctx, &roster);
-    let tools: Vec<ToolSpec> = roster.iter().map(|(name, _)| delegation_tool(name)).collect();
+    let tools: Vec<ToolSpec> = roster.iter().map(delegation_tool).collect();
     let mut conv: Vec<Msg> = Vec::new();
 
     while let Some(user_msg) = user_rx.recv().await {
@@ -295,10 +317,11 @@ async fn run_coordinator_turn(
     tools: &[ToolSpec],
     conv: &mut Vec<Msg>,
     ctx: &AgentContext,
-    roster: &[(String, bool)],
+    roster: &[RosterAgent],
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<(), crate::llm::LlmError> {
     for _ in 0..MAX_TURNS {
+        let _ = tx.send(AgentEvent::Thinking { agent: COORDINATOR.to_string() });
         let blocks = client.complete(system, tools, conv).await?;
 
         let mut calls: Vec<(String, String, Value)> = Vec::new();
@@ -339,29 +362,33 @@ async fn run_coordinator_turn(
 async fn run_subagent(
     client: &LlmClient,
     ctx: &AgentContext,
-    roster: &[(String, bool)],
-    agent: &str,
+    roster: &[RosterAgent],
+    name: &str,
     instruction: &str,
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<String, crate::llm::LlmError> {
-    let documentalist = roster.iter().find(|(n, _)| n == agent).map(|(_, d)| *d).unwrap_or(false);
-    let _ = tx.send(AgentEvent::Started { agent: agent.to_string() });
+    // Agent connu du roster (sinon, agent minimal au cas où le modèle invente un nom).
+    let fallback = RosterAgent { name: name.to_string(), role: String::new(), skills: Vec::new(), documentalist: false };
+    let agent = roster.iter().find(|a| a.name == name).unwrap_or(&fallback);
+    let _ = tx.send(AgentEvent::Started { agent: name.to_string() });
 
-    let system = build_system_prompt(agent, documentalist, ctx);
-    let tools = agent_tools(documentalist, ctx);
+    let system = build_system_prompt(&agent.name, &agent.role, agent.documentalist, ctx);
+    let tools = agent_tools(agent, ctx);
     let mut conv: Vec<Msg> = vec![Msg::User(instruction.to_string())];
-    let text = run_agent_turn(client, &system, &tools, &mut conv, agent, ctx, tx).await;
+    let text = run_agent_turn(client, &system, &tools, &mut conv, name, ctx, tx).await;
 
-    let _ = tx.send(AgentEvent::Done { agent: agent.to_string() });
+    let _ = tx.send(AgentEvent::Done { agent: name.to_string() });
     text
 }
 
 /// Outil de délégation exposé au coordinateur pour solliciter un agent (un par agent).
-fn delegation_tool(agent: &str) -> ToolSpec {
+fn delegation_tool(agent: &RosterAgent) -> ToolSpec {
+    let name = &agent.name;
+    let role = if agent.role.is_empty() { "agent spécialisé" } else { &agent.role };
     ToolSpec {
-        name: agent.to_string(),
+        name: name.to_string(),
         description: format!(
-            "Délègue une tâche à l'agent « {agent} ». Fournis une instruction claire et autonome ; \
+            "Délègue une tâche à l'agent « {name} » ({role}). Fournis une instruction claire et autonome ; \
              tu recevras son compte rendu."
         ),
         parameters: json!({
@@ -372,11 +399,17 @@ fn delegation_tool(agent: &str) -> ToolSpec {
     }
 }
 
-/// Prompt système du coordinateur : rôle + roster des agents délégables.
-fn coordinator_prompt(ctx: &AgentContext, roster: &[(String, bool)]) -> String {
+/// Prompt système du coordinateur : rôle + roster des agents délégables (avec leur rôle).
+fn coordinator_prompt(ctx: &AgentContext, roster: &[RosterAgent]) -> String {
     let agents = roster
         .iter()
-        .map(|(n, _)| format!("« {n} »"))
+        .map(|a| {
+            if a.role.is_empty() {
+                format!("« {} »", a.name)
+            } else {
+                format!("« {} » ({})", a.name, a.role)
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ");
     let mut s = format!(
@@ -395,8 +428,8 @@ fn coordinator_prompt(ctx: &AgentContext, roster: &[(String, bool)]) -> String {
     s
 }
 
-/// Construit le prompt système d'un agent à partir de l'espace de contexte.
-fn build_system_prompt(agent: &str, documentalist: bool, ctx: &AgentContext) -> String {
+/// Construit le prompt système d'un agent à partir de son nom, son rôle et l'espace.
+fn build_system_prompt(name: &str, role: &str, documentalist: bool, ctx: &AgentContext) -> String {
     let mut s = if documentalist {
         format!(
             "Tu es l'Agent Documentaliste d'Orchestra IDE pour le projet « {} » (type : {}). \
@@ -408,13 +441,17 @@ fn build_system_prompt(agent: &str, documentalist: bool, ctx: &AgentContext) -> 
             ctx.project_type.label(),
         )
     } else {
-        format!(
-            "Tu es « {agent} », un agent de l'orchestre Orchestra IDE travaillant sur le projet \
+        let mut s = format!(
+            "Tu es « {name} », un agent de l'orchestre Orchestra IDE travaillant sur le projet \
              « {} » (type : {}). Réponds en français, de façon concise. Mène la tâche à son terme \
              en utilisant tes outils quand c'est pertinent ; n'invente pas de résultats d'outils.",
             ctx.project_name,
             ctx.project_type.label(),
-        )
+        );
+        if !role.is_empty() {
+            s.push_str(&format!("\n\n## Ton rôle\n{role}"));
+        }
+        s
     };
     if let Some(persona) = &ctx.persona {
         s.push_str("\n\n## Contexte / persona\n");
@@ -486,7 +523,7 @@ fn scripted_steps(agent: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::config::ProjectConfig;
+    use crate::model::config::{AgentDef, ProjectConfig};
 
     fn space_with_agents(agents: &[&str]) -> ContextSpace {
         ContextSpace {
@@ -497,7 +534,7 @@ mod tests {
                 workspace_path: None,
                 documentalist_enabled: false,
                 skills: vec![],
-                agents: agents.iter().map(|s| s.to_string()).collect(),
+                agents: agents.iter().map(|s| AgentDef::new(*s)).collect(),
                 integrations: Default::default(),
             },
             persona: None,
@@ -516,7 +553,7 @@ mod tests {
             match ev {
                 AgentEvent::Started { .. } => started += 1,
                 AgentEvent::Done { .. } => done += 1,
-                AgentEvent::Log { .. } => {}
+                AgentEvent::Log { .. } | AgentEvent::Thinking { .. } => {}
             }
         }
         assert_eq!(started, 2, "chaque agent démarre une fois");
@@ -566,7 +603,7 @@ mod tests {
                     saw_doc |= agent.contains("Documentaliste");
                 }
                 AgentEvent::Done { .. } => done += 1,
-                AgentEvent::Log { .. } => {}
+                AgentEvent::Log { .. } | AgentEvent::Thinking { .. } => {}
             }
         }
         assert_eq!((started, done), (1, 1));

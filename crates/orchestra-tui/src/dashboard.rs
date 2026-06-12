@@ -12,17 +12,36 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, Phase, View, Viewer};
+use crate::app::{App, LiveStatus, Phase, View, Viewer};
 use crate::editor::Editor;
 use crate::markdown;
 
+/// En dessous de cette largeur de terminal, la sidebar est masquée (centre plein).
+const SIDEBAR_MIN_TERM_WIDTH: u16 = 60;
+const SIDEBAR_WIDTH: u16 = 26;
+
 pub fn render(frame: &mut Frame, app: &App) {
-    let [header, center, menu] = Layout::vertical([
-        Constraint::Length(3), // en-tête
-        Constraint::Min(8),    // zone centrale (radar / ADRs)
-        Constraint::Length(4), // menu
+    // La zone du bas grandit pendant une saisie de chat multi-ligne.
+    let menu_h: u16 = match &app.chat {
+        Some(buf) => (buf.matches('\n').count() as u16 + 4).clamp(4, 12),
+        None => 4,
+    };
+    let [header, body, menu] = Layout::vertical([
+        Constraint::Length(3),       // en-tête
+        Constraint::Min(6),          // corps (sidebar + zone centrale)
+        Constraint::Length(menu_h),  // menu / saisie
     ])
     .areas(frame.area());
+
+    // Cockpit : sidebar « orchestre » à gauche + zone centrale, sauf terminal trop étroit.
+    let center = if frame.area().width >= SIDEBAR_MIN_TERM_WIDTH {
+        let [sidebar, center] =
+            Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(20)]).areas(body);
+        render_sidebar(frame, sidebar, app);
+        center
+    } else {
+        body
+    };
 
     render_header(frame, header, app);
     if let Some(ed) = &app.editor {
@@ -33,9 +52,126 @@ pub fn render(frame: &mut Frame, app: &App) {
         match app.view {
             View::Radar => render_radar(frame, center, app),
             View::Docs => render_docs_list(frame, center, app),
+            View::Agents => render_agents(frame, center, app),
         }
     }
     render_menu(frame, menu, app);
+}
+
+/// Sidebar « orchestre » : statut live de chaque agent (toujours visible).
+fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 🎻 ORCHESTRE ");
+    let inner_w = area.width.saturating_sub(4) as usize; // bordures + icône
+    let mut lines: Vec<Line> = Vec::new();
+
+    let names = sidebar_agents(app);
+    if names.is_empty() {
+        lines.push(Line::from(Span::styled("  (aucun agent)", Style::new().dark_gray())));
+    } else {
+        for name in &names {
+            let status = app.agent_status.get(name).copied().unwrap_or(LiveStatus::Idle);
+            let (icon, style) = match status {
+                LiveStatus::Idle => ("○".to_string(), Style::new().dark_gray()),
+                LiveStatus::Thinking => (app.spinner_frame().to_string(), Style::new().magenta().bold()),
+                LiveStatus::Working => ("▸".to_string(), Style::new().green().bold()),
+                LiveStatus::Done => ("✔".to_string(), Style::new().green()),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {icon} "), style),
+                Span::raw(truncate_str(name, inner_w)),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(" [2] Docs   [4] Persona", Style::new().dark_gray())));
+    lines.push(Line::from(Span::styled(" [6] Agents", Style::new().dark_gray())));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Agents à afficher dans la sidebar : Coordinateur (s'il est apparu) + agents + Documentaliste.
+fn sidebar_agents(app: &App) -> Vec<String> {
+    let mut v = Vec::new();
+    if app.agent_status.contains_key("Coordinateur") {
+        v.push("Coordinateur".to_string());
+    }
+    if let Some(s) = &app.space {
+        for a in &s.config.agents {
+            v.push(a.name.clone());
+        }
+        if s.config.documentalist_enabled {
+            v.push("Agent_Documentaliste".to_string());
+        }
+    }
+    v
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+    }
+}
+
+/// Gestionnaire d'agents : liste + fiche (rôle, skills, stats de session).
+fn render_agents(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 📇 GESTION DES AGENTS ");
+    let mut lines: Vec<Line> = Vec::new();
+    match &app.space {
+        Some(s) if !s.config.agents.is_empty() => {
+            for (i, a) in s.config.agents.iter().enumerate() {
+                let selected = i == app.agent_sel;
+                let role = if a.role.is_empty() { "(rôle non défini)".to_string() } else { a.role.clone() };
+                lines.push(Line::from(vec![
+                    Span::raw(if selected { "▶ " } else { "  " }),
+                    Span::styled(
+                        a.name.clone(),
+                        if selected { Style::new().cyan().bold() } else { Style::new().cyan() },
+                    ),
+                    Span::styled(format!(" — {role}"), Style::new().dark_gray()),
+                ]));
+            }
+            if let Some(a) = s.config.agents.get(app.agent_sel) {
+                let (inv, secs) = app
+                    .agent_stats
+                    .get(&a.name)
+                    .map(|st| (st.invocations, st.thinking.as_secs()))
+                    .unwrap_or((0, 0));
+                lines.push(Line::raw(""));
+                // Skills : exécutables en vert, simples étiquettes en gris « (inactif) ».
+                let mut spans = vec![Span::styled("Skills : ", Style::new().bold())];
+                if a.skills.is_empty() {
+                    spans.push(Span::styled("(aucun)", Style::new().dark_gray()));
+                } else {
+                    for (i, sk) in a.skills.iter().enumerate() {
+                        if i > 0 {
+                            spans.push(Span::raw(", "));
+                        }
+                        if orchestra_core::skills::is_executable(sk) {
+                            spans.push(Span::styled(sk.clone(), Style::new().green()));
+                        } else {
+                            spans.push(Span::styled(format!("{sk} (inactif)"), Style::new().dark_gray()));
+                        }
+                    }
+                }
+                lines.push(Line::from(spans));
+                lines.push(Line::from(vec![
+                    Span::styled("Stats (session) : ", Style::new().bold()),
+                    Span::raw(format!("{inv} invocation(s) · {secs}s de réflexion")),
+                ]));
+            }
+        }
+        Some(_) => lines.push(Line::from(Span::styled(
+            "  Aucun agent. Appuie sur [a] pour en ajouter.",
+            Style::new().dark_gray(),
+        ))),
+        None => lines.push(Line::from(Span::styled(
+            "  Aucun espace chargé.",
+            Style::new().dark_gray(),
+        ))),
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Navigateur des documents de l'espace (persona / ADRs / docs), avec sélection.
@@ -117,7 +253,12 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         None => ("Aucun espace chargé".to_string(), "—"),
     };
 
-    let status = if app.chat.is_some() {
+    let status = if let Some(agent) = &app.busy {
+        Span::styled(
+            format!("{} {agent} réfléchit… {}s", app.spinner_frame(), app.busy_elapsed_secs().unwrap_or(0)),
+            Style::new().magenta().bold(),
+        )
+    } else if app.chat.is_some() {
         Span::styled("💬 conversation", Style::new().magenta().bold())
     } else {
         match app.phase {
@@ -155,7 +296,7 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
     if app.events.is_empty() {
         let block = Block::bordered().title(" 🛰  ÉCRAN RADAR (FLUX D'ACTIVITÉ DES AGENTS) ");
         let hint = match (app.can_launch(), app.phase) {
-            (true, Phase::Idle) => "  Prêt. [1] lancer l'orchestre · [5] converser.",
+            (true, Phase::Idle) => "  Prêt. [1] lancer une intention · [5] converser.",
             (false, _) => "  Aucun agent dans cet espace (ou aucun espace chargé).",
             _ => "  En attente d'activité…",
         };
@@ -185,6 +326,16 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
     let mut rows: Vec<Line> = Vec::new();
     for ev in &app.events {
         event_rows(ev, inner_w, &mut rows);
+    }
+    // Indicateur transitoire d'activité en bas du flux (« … réfléchit »).
+    if let Some(agent) = &app.busy {
+        rows.push(Line::from(vec![
+            Span::styled(format!("  {} ", app.spinner_frame()), Style::new().magenta().bold()),
+            Span::styled(
+                format!("{agent} réfléchit… {}s", app.busy_elapsed_secs().unwrap_or(0)),
+                Style::new().dark_gray(),
+            ),
+        ]));
     }
     let total = rows.len();
     let max_scroll = total.saturating_sub(visible);
@@ -223,6 +374,8 @@ fn event_rows(ev: &AgentEvent, width: usize, rows: &mut Vec<Line<'static>>) {
             Span::styled(agent.clone(), speaker_style(agent).bold()),
             Span::styled(" — terminé", Style::new().green()),
         ])),
+        // « Thinking » n'est jamais stocké dans l'historique (cf. App::on_event).
+        AgentEvent::Thinking { .. } => {}
         AgentEvent::Log { agent, msg } => {
             let prefix = format!("{agent} : ");
             let indent = 2 + prefix.chars().count();
@@ -301,51 +454,84 @@ fn wrap_plain(s: &str, width: usize) -> Vec<String> {
 fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" 📋 OPTIONS & MENUS ");
 
-    // Les modes (éditeur / visualiseur / saisie) ont priorité sur le menu.
-    let content = if app.editor.is_some() {
-        Line::from(Span::styled(
+    // Les modes (éditeur / visualiseur / chat / saisie) ont priorité sur le menu.
+    let lines: Vec<Line> = if app.editor.is_some() {
+        vec![Line::from(Span::styled(
             "✏ Persona — Ctrl+S enregistrer · Échap annuler · ←↑↓→ naviguer",
             Style::new().magenta(),
-        ))
+        ))]
     } else if app.viewer.is_some() {
         let edit = if app.viewer_is_persona() { " · [e] éditer" } else { "" };
-        Line::from(Span::styled(
+        vec![Line::from(Span::styled(
             format!("📖 Document — ↑↓ défiler · Échap fermer{edit}"),
             Style::new().cyan(),
-        ))
+        ))]
     } else if app.view == View::Docs {
-        Line::from(Span::styled(
+        vec![Line::from(Span::styled(
             "📚 Documents — ↑↓ choisir · Entrée ouvrir · Échap retour",
             Style::new().cyan(),
-        ))
-    } else if let Some(buf) = &app.chat {
-        Line::from(vec![
-            Span::styled("› ", Style::new().magenta().bold()),
+        ))]
+    } else if let Some((field, buf)) = &app.agent_prompt {
+        vec![Line::from(vec![
+            Span::styled(format!("{} : ", field.label()), Style::new().bold()),
             Span::raw(buf.clone()),
-            Span::styled("▏", Style::new().magenta()),
-            Span::styled("   (Entrée = envoyer · Échap = quitter le chat)", Style::new().dark_gray()),
-        ])
+            Span::styled("▏", Style::new().cyan()),
+            Span::styled("   (Entrée = valider · Échap = annuler)", Style::new().dark_gray()),
+        ])]
+    } else if app.view == View::Agents {
+        vec![Line::from(Span::styled(
+            "📇 Agents — ↑↓ choisir · [r] renommer · [o] rôle · [s] skills · [a] ajouter · [d] supprimer · Échap",
+            Style::new().cyan(),
+        ))]
+    } else if let Some(buf) = &app.chat {
+        // Saisie de message, potentiellement sur plusieurs lignes (Maj+Entrée).
+        let mut lines = Vec::new();
+        let mut parts = buf.split('\n');
+        let first = parts.next().unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled("› ", Style::new().magenta().bold()),
+            Span::raw(first.to_string()),
+        ]));
+        for part in parts {
+            lines.push(Line::from(vec![Span::raw("  "), Span::raw(part.to_string())]));
+        }
+        // Curseur en fin de dernière ligne.
+        if let Some(last) = lines.last_mut() {
+            last.spans.push(Span::styled("▏", Style::new().magenta()));
+        }
+        lines.push(Line::from(Span::styled(
+            "(Entrée = envoyer · Maj/Alt+Entrée = nouvelle ligne · Échap = quitter)",
+            Style::new().dark_gray(),
+        )));
+        lines
+    } else if let Some(buf) = &app.intention {
+        vec![Line::from(vec![
+            Span::styled("🎯 Intention : ", Style::new().bold()),
+            Span::raw(buf.clone()),
+            Span::styled("▏", Style::new().cyan()),
+            Span::styled("   (Entrée = lancer · Échap = annuler)", Style::new().dark_gray()),
+        ])]
     } else if let Some(buf) = &app.input {
-        Line::from(vec![
+        vec![Line::from(vec![
             Span::styled("Chemin de l'espace : ", Style::new().bold()),
             Span::raw(buf.clone()),
             Span::styled("▏", Style::new().cyan()),
             Span::styled("   (Entrée = charger · Échap = annuler)", Style::new().dark_gray()),
-        ])
+        ])]
     } else if let Some(notice) = &app.notice {
-        Line::from(Span::styled(notice.clone(), Style::new().yellow()))
+        vec![Line::from(Span::styled(notice.clone(), Style::new().yellow()))]
     } else {
-        Line::from(
-            "[1] Lancer  [5] Converser  [2] Documents  [3] Espace  [4] Persona  [q] Quitter",
-        )
+        vec![Line::from(
+            "[1] Intention  [5] Chat  [2] Docs  [3] Espace  [4] Persona  [6] Agents  [q] Quitter",
+        )]
     };
-    frame.render_widget(Paragraph::new(content).block(block), area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orchestra_core::model::config::ProjectConfig;
+    use orchestra_core::model::config::{AgentDef, ProjectConfig};
     use orchestra_core::model::project_type::ProjectType;
     use orchestra_core::model::ContextSpace;
     use ratatui::backend::TestBackend;
@@ -361,7 +547,7 @@ mod tests {
                 workspace_path: None,
                 documentalist_enabled: false,
                 skills: vec![],
-                agents: vec!["Agent_Scraper".to_string()],
+                agents: vec![AgentDef::new("Agent_Scraper")],
                 integrations: Default::default(),
             },
             persona: None,
@@ -400,6 +586,18 @@ mod tests {
         app.toggle_docs(); // retour radar
         app.start_space_input(); // invite de saisie dans le menu
         app.input_push('x');
+        terminal.draw(|f| render(f, &app)).unwrap();
+    }
+
+    /// Le gestionnaire d'agents (liste + fiche) et la saisie d'un champ doivent se rendre.
+    #[test]
+    fn renders_agents_view_and_prompt() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut app = demo_app();
+        app.toggle_agents();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        app.start_agent_rename();
+        app.agent_prompt_push('Z');
         terminal.draw(|f| render(f, &app)).unwrap();
     }
 

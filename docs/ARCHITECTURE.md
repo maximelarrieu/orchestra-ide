@@ -85,8 +85,13 @@ classDiagram
         +Option~PathBuf~ workspace_path
         +bool documentalist_enabled
         +Vec~String~ skills
-        +Vec~String~ agents
+        +Vec~AgentDef~ agents
         +Integrations integrations
+    }
+    class AgentDef {
+        +String name
+        +String role
+        +Vec~String~ skills
     }
     class ProjectType {
         <<enum>>
@@ -106,6 +111,7 @@ classDiagram
     }
     ContextSpace --> ProjectConfig
     ContextSpace --> "0..*" Adr
+    ProjectConfig --> "0..*" AgentDef
     ProjectConfig --> ProjectType
     ProjectConfig --> Integrations
 ```

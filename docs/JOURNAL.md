@@ -166,6 +166,56 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - **Rendu Markdown dans la conversation** : les messages sont stylés bloc par bloc
   (`markdown::styled_blocks` — titres, listes, citations, code) puis repliés à la largeur
   (`wrap_plain`). Le visualiseur plein écran `[2]` conserve en plus le style en ligne.
+- **Indicateur d'activité** : un événement `AgentEvent::Thinking` est émis avant chaque
+  appel LLM (coordinateur et sous-agents) ; l'UI affiche un **spinner animé** avec **temps
+  écoulé** « ⠋ {agent} réfléchit… {n}s » (en-tête + bas du flux), effacé dès qu'une sortie
+  arrive. On voit ainsi qui « mouline » en arrière-plan et depuis combien de temps.
+- **Saisie de chat multi-ligne** : Maj/Alt+Entrée insère un retour à la ligne, Entrée
+  envoie ; la zone de saisie grandit dynamiquement. Activation best-effort des
+  *keyboard enhancement flags* (crossterm) pour distinguer Maj+Entrée sur les terminaux
+  compatibles.
+
+## Disposition « cockpit » + orchestre live (post-Phase 5) ✅
+
+- Le dashboard passe en **multi-panneaux** : sidebar « 🎻 Orchestre » (gauche) toujours
+  visible + zone centrale + barre de saisie. La sidebar se masque sous ~60 colonnes.
+- **Statut live par agent** (`App::agent_status` : Idle/Thinking/Working/Done) dérivé des
+  événements ; icône par agent (`○` / spinner / `▸` / `✔`), réinitialisé à chaque run.
+- La zone centrale conserve le système de vues existant (radar/docs/agents/éditeur), rendu
+  désormais dans le panneau central plutôt qu'en plein écran.
+
+## Registre de skills exécutables (post-Phase 5) ✅
+
+- Les skills sont **activés systématiquement** via un registre : id → définition
+  ([`tool_definition`]) + exécution ([`execute_skill`]), source de vérité
+  `skills::EXECUTABLE_SKILLS`. Un skill assigné à un agent (menu `[6]`) devient un **vrai
+  outil** s'il est dans le registre ; sinon il reste une étiquette.
+- `skills::is_executable(id)` exposé ; le menu Agents marque les skills **exécutables** (vert)
+  vs **(inactif)** (gris).
+- Nouveau skill exécutable **`Web_Fetch`** (lit une URL http/https) — démontre l'extensibilité
+  (1 entrée au catalogue + 1 bras dans chaque match). `dev_tool_definitions` → `tool_specs`.
+
+## Gestionnaire d'agents (post-Phase 5) ✅
+
+- **Modèle structuré** : `config.agents` passe de `Vec<String>` à `Vec<AgentDef { name, role,
+  skills }>`, avec **désérialisation rétro-compatible** (un agent écrit en chaîne reste
+  valide). `default_agents` fournit nom + rôle + skills par type.
+- **Runtime** : chaque agent utilise son **rôle** (injecté dans le prompt système) et ses
+  **skills propres** (repli sur les skills de l'espace s'il n'en a pas) ; le coordinateur
+  expose le rôle dans ses outils de délégation.
+- **Menu `[6]` Agents** : liste + fiche (rôle, skills, **stats de session** : invocations +
+  temps de réflexion) ; édition complète — renommer, rôle, skills, ajouter, supprimer —
+  **persistée dans `config.json`** via `ContextSpace::save_config` (l'écriture reste au cœur).
+- `[1]` pré-remplit aussi une **intention d'exemple** selon le type de projet.
+
+## `[1]` repurposé en « Lancer une intention » (post-Phase 5) ✅
+
+- `[1]` ne lance plus une rafale autonome générique : il **saisit un objectif** puis
+  l'exécute **en one-shot** via le coordinateur (envoi d'un seul message dans une
+  `ChatHandle`, puis fermeture immédiate du canal → la tâche se termine et rend un
+  compte-rendu). Identité claire : `[1]` = tâche autonome, `[5]` = conversation.
+  `runtime::spawn` (rafale parallèle) reste disponible côté bibliothèque mais n'est plus
+  câblé à l'UI.
 
 ## Améliorations UX (post-Phase 5) ✅
 

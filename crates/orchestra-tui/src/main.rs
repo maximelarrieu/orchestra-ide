@@ -16,11 +16,17 @@ mod wizard;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use std::io::stdout;
+
 use futures::StreamExt;
 use orchestra_core::events::AgentEvent;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime;
-use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
+use ratatui::crossterm::execute;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -66,7 +72,13 @@ async fn run_dashboard(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new(ContextSpace::load(root).ok());
 
     let mut terminal = ratatui::init();
+    // Best-effort : permet de distinguer Maj/Alt+Entrée (terminaux compatibles kitty).
+    let _ = execute!(
+        stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     let result = event_loop(&mut terminal, &mut app).await;
+    let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     ratatui::restore();
     result
 }
@@ -147,6 +159,28 @@ async fn event_loop(
                                 }
                                 _ => {}
                             }
+                        } else if app.agent_prompt.is_some() {
+                            // Saisie d'un champ d'agent (nom / rôle / skills / ajout).
+                            match key.code {
+                                KeyCode::Esc => app.cancel_agent_prompt(),
+                                KeyCode::Enter => app.submit_agent_prompt(),
+                                KeyCode::Backspace => app.agent_prompt_backspace(),
+                                KeyCode::Char(c) => app.agent_prompt_push(c),
+                                _ => {}
+                            }
+                        } else if app.view == View::Agents {
+                            // Gestionnaire d'agents : sélection + édition.
+                            match key.code {
+                                KeyCode::Up => app.agents_move(-1),
+                                KeyCode::Down => app.agents_move(1),
+                                KeyCode::Char('r') => app.start_agent_rename(),
+                                KeyCode::Char('o') => app.start_agent_role(),
+                                KeyCode::Char('s') => app.start_agent_skills(),
+                                KeyCode::Char('a') => app.start_agent_add(),
+                                KeyCode::Char('d') => app.delete_selected_agent(),
+                                KeyCode::Esc | KeyCode::Char('6') => app.toggle_agents(),
+                                _ => {}
+                            }
                         } else if app.view == View::Docs {
                             // Navigateur de documents : sélection + ouverture.
                             match key.code {
@@ -163,6 +197,12 @@ async fn event_loop(
                                     app.end_chat();
                                     chat_tx = None; // ferme le canal → termine la conversation
                                 }
+                                // Maj/Alt+Entrée : nouvelle ligne ; Entrée seul : envoyer.
+                                KeyCode::Enter
+                                    if key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+                                {
+                                    app.chat_push('\n');
+                                }
                                 KeyCode::Enter => {
                                     if let Some(msg) = app.chat_submit() {
                                         if let Some(tx) = &chat_tx {
@@ -176,6 +216,24 @@ async fn event_loop(
                                 KeyCode::Down => app.radar_scroll_by(-3),
                                 KeyCode::Backspace => app.chat_backspace(),
                                 KeyCode::Char(c) => app.chat_push(c),
+                                _ => {}
+                            }
+                        } else if app.intention.is_some() {
+                            // Saisie d'une intention : exécution one-shot par le coordinateur.
+                            match key.code {
+                                KeyCode::Esc => app.cancel_intention(),
+                                KeyCode::Enter => {
+                                    if let Some(goal) = app.take_intention() {
+                                        app.notice = None;
+                                        app.begin_run();
+                                        let handle =
+                                            runtime::start_conversation(app.space.as_ref().unwrap());
+                                        let _ = handle.user.send(goal); // une seule intention…
+                                        rx = Some(handle.events); // …puis `user` est lâché → one-shot
+                                    }
+                                }
+                                KeyCode::Backspace => app.intention_backspace(),
+                                KeyCode::Char(c) => app.intention_push(c),
                                 _ => {}
                             }
                         } else if app.input.is_some() {
@@ -206,13 +264,11 @@ async fn event_loop(
                                     if app.persona_incomplete() && app.llm_model.is_some() {
                                         // Évite un appel LLM voué à l'échec faute de contexte.
                                         app.notice = Some(
-                                            "⚠ Persona incomplet (« à compléter ») — édite .orchestra/persona.md puis relance [1]."
+                                            "⚠ Persona incomplet (« à compléter ») — édite-le ([4]) puis relance [1]."
                                                 .to_string(),
                                         );
                                     } else {
-                                        app.notice = None;
-                                        app.begin_run();
-                                        rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
+                                        app.start_intention(); // saisie de l'objectif à exécuter
                                     }
                                 }
                                 KeyCode::Char('5') if app.space.is_some() => {
@@ -232,6 +288,7 @@ async fn event_loop(
                                 KeyCode::Char('2') => app.toggle_docs(),
                                 KeyCode::Char('3') => app.start_space_input(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
+                                KeyCode::Char('6') if app.space.is_some() => app.toggle_agents(),
                                 KeyCode::PageUp => app.radar_scroll_by(10),
                                 KeyCode::PageDown => app.radar_scroll_by(-10),
                                 KeyCode::Up => app.radar_scroll_by(3),
@@ -255,7 +312,7 @@ async fn event_loop(
                     }
                 }
             }
-            _ = tick.tick() => {}                     // rafraîchissement périodique
+            _ = tick.tick() => { app.tick(); }        // rafraîchissement + animation spinner
         }
     }
     Ok(())

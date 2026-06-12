@@ -145,16 +145,53 @@ rejoint l'orchestre avec une mission documentation : il lit les fichiers, met à
 `Write_Mermaid_Diagram` (écrit un `.md` avec un bloc ` ```mermaid `, type de diagramme
 validé). Outils et prompt dédiés, indépendants de la liste de Skills du projet.
 
-**Finitions du dashboard** — les touches du menu sont désormais actives :
+### Disposition « cockpit »
+
+Le dashboard est organisé en **multi-panneaux** : une **sidebar « 🎻 Orchestre »** à gauche
+affiche en permanence le **statut live de chaque agent** (`○` au repos · spinner *réfléchit*
+· `▸` agit · `✔` terminé), à côté de la **zone centrale** (conversation / radar / documents /
+agents / éditeur) et d'une **barre de saisie** en bas. La sidebar se masque automatiquement
+sur les terminaux étroits.
+
+**Les touches du menu** :
 
 | Touche | Action |
 |---|---|
-| `[1]` | Lancer l'orchestre (exécution autonome : chaque agent travaille une fois) |
-| `[5]` | **Converser** avec le chef d'orchestre (conversation persistante, voir ci-dessous) |
+| `[1]` | **Lancer une intention** : tu saisis un objectif → le coordinateur l'exécute en autonomie (one-shot) et rend un compte-rendu, sans dialogue |
+| `[5]` | **Converser** avec le chef d'orchestre (dialogue continu, voir ci-dessous) |
 | `[2]` | **Navigateur de documents** de l'espace (persona, ADRs, docs Markdown) avec **visualiseur Markdown** intégré |
 | `[3]` | **Changer d'Espace** (saisie d'un chemin, `Entrée` charge / `Échap` annule) |
 | `[4]` | **Éditer le persona** dans l'interface (`Ctrl+S` enregistre, `Échap` annule) |
+| `[6]` | **Gérer les agents** : rôle, skills, stats de session ; renommer/éditer/ajouter/supprimer |
 | `q` / `Échap` | Quitter |
+
+### Gérer les agents (`[6]`)
+
+Chaque agent est désormais un objet **`{ nom, rôle, skills }`** (modèle rétro-compatible avec
+les anciennes configs où l'agent n'était qu'un nom). Le menu `[6]` liste les agents et, pour
+le sélectionné, affiche **rôle, skills et stats de session** (invocations + temps de
+réflexion). Tu peux le rendre modulable :
+
+| Touche | Action |
+|---|---|
+| `↑`/`↓` | choisir un agent |
+| `r` | renommer |
+| `o` | modifier le rôle (oriente son prompt) |
+| `s` | modifier ses skills (liste séparée par des virgules) |
+| `a` | ajouter un agent |
+| `d` | supprimer l'agent sélectionné |
+
+Les modifications sont **enregistrées dans `.orchestra/config.json`** (via le cœur,
+`ContextSpace::save_config`). Le runtime utilise le **rôle** (dans le prompt système) et les
+**skills propres** de chaque agent (repli sur les skills de l'espace s'il n'en a pas).
+
+> 🔌 **Skill exécutable vs étiquette.** Un skill n'agit que s'il est **enregistré** (du code
+> Rust derrière). Le menu marque les skills **exécutables** (en vert) ; les autres restent
+> des étiquettes « (inactif) ». Le registre (`orchestra-core::skills`) est la source de
+> vérité ; ajouter un skill = une entrée au catalogue `EXECUTABLE_SKILLS` + un bras dans
+> `tool_definition` et `execute_skill`. Skills exécutables : `Read_File`,
+> `Write_File_Validated`, `Execute_Terminal_Command`, `Write_Mermaid_Diagram`, **`Web_Fetch`**
+> (lire une URL), + Git/GitHub si l'intégration est configurée.
 
 ### Converser avec le chef d'orchestre (`[5]`)
 
@@ -175,7 +212,10 @@ quitte la conversation.
 Le radar **rend le Markdown** des réponses (titres, listes, citations, blocs de code) et se
 **défile** : `PgUp`/`PgDn` (ou `↑`/`↓`) pour remonter dans l'historique de la conversation,
 retour automatique en bas à chaque nouveau message. Les interlocuteurs sont colorés : 🟢
-**Vous**, 🟣 **Coordinateur**, 🔵 **agents**.
+**Vous**, 🟣 **Coordinateur**, 🔵 **agents**. Pendant qu'un agent attend le modèle, un
+**indicateur animé** « ⠋ {agent} réfléchit… {n}s » (avec temps écoulé) montre ce qui
+travaille en arrière-plan. Dans la saisie, **Entrée** envoie et **Maj/Alt+Entrée** insère un
+retour à la ligne (message multi-ligne).
 
 Dans le navigateur `[2]` : `↑↓` choisir, `Entrée` ouvrir un document dans le visualiseur
 (Markdown rendu : titres, listes, citations, blocs de code, gras/`code`), `↑↓` y défiler,

@@ -108,6 +108,15 @@ impl ContextSpace {
         Ok(())
     }
 
+    /// Réécrit `.orchestra/config.json` depuis la configuration en mémoire (après édition
+    /// des agents, par exemple). L'écriture reste dans le cœur.
+    pub fn save_config(&self) -> Result<(), OrchestraError> {
+        let path = self.root.join(".orchestra").join("config.json");
+        let json = serde_json::to_string_pretty(&self.config)?;
+        fs::write(path, format!("{json}\n"))?;
+        Ok(())
+    }
+
     /// Charge l'espace situé dans `root` (qui doit contenir `.orchestra/config.json`).
     pub fn load(root: &Path) -> Result<Self, OrchestraError> {
         let config_path = root.join(".orchestra").join("config.json");
