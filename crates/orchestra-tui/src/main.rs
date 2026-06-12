@@ -112,9 +112,17 @@ async fn event_loop(
                             match key.code {
                                 KeyCode::Char('q') | KeyCode::Esc => break,
                                 KeyCode::Char('1') if app.can_launch() => {
-                                    app.notice = None;
-                                    app.begin_run();
-                                    rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
+                                    if app.persona_incomplete() && app.llm_model.is_some() {
+                                        // Évite un appel LLM voué à l'échec faute de contexte.
+                                        app.notice = Some(
+                                            "⚠ Persona incomplet (« à compléter ») — édite .orchestra/persona.md puis relance [1]."
+                                                .to_string(),
+                                        );
+                                    } else {
+                                        app.notice = None;
+                                        app.begin_run();
+                                        rx = Some(runtime::spawn(app.space.as_ref().unwrap()));
+                                    }
                                 }
                                 KeyCode::Char('2') => app.toggle_adrs(),
                                 KeyCode::Char('3') => app.start_space_input(),

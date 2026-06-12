@@ -48,9 +48,16 @@ d'agents par défaut.
 cargo run -p orchestra-tui -- init ./mon-espace
 ```
 
-La logique d'écriture vit dans `orchestra-core::scaffold` (pure, testée) ; les prompts
-terminal restent dans `orchestra-tui::wizard` — découplage métier/affichage respecté.
-Un espace déjà initialisé n'est jamais écrasé (`SpaceAlreadyExists`).
+Pour un projet **Dev**, l'assistant demande le **workspace** (résolu en chemin absolu) et
+propose de configurer les intégrations **Git** et **GitHub** (le token n'est jamais saisi —
+seul le *nom* de la variable d'environnement est enregistré). La logique d'écriture vit dans
+`orchestra-core::scaffold` (pure, testée) ; les prompts terminal restent dans
+`orchestra-tui::wizard` — découplage métier/affichage respecté. Un espace déjà initialisé
+n'est jamais écrasé (`SpaceAlreadyExists`).
+
+> 📝 **Pense à remplir `.orchestra/persona.md`** (remplace les « à compléter ») : c'est le
+> contexte donné aux agents. Si le persona est incomplet et qu'un LLM est actif, `[1]`
+> affiche un avertissement plutôt que de gaspiller un appel.
 
 ## Phase 3 — Runtime d'agents, radar vivant ✅
 

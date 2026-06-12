@@ -25,6 +25,8 @@ pub struct InitOptions {
     /// Chemin du code ciblé — pertinent pour les projets « Dev » uniquement.
     pub workspace_path: Option<PathBuf>,
     pub documentalist_enabled: bool,
+    /// Intégrations écosystème (Git/GitHub/Jira) choisies à l'init.
+    pub integrations: crate::model::config::Integrations,
 }
 
 impl InitOptions {
@@ -38,7 +40,7 @@ impl InitOptions {
             documentalist_enabled: self.documentalist_enabled,
             skills: default_skills(self.project_type),
             agents: default_agents(self.project_type),
-            integrations: Default::default(),
+            integrations: self.integrations,
         }
     }
 }
@@ -151,6 +153,7 @@ mod tests {
             project_type: ProjectType::Dev,
             workspace_path: Some(PathBuf::from("/code/mon-app")),
             documentalist_enabled: true,
+            integrations: Default::default(),
         };
 
         let space = scaffold_space(&tmp.0, opts).expect("scaffolding réussi");
@@ -173,6 +176,7 @@ mod tests {
             project_type: ProjectType::Nutrition,
             workspace_path: None,
             documentalist_enabled: false,
+            integrations: Default::default(),
         };
 
         scaffold_space(&tmp.0, opts()).expect("1er init OK");

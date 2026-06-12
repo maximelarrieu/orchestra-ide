@@ -103,6 +103,15 @@ impl App {
             .is_some_and(|s| !s.config.agents.is_empty())
     }
 
+    /// Vrai si le persona contient encore des placeholders « à compléter » : lancer un
+    /// vrai LLM dans ce cas gaspille un appel (l'agent dira qu'il manque de contexte).
+    pub fn persona_incomplete(&self) -> bool {
+        self.space
+            .as_ref()
+            .and_then(|s| s.persona.as_deref())
+            .is_some_and(|p| p.contains("à compléter"))
+    }
+
     /// Remet le radar à zéro et passe en `Running` (appelé quand l'utilisateur lance
     /// l'orchestre). L'historique précédent est effacé pour une lecture nette.
     pub fn begin_run(&mut self) {
@@ -198,6 +207,32 @@ mod tests {
         app.start_space_input();
         app.input_push(' ');
         assert_eq!(app.take_input(), None, "saisie vide → aucun chemin");
+    }
+
+    #[test]
+    fn detects_incomplete_persona() {
+        use orchestra_core::model::config::ProjectConfig;
+        use orchestra_core::model::project_type::ProjectType;
+        let mk = |persona: Option<&str>| {
+            let space = ContextSpace {
+                root: std::path::PathBuf::from("."),
+                config: ProjectConfig {
+                    project_name: "T".into(),
+                    project_type: ProjectType::Immobilier,
+                    workspace_path: None,
+                    documentalist_enabled: false,
+                    skills: vec![],
+                    agents: vec!["A".into()],
+                    integrations: Default::default(),
+                },
+                persona: persona.map(str::to_string),
+                adrs: vec![],
+            };
+            App::new(Some(space))
+        };
+        assert!(mk(Some("Budget : à compléter")).persona_incomplete());
+        assert!(!mk(Some("Budget : 350k€")).persona_incomplete());
+        assert!(!mk(None).persona_incomplete(), "pas de persona → pas bloquant");
     }
 
     /// L'espace d'exemple livré doit se charger ET être lançable (sinon `[1]` ne fait

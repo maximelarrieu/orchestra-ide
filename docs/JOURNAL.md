@@ -138,6 +138,15 @@ branche ; `clippy` sans warning. GitHub REST testé en local (token requis).
 Documentaliste ajouté quand activé, bascule de vue ADRs, édition/consommation de la saisie,
 rendus headless (ADRs + mode saisie). `clippy` sans warning.
 
+## Améliorations UX (post-Phase 5) ✅
+
+- `orchestra init` (Dev) : le **workspace est résolu en chemin absolu** (fini la fragilité
+  du `.` selon le répertoire de lancement), et l'assistant **propose de configurer Git et
+  GitHub** (token jamais saisi — seul le nom de variable est enregistré). `InitOptions`
+  porte désormais les intégrations.
+- Dashboard : au lancement `[1]`, si le persona contient encore des « à compléter » **et**
+  qu'un LLM est actif, un avertissement s'affiche au lieu d'un appel LLM voué à l'échec.
+
 ## Phase 4c — Intégration Jira ⏳ (optionnelle, à venir)
 
 **Visé**
