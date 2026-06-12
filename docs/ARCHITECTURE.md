@@ -48,8 +48,10 @@ crates/
 │  ├─ error.rs          # OrchestraError (type d'erreur unique)
 │  ├─ events.rs         # AgentEvent — contrat cœur ↔ UI
 │  ├─ runtime.rs        # spawn() : lance les agents (boucle LLM ou simulée)
-│  ├─ llm.rs            # LlmClient : Claude/Gemini au choix, en HTTP (Phase 4a)
-│  ├─ skills.rs         # Skills Dev exécutables via tool use (Phase 4a)
+│  ├─ llm.rs            # LlmClient : Claude/Gemini au choix, en HTTP (Phase 4a) + prompt caching
+│  ├─ skills.rs         # primitives exécutables via tool use — registre (Phase 4a, +Web_Fetch)
+│  ├─ markdown_skill.rs # skills « fiches » SKILL.md + Load_Skill (divulgation progressive)
+│  ├─ memory.rs         # mémoire partagée d'espace : Remember / Recall (.orchestra/memory.md)
 │  ├─ integrations.rs   # Skills Git (local) + GitHub (REST) (Phase 4b)
 │  ├─ scaffold.rs       # scaffold_space() : crée un Espace (Phase 2)
 │  └─ model/
@@ -60,7 +62,9 @@ crates/
 └─ orchestra-tui/src/
    ├─ main.rs           # dispatch CLI + boucle async tokio::select!
    ├─ app.rs            # App : état agrégé du dashboard (sans ratatui)
-   ├─ dashboard.rs      # rendu des 3 zones (en-tête / radar / menu)
+   ├─ dashboard.rs      # rendu des zones (en-tête / radar / docs / agents / menu)
+   ├─ editor.rs         # mini-éditeur texte (persona & fiches de skill)
+   ├─ markdown.rs       # rendu Markdown → lignes ratatui (visualiseur)
    └─ wizard.rs         # assistant interactif `orchestra init`
 ```
 
@@ -122,6 +126,8 @@ Sur le disque, un Espace est un dossier contenant :
 <espace>/.orchestra/
 ├─ config.json     # sérialisation de ProjectConfig
 ├─ persona.md      # contexte/critères rédigés par l'utilisateur
+├─ memory.md       # mémoire partagée des agents (créée à la 1re note)
+├─ skills/         # fiches de skills : <id>/SKILL.md
 └─ adr/            # Architecture Decision Records (*.md)
 ```
 
@@ -137,9 +143,10 @@ les agents.
 
 ```rust
 enum AgentEvent {
-    Started { agent: String },
-    Log     { agent: String, msg: String },
-    Done    { agent: String },
+    Started  { agent: String },
+    Thinking { agent: String },              // appel LLM en cours → pilote le spinner
+    Log      { agent: String, msg: String },
+    Done     { agent: String },
 }
 ```
 
@@ -197,10 +204,20 @@ sequenceDiagram
 | `Read_File` | lit un fichier texte | chemin confiné au workspace |
 | `Write_File_Validated` | écrit/remplace un fichier | idem + création des parents |
 | `Execute_Terminal_Command` | commande shell dans le workspace | `cwd`=workspace, délai 30 s, sortie plafonnée |
+| `Write_Mermaid_Diagram` | écrit un `.md` avec un bloc `mermaid` | type de diagramme validé |
+| `Web_Fetch` | lit le contenu d'une URL | schémas `http(s)` uniquement, délai, sortie plafonnée |
 
-Garde-fous : `safe_join` refuse les chemins absolus et tout composant `..` ; la boucle est
-bornée à 6 tours ; les Skills non-Dev ne sont pas exposés (le modèle ne voit que ce qu'il
-peut actionner).
+**Le registre comme source de vérité.** `skills.rs` indexe chaque primitive par son id :
+`tool_definition(id)` (définition exposée au LLM) + `execute_skill(id, …)` (exécution). La
+liste `EXECUTABLE_SKILLS` (+ `is_executable`) énumère ce qui est branché ; `tool_specs(enabled)`
+ne produit des outils que pour les skills assignés *présents au registre*. Ajouter une
+primitive = une entrée au catalogue + un bras dans chaque match. Garde-fous : `safe_join`
+refuse les chemins absolus et tout composant `..` ; la boucle est bornée à 6 tours ; un skill
+inconnu du registre n'est pas exposé (le modèle ne voit que ce qu'il peut actionner).
+
+**Prompt caching (Anthropic).** Le bloc `system` (projet + rôle + compétences + persona),
+stable d'un tour et d'un agent à l'autre, est marqué `cache_control: ephemeral` dans
+`anthropic_body` : les tours suivants paient une fraction des tokens d'entrée sur ce préfixe.
 
 ### Conversation avec un coordinateur (`[5]`)
 
@@ -247,9 +264,30 @@ fonction de `config.integrations` :
 | Git (local) | `Git_Status`, `Git_Diff`, `Git_Create_Branch`, `Git_Commit` | binaire `git` dans le workspace | `integrations.git` présent |
 | GitHub (REST) | `GitHub_List_Issues`, `GitHub_Create_Issue_Comment`, `GitHub_Create_Pull_Request` | API `api.github.com` (`reqwest`) | `integrations.github` présent **et** token (`token_env_var`) résolu |
 
-Le runtime fusionne `skills::dev_tool_definitions` et `integrations::tool_definitions`, puis
-dispatche chaque appel d'outil via `integrations::handles(name)`. Token GitHub lu depuis
+Le runtime fusionne `skills::tool_specs`, `integrations::tool_definitions`, `Load_Skill` et
+les outils de mémoire, puis dispatche chaque appel via une cascade `memory::handles` →
+`markdown_skill::handles` → `integrations::handles` → registre `skills`. Token GitHub lu depuis
 l'environnement (jamais en dur) ; seul son **nom de variable** est persisté dans la config.
+
+### Skills « fiches » Markdown + divulgation progressive (post-Phase 5)
+
+`orchestra-core::markdown_skill` charge les fiches `.orchestra/skills/<id>/SKILL.md` (en-tête
+`name`/`description` + corps). Au lieu d'injecter le corps complet dans le prompt,
+`build_system_prompt` n'y met que **nom + description** des fiches assignées (section
+« Compétences ») ; l'agent charge la procédure à la demande via la primitive **`Load_Skill{id}`**
+(`markdown_skill::execute`), exposée seulement s'il a au moins une fiche assignée. Gain de
+tokens : le corps n'est payé qu'à l'usage, et le prompt raccourci profite aux deux fournisseurs.
+Création/édition depuis l'UI (`[n]`) via `markdown_skill::create` / `save` — l'écriture disque
+reste dans le cœur.
+
+### Mémoire partagée d'espace (post-Phase 5)
+
+`orchestra-core::memory` expose deux primitives **universelles** (tous les agents) :
+`Remember{note}` (append attribué + numéroté dans `.orchestra/memory.md`) et `Recall{query?}`
+(lecture filtrée par mot-clé). Aiguillage via `memory::handles` dans la boucle d'outils, comme
+les intégrations ; le prompt ne porte qu'un rappel court (le contenu se lit à la demande). La
+mémoire est durable entre sessions, listée par `ContextSpace::documents()` (navigateur `[2]`),
+et sert de **compression de contexte** : une synthèse écrite une fois remplace les relectures.
 
 ### Agent Documentaliste (Phase 5)
 
@@ -262,19 +300,23 @@ validation du type de diagramme.
 
 ### Finitions du dashboard (Phase 5)
 
-`App` porte une `View` (`Radar`/`Docs`), un mode de saisie (`input`), un éditeur de persona
-(`editor: Option<Editor>`), un visualiseur (`viewer: Option<Viewer>`) et un `notice`. La
-boucle clavier applique une **priorité de modes** : éditeur → visualiseur → navigateur de
-documents → saisie de chemin → commandes. Tout reste dans l'outil :
+`App` porte une `View` (`Radar`/`Docs`/`Agents`), un mode de saisie (`input`), un éditeur
+(`editor: Option<Editor>` + `editor_target` : persona ou fiche de skill), un visualiseur
+(`viewer: Option<Viewer>`) et un `notice`. La boucle clavier applique une **priorité de
+modes** : éditeur → visualiseur → saisie d'agent → navigateur → commandes. Tout reste dans
+l'outil :
 
 - `[2]` ouvre le **navigateur de documents** : `ContextSpace::documents()` agrège le persona,
-  les ADRs et les fichiers Markdown du workspace (balayage borné, dossiers cachés/build
-  ignorés). `Entrée` lit le document via `load_document()` et l'affiche dans le **visualiseur
-  Markdown** (`orchestra-tui::markdown::to_lines` — rendu titres/listes/citations/code/gras),
-  avec défilement. Sur le persona, `e` ouvre l'éditeur.
+  la **mémoire** (`memory.md`), les ADRs et les Markdown du workspace (balayage borné, dossiers
+  cachés/build ignorés). `Entrée` lit via `load_document()` et l'affiche dans le **visualiseur
+  Markdown** (`orchestra-tui::markdown::to_lines`), avec défilement. Sur le persona, `e` édite.
 - `[3]` charge un autre espace (`ContextSpace::load`).
 - `[4]` ouvre l'**éditeur de persona** (`orchestra-tui::editor`, multi-ligne UTF-8 pur) ;
   `Ctrl+S` persiste via `ContextSpace::save_persona`.
+- `[6]` ouvre le **gestionnaire d'agents** (rôle/skills/stats, éditables) ; `[n]` y crée une
+  fiche de skill (`markdown_skill::create`), ouverte dans le même éditeur (`editor_target =
+  SkillFile`, `Ctrl+S` → `markdown_skill::save`). Les skills assignés y sont marqués selon
+  leur nature : primitive (vert), fiche (cyan), ou inactif (gris).
 
 Toute lecture/écriture passe par le cœur (`documents`/`load_document`/`save_persona`) — l'UI
 ne touche jamais le système de fichiers directement. Objectif produit : limiter au maximum
@@ -337,6 +379,8 @@ Type unique `OrchestraError` (via `thiserror`) :
 | `SpaceNotFound` | `config.json` illisible au chargement |
 | `SpaceAlreadyExists` | `orchestra init` refuse d'écraser un Espace existant |
 | `InvalidConfig` | JSON de configuration invalide |
+| `SkillAlreadyExists` | création d'une fiche dont l'id existe déjà |
+| `InvalidSkillName` | nom de fiche invalide (après normalisation) |
 | `Io` | erreurs d'E/S génériques |
 
 ## 8. Conventions & tests
