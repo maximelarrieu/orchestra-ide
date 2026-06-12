@@ -23,9 +23,10 @@ Un Espace contient :
 | **Type de projet** | `Dev`, `Nutrition`, `Langue` ou `Immobilier` — détermine les agents et Skills par défaut |
 | **Persona** (`persona.md`) | Le contexte et les critères rédigés par l'utilisateur (budget, régime, niveau, conventions de code…) |
 | **Agents** | Les membres de l'orchestre (ex. `Agent_Scraper`, `Agent_Codeur`) |
-| **Skills** | Les capacités activées (ex. `Scrape_Web_Page`, `Read_File`) |
+| **Skills** | Les capacités : **primitives** exécutables (code : `Read_File`, `Web_Fetch`…) et **fiches** d'instructions (`skills/<id>/SKILL.md`, sans code) |
+| **Mémoire** (`memory.md`) | Notes partagées entre agents et entre sessions (faits, décisions, synthèses) |
 | **ADRs** | Les décisions structurantes consignées (`adr/*.md`) |
-| **Intégrations** | Git / GitHub / Jira (à venir, Phase 4) |
+| **Intégrations** | Git / GitHub (actives si configurées) ; Jira à venir |
 
 ### Matrice des types de projet
 
@@ -82,10 +83,10 @@ Le tableau de bord (TUI) s'ouvre en 3 zones :
 |---|---|---|
 | `[1]` | Lancer l'orchestre (autonome : chaque agent travaille une fois) | ✅ actif |
 | `[5]` | Converser avec le chef d'orchestre (délègue aux agents, historique conservé) | ✅ actif |
-| `[2]` | Navigateur de documents (persona/ADRs/docs) + visualiseur Markdown | ✅ actif |
+| `[2]` | Navigateur de documents (persona/mémoire/ADRs/docs) + visualiseur Markdown | ✅ actif |
 | `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
 | `[4]` | Éditer le persona dans l'interface (`Ctrl+S` enregistre) | ✅ actif |
-| `[6]` | Gérer les agents (rôle, skills, stats ; renommer/éditer/ajouter/supprimer) | ✅ actif |
+| `[6]` | Gérer les agents (rôle, skills, stats ; renommer/éditer/ajouter/supprimer) + `[n]` créer un skill « fiche » | ✅ actif |
 | `q` / `Échap` | Quitter | ✅ actif |
 
 Quand l'orchestre tourne, l'en-tête indique `▶ N agent(s) en cours`, le radar liste les
@@ -101,6 +102,11 @@ démarrages, les logs et les fins d'agents, puis bascule en `✓ terminé`.
 | Radar temps réel (flux d'agents) | ✅ | 3 |
 | **Agents intelligents (LLM Claude ou Gemini)** | ✅ avec clé API | 4a |
 | Skills Dev exécutables (lecture/écriture fichier, terminal) | ✅ | 4a |
+| Skill `Web_Fetch` (lecture d'URL) + registre de primitives | ✅ | post-5 |
+| Skills « fiches » Markdown (`SKILL.md`) + création depuis l'UI (`[n]`) | ✅ | post-5 |
+| Divulgation progressive des fiches (`Load_Skill`) | ✅ | post-5 |
+| Mémoire partagée d'espace (`Remember` / `Recall`) | ✅ | post-5 |
+| Économie de tokens (prompt caching Anthropic) | ✅ | post-5 |
 | Repli simulé hors-ligne (sans clé) | ✅ | 4a |
 | Intégration Git (statut, diff, branche, commit) | ✅ si configuré | 4b |
 | Intégration GitHub (issues, commentaire, PR) | ✅ si configuré + token | 4b |
@@ -162,6 +168,35 @@ export GITHUB_TOKEN="ghp_..."     # requis pour les Skills GitHub
 
 Le modèle ne voit que les Skills réellement actionnables : sans intégration configurée (ou
 sans token), ces outils n'apparaissent pas. Jira suivra le même schéma (Phase 4c).
+
+### Skills : deux couches (primitives vs fiches)
+
+Un skill n'agit que s'il est **branché**. Deux façons de l'être :
+
+- **Primitive (code)** — capacité réelle implémentée en Rust : `Read_File`,
+  `Write_File_Validated`, `Execute_Terminal_Command`, `Write_Mermaid_Diagram`, `Web_Fetch`,
+  + Git/GitHub si configurés. Le menu Agents les marque **en vert**.
+- **Fiche (`SKILL.md`, sans code)** — un dossier `.orchestra/skills/<id>/SKILL.md` (en-tête
+  `name`/`description` + corps Markdown du « comment faire »). Tout agent à qui la fiche est
+  assignée en voit le **nom + la description** dans son prompt et charge la procédure complète
+  à la demande (`Load_Skill`). Crée-en une **sans quitter l'outil** : menu Agents `[6]` →
+  `[n]` → saisis un nom → rédige dans l'éditeur → `Ctrl+S`. Marquées **(fiche)** en cyan ; un
+  skill sans aucun des deux reste une étiquette **(inactif)** en gris.
+
+Idéal : `Creation_Quiz` (pur texte → fiche) ; `Web_Search` (une fiche qui s'appuie sur la
+primitive `Web_Fetch`).
+
+### Mémoire partagée
+
+Tous les agents disposent de deux outils universels :
+
+- **`Remember{note}`** — consigne un fait, une décision ou une synthèse dans
+  `.orchestra/memory.md` (durable entre sessions, visible dans le navigateur `[2]`).
+- **`Recall{query?}`** — relit la mémoire, filtrée par mot-clé.
+
+C'est à la fois la **mémoire de l'orchestre** (le travail se capitalise) et un **levier
+d'économie de tokens** : un agent résume une source volumineuse une fois, les autres lisent
+la synthèse au lieu de relire le fichier.
 
 ## 5. Exemple fourni
 
