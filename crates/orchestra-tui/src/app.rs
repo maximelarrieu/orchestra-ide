@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use orchestra_core::events::AgentEvent;
-use orchestra_core::model::{ContextSpace, DocKind, SpaceDoc};
+use orchestra_core::model::{ContextSpace, DocKind, ProjectType, SpaceDoc};
 
 use crate::editor::Editor;
 
@@ -81,6 +81,16 @@ pub struct App {
 
 /// Cadres du spinner d'activité (braille).
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Exemple d'intention proposé par défaut selon le type de projet (`[1]`).
+fn default_intention(kind: ProjectType) -> &'static str {
+    match kind {
+        ProjectType::Dev => "Lis le README et propose 3 améliorations prioritaires du code.",
+        ProjectType::Nutrition => "Propose un plan de repas équilibré pour aujourd'hui selon mes critères.",
+        ProjectType::Langue => "Donne-moi une leçon de 15 min avec quelques exercices, puis corrige mes réponses.",
+        ProjectType::Immobilier => "Liste les annonces correspondant à mes critères et classe-les par pertinence.",
+    }
+}
 
 impl App {
     pub fn new(space: Option<ContextSpace>) -> Self {
@@ -261,9 +271,15 @@ impl App {
         self.input.take().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
 
-    /// `[1]` — entre en saisie d'une intention (objectif à exécuter en autonomie).
+    /// `[1]` — entre en saisie d'une intention, pré-remplie d'un exemple selon le type de
+    /// projet (l'utilisateur l'édite ou la valide telle quelle).
     pub fn start_intention(&mut self) {
-        self.intention = Some(String::new());
+        let example = self
+            .space
+            .as_ref()
+            .map(|s| default_intention(s.config.project_type))
+            .unwrap_or("");
+        self.intention = Some(example.to_string());
         self.notice = None;
     }
 
