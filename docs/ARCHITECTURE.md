@@ -48,8 +48,9 @@ crates/
 │  ├─ error.rs          # OrchestraError (type d'erreur unique)
 │  ├─ events.rs         # AgentEvent — contrat cœur ↔ UI
 │  ├─ runtime.rs        # spawn() : lance les agents (boucle LLM ou simulée)
-│  ├─ llm.rs            # LlmClient : API Messages de Claude en HTTP (Phase 4a)
+│  ├─ llm.rs            # LlmClient : Claude/Gemini au choix, en HTTP (Phase 4a)
 │  ├─ skills.rs         # Skills Dev exécutables via tool use (Phase 4a)
+│  ├─ integrations.rs   # Skills Git (local) + GitHub (REST) (Phase 4b)
 │  ├─ scaffold.rs       # scaffold_space() : crée un Espace (Phase 2)
 │  └─ model/
 │     ├─ project_type.rs  # enum ProjectType
@@ -194,6 +195,20 @@ sequenceDiagram
 Garde-fous : `safe_join` refuse les chemins absolus et tout composant `..` ; la boucle est
 bornée à 6 tours ; les Skills non-Dev ne sont pas exposés (le modèle ne voit que ce qu'il
 peut actionner).
+
+### Intégrations Git / GitHub (Phase 4b)
+
+`orchestra-core::integrations` ajoute des Skills **conditionnels** à la liste d'outils, en
+fonction de `config.integrations` :
+
+| Intégration | Skills | Exécution | Exposé si |
+|---|---|---|---|
+| Git (local) | `Git_Status`, `Git_Diff`, `Git_Create_Branch`, `Git_Commit` | binaire `git` dans le workspace | `integrations.git` présent |
+| GitHub (REST) | `GitHub_List_Issues`, `GitHub_Create_Issue_Comment`, `GitHub_Create_Pull_Request` | API `api.github.com` (`reqwest`) | `integrations.github` présent **et** token (`token_env_var`) résolu |
+
+Le runtime fusionne `skills::dev_tool_definitions` et `integrations::tool_definitions`, puis
+dispatche chaque appel d'outil via `integrations::handles(name)`. Token GitHub lu depuis
+l'environnement (jamais en dur) ; seul son **nom de variable** est persisté dans la config.
 
 ### Flux d'un lancement (touche `[1]`)
 

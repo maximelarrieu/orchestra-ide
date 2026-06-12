@@ -19,6 +19,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 
 use crate::events::AgentEvent;
+use crate::integrations::{self, IntegrationConn};
 use crate::llm::{Block, LlmClient, Msg, ToolResult};
 use crate::model::project_type::ProjectType;
 use crate::model::space::ContextSpace;
@@ -35,6 +36,7 @@ struct AgentContext {
     persona: Option<String>,
     workspace: PathBuf,
     skills: Vec<String>,
+    integ: IntegrationConn,
 }
 
 impl AgentContext {
@@ -50,6 +52,7 @@ impl AgentContext {
             persona: space.persona.clone(),
             workspace,
             skills: space.config.skills.clone(),
+            integ: IntegrationConn::from_space(space),
         }
     }
 }
@@ -120,7 +123,8 @@ async fn llm_agent_loop(
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<(), crate::llm::LlmError> {
     let system = build_system_prompt(agent, ctx);
-    let tools = skills::dev_tool_definitions(&ctx.skills);
+    let mut tools = skills::dev_tool_definitions(&ctx.skills);
+    tools.extend(integrations::tool_definitions(&ctx.integ)); // Git/GitHub si configurés
     let mut conv: Vec<Msg> = vec![Msg::User(
         "Avance concrètement sur l'objectif de cet espace. Utilise tes outils quand c'est \
          utile et explique brièvement chaque action."
@@ -150,7 +154,11 @@ async fn llm_agent_loop(
         conv.push(Msg::Assistant(blocks));
         let mut results = Vec::with_capacity(calls.len());
         for (id, name, input) in calls {
-            let outcome = skills::execute_skill(&name, &input, &ctx.workspace).await;
+            let outcome = if integrations::handles(&name) {
+                integrations::execute(&name, &input, &ctx.workspace, &ctx.integ).await
+            } else {
+                skills::execute_skill(&name, &input, &ctx.workspace).await
+            };
             results.push(ToolResult { id, name, content: outcome.text, is_error: outcome.is_error });
         }
         conv.push(Msg::Tool(results));

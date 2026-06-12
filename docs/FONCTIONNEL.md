@@ -99,8 +99,10 @@ démarrages, les logs et les fins d'agents, puis bascule en `✓ terminé`.
 | **Agents intelligents (LLM Claude ou Gemini)** | ✅ avec clé API | 4a |
 | Skills Dev exécutables (lecture/écriture fichier, terminal) | ✅ | 4a |
 | Repli simulé hors-ligne (sans clé) | ✅ | 4a |
-| Intégrations Git / GitHub / Jira | ❌ | 4b |
-| Consultation des ADRs / changement d'Espace dans l'UI | ❌ | 4b–5 |
+| Intégration Git (statut, diff, branche, commit) | ✅ si configuré | 4b |
+| Intégration GitHub (issues, commentaire, PR) | ✅ si configuré + token | 4b |
+| Intégration Jira | ❌ | 4c |
+| Consultation des ADRs / changement d'Espace dans l'UI | ❌ | 5 |
 | Agent Documentaliste (doc auto, Mermaid) | ❌ | 5 |
 
 ### Activer le LLM — Claude ou Gemini, au choix
@@ -131,6 +133,29 @@ rappelle quelles variables définir.
 > ⚠️ Le Skill `Execute_Terminal_Command` exécute de vraies commandes shell dans le
 > workspace. C'est une capacité assumée pour un IDE de développement, encadrée (workspace
 > uniquement, délai max, sortie plafonnée) — mais à utiliser en connaissance de cause.
+
+### Activer les intégrations Git / GitHub (Phase 4b)
+
+Les agents gagnent des Skills supplémentaires **si l'intégration est déclarée** dans
+`.orchestra/config.json` :
+
+```json
+"integrations": {
+  "git": { "auto_branching": true, "main_branch": "main" },
+  "github": { "repo": "owner/repo", "token_env_var": "GITHUB_TOKEN" }
+}
+```
+
+```bash
+export GITHUB_TOKEN="ghp_..."     # requis pour les Skills GitHub
+```
+
+- **Git** (local) : `Git_Status`, `Git_Diff`, `Git_Create_Branch`, `Git_Commit`.
+- **GitHub** (REST) : `GitHub_List_Issues`, `GitHub_Create_Issue_Comment`,
+  `GitHub_Create_Pull_Request` — exposés seulement si le token est présent.
+
+Le modèle ne voit que les Skills réellement actionnables : sans intégration configurée (ou
+sans token), ces outils n'apparaissent pas. Jira suivra le même schéma (Phase 4c).
 
 ## 5. Exemple fourni
 

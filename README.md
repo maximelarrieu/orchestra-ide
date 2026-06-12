@@ -101,7 +101,35 @@ signature de `runtime::spawn` n'a pas changé.
 > ⚠️ `Execute_Terminal_Command` exécute des commandes shell dans le workspace (capacité
 > assumée pour un IDE de dev) : sortie plafonnée, délai max 30 s, chemins confinés.
 
+## Phase 4b — Intégrations Git + GitHub ✅
+
+`orchestra-core::integrations` expose de nouveaux Skills au LLM — **mais seulement si
+l'intégration est configurée** dans l'espace (`config.integrations`) :
+
+- **Git (local)** : `Git_Status`, `Git_Diff`, `Git_Create_Branch`, `Git_Commit` (binaire
+  `git` dans le workspace).
+- **GitHub (REST)** : `GitHub_List_Issues`, `GitHub_Create_Issue_Comment`,
+  `GitHub_Create_Pull_Request` — token lu depuis la variable d'env déclarée (`token_env_var`),
+  jamais en dur ; les Skills GitHub ne sont exposés que si ce token est présent.
+
+Exemple de configuration dans `.orchestra/config.json` :
+
+```json
+"integrations": {
+  "git": { "auto_branching": true, "main_branch": "main" },
+  "github": { "repo": "owner/repo", "token_env_var": "GITHUB_TOKEN" }
+}
+```
+
+```bash
+export GITHUB_TOKEN="ghp_..."     # requis pour activer les Skills GitHub
+```
+
+> ⚠️ Certaines actions modifient l'état (`Git_Commit`, `Git_Create_Branch`) ou sont
+> *sortantes* (création de PR/commentaire) : l'utilisateur les autorise en configurant
+> l'intégration dans son espace.
+
 ## Phases suivantes
 
-4b. Intégrations écosystème : Git / GitHub / Jira.
+4c. Intégration Jira (même schéma : Skills exposés si configuré).
 5. Agent Documentaliste (Doc_Auto_Update, Mermaid) + finitions.
