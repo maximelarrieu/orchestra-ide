@@ -61,6 +61,8 @@ pub struct App {
     pub doc_sel: usize,
     /// Visualiseur Markdown ouvert (`Some`) ou fermé (`None`).
     pub viewer: Option<Viewer>,
+    /// Conversation avec le coordinateur en cours : `Some(tampon de saisie)`.
+    pub chat: Option<String>,
     /// Message transitoire affiché à l'utilisateur (succès/erreur d'une action).
     pub notice: Option<String>,
 }
@@ -80,8 +82,47 @@ impl App {
             docs: Vec::new(),
             doc_sel: 0,
             viewer: None,
+            chat: None,
             notice: None,
         }
+    }
+
+    /// `[5]` — démarre une conversation : radar remis à zéro, saisie de chat ouverte.
+    pub fn start_chat(&mut self) {
+        self.view = View::Radar;
+        self.editor = None;
+        self.viewer = None;
+        self.begin_run(); // efface l'historique et passe en Running
+        self.chat = Some(String::new());
+    }
+
+    pub fn chat_push(&mut self, c: char) {
+        if let Some(buf) = self.chat.as_mut() {
+            buf.push(c);
+        }
+    }
+
+    pub fn chat_backspace(&mut self) {
+        if let Some(buf) = self.chat.as_mut() {
+            buf.pop();
+        }
+    }
+
+    /// Valide le message courant : le renvoie (s'il est non vide) et vide le tampon, en
+    /// restant en mode conversation.
+    pub fn chat_submit(&mut self) -> Option<String> {
+        let buf = self.chat.as_mut()?;
+        let msg = buf.trim().to_string();
+        buf.clear();
+        if msg.is_empty() {
+            None
+        } else {
+            Some(msg)
+        }
+    }
+
+    pub fn end_chat(&mut self) {
+        self.chat = None;
     }
 
     /// `[4]` — ouvre l'éditeur de persona sur le contenu courant de l'espace.
@@ -275,6 +316,21 @@ mod tests {
         let mut app = App::new(None);
         app.docs_move(5); // liste vide → reste à 0
         assert_eq!(app.doc_sel, 0);
+    }
+
+    #[test]
+    fn chat_input_submit_and_end() {
+        let mut app = App::new(None);
+        app.start_chat();
+        assert!(app.chat.is_some());
+        app.chat_push('h');
+        app.chat_push('i');
+        app.chat_backspace();
+        assert_eq!(app.chat_submit().as_deref(), Some("h"));
+        assert_eq!(app.chat.as_deref(), Some(""), "le tampon est vidé mais le chat reste actif");
+        assert_eq!(app.chat_submit(), None, "message vide → rien envoyé");
+        app.end_chat();
+        assert!(app.chat.is_none());
     }
 
     #[test]

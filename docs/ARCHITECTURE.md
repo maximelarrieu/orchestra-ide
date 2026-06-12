@@ -196,6 +196,41 @@ Garde-fous : `safe_join` refuse les chemins absolus et tout composant `..` ; la 
 bornée à 6 tours ; les Skills non-Dev ne sont pas exposés (le modèle ne voit que ce qu'il
 peut actionner).
 
+### Conversation avec un coordinateur (`[5]`)
+
+En complément de l'exécution autonome (`[1]`), `runtime::start_conversation(space)` ouvre
+une **conversation persistante** via une `ChatHandle { user, events }` (canal
+**bidirectionnel** `mpsc` : l'UI envoie des messages sur `user`, reçoit les événements sur
+`events`). Une tâche `tokio` tient la boucle :
+
+```mermaid
+sequenceDiagram
+    actor U as Utilisateur (UI)
+    participant C as Coordinateur (tâche)
+    participant Cl as Claude/Gemini
+    participant A as Sous-agent (Tuteur…)
+
+    U->>C: message (canal `user`)
+    C-->>U: écho « Vous » + « Coordinateur » (canal `events`)
+    loop tant que le coordinateur délègue
+        C->>Cl: complete(system, [outils = 1 par agent], conv)
+        Cl-->>C: tool_use(Agent_X, instruction)
+        C->>A: run_agent_turn(instruction)
+        A-->>U: activité du sous-agent (Started/Log/Done)
+        A-->>C: compte rendu (texte)
+        C->>Cl: tool_result
+    end
+    Cl-->>C: réponse finale
+    C-->>U: réponse du coordinateur
+    Note over U,C: l'historique `conv` persiste entre les messages
+```
+
+**Pattern « agent-outil »** : chaque agent du roster est exposé au coordinateur comme un
+outil (`delegation_tool`) ; quand le coordinateur l'invoque, `run_subagent` lance un *tour*
+de cet agent (`run_agent_turn`, mutualisé avec le mode autonome) avec ses propres
+prompt/outils, émet son activité sur le radar, et renvoie son texte comme `tool_result`. La
+conversation se termine quand l'UI ferme le canal `user` (`Échap`).
+
 ### Intégrations Git / GitHub (Phase 4b)
 
 `orchestra-core::integrations` ajoute des Skills **conditionnels** à la liste d'outils, en

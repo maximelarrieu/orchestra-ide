@@ -117,16 +117,20 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         None => ("Aucun espace chargé".to_string(), "—"),
     };
 
-    let status = match app.phase {
-        Phase::Idle => Span::styled("● au repos", Style::new().dark_gray()),
-        Phase::Running => Span::styled(
-            format!("▶ {} agent(s) en cours", app.running_count()),
-            Style::new().green().bold(),
-        ),
-        Phase::Finished => Span::styled(
-            format!("✓ terminé ({} agents)", app.done),
-            Style::new().green(),
-        ),
+    let status = if app.chat.is_some() {
+        Span::styled("💬 conversation", Style::new().magenta().bold())
+    } else {
+        match app.phase {
+            Phase::Idle => Span::styled("● au repos", Style::new().dark_gray()),
+            Phase::Running => Span::styled(
+                format!("▶ {} agent(s) en cours", app.running_count()),
+                Style::new().green().bold(),
+            ),
+            Phase::Finished => Span::styled(
+                format!("✓ terminé ({} agents)", app.done),
+                Style::new().green(),
+            ),
+        }
     };
 
     let mode = match &app.llm_model {
@@ -227,6 +231,13 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             "📚 Documents — ↑↓ choisir · Entrée ouvrir · Échap retour",
             Style::new().cyan(),
         ))
+    } else if let Some(buf) = &app.chat {
+        Line::from(vec![
+            Span::styled("› ", Style::new().magenta().bold()),
+            Span::raw(buf.clone()),
+            Span::styled("▏", Style::new().magenta()),
+            Span::styled("   (Entrée = envoyer · Échap = quitter le chat)", Style::new().dark_gray()),
+        ])
     } else if let Some(buf) = &app.input {
         Line::from(vec![
             Span::styled("Chemin de l'espace : ", Style::new().bold()),
@@ -238,7 +249,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(notice.clone(), Style::new().yellow()))
     } else {
         Line::from(
-            "[1] Lancer   [2] Documents   [3] Changer d'Espace   [4] Éditer persona   [q] Quitter",
+            "[1] Lancer  [5] Converser  [2] Documents  [3] Espace  [4] Persona  [q] Quitter",
         )
     };
     frame.render_widget(Paragraph::new(content).block(block), area);

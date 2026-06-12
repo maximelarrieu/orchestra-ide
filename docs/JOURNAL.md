@@ -138,6 +138,22 @@ branche ; `clippy` sans warning. GitHub REST testé en local (token requis).
 Documentaliste ajouté quand activé, bascule de vue ADRs, édition/consommation de la saisie,
 rendus headless (ADRs + mode saisie). `clippy` sans warning.
 
+## Conversation avec un coordinateur (post-Phase 5) ✅
+
+- **Mode conversationnel** (`[5]`) en plus de l'exécution autonome (`[1]`) :
+  `runtime::start_conversation` ouvre une `ChatHandle { user, events }` (canal mpsc
+  **bidirectionnel**) ; une tâche tokio tient la boucle et conserve l'historique entre les
+  messages.
+- **Pattern « agent-outil » / coordinateur** : chaque agent du roster est exposé au chef
+  d'orchestre comme un outil (`delegation_tool`) ; il délègue via `run_subagent` (qui
+  réutilise `run_agent_turn`, mutualisé avec le mode autonome), voit l'activité du sous-agent
+  défiler sur le radar, puis synthétise. Le coordinateur peut aussi poser des questions à
+  l'utilisateur.
+- TUI : ligne de saisie de chat (`›`), indicateur `💬 conversation`, `Entrée` envoie, `Échap`
+  ferme le canal et termine la conversation.
+- Refactor : la boucle agentique d'un tour est extraite (`run_agent_turn`) et partagée entre
+  le mode autonome et les sous-agents du coordinateur.
+
 ## Améliorations UX (post-Phase 5) ✅
 
 - `orchestra init` (Dev) : le **workspace est résolu en chemin absolu** (fini la fragilité
