@@ -184,6 +184,19 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - La zone centrale conserve le système de vues existant (radar/docs/agents/éditeur), rendu
   désormais dans le panneau central plutôt qu'en plein écran.
 
+## Mémoire partagée d'espace + prompt caching (post-Phase 5) ✅
+
+- **Mémoire partagée** : module `memory` (`.orchestra/memory.md`) + primitives universelles
+  `Remember{note}` / `Recall{query?}` exposées à **tous** les agents (dispatch `memory::handles`
+  dans le runtime, aiguillé comme les intégrations). Notes numérotées + attribuées à l'agent,
+  durables entre sessions, listées dans le navigateur `[2]`.
+- **Token-smart** : le prompt système n'injecte qu'un rappel court ; le contenu se lit à la
+  demande via `Recall` (filtre par mot-clé). Une source résumée une fois est relue en synthèse,
+  pas en brut — la mémoire sert de compression de contexte.
+- **Prompt caching (Anthropic)** : le bloc `system` (stable d'un tour/agent à l'autre) est marqué
+  `cache_control: ephemeral` → les tours suivants paient une fraction des tokens d'entrée.
+- Reste planifié : divulgation progressive des fiches (`Load_Skill`), context caching Gemini.
+
 ## Skills « fiches » Markdown + création depuis l'UI (post-Phase 5) ✅
 
 - Modèle « skill = dossier + `SKILL.md` » (façon *Agent Skills*) : `crate::markdown_skill`

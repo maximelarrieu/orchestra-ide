@@ -202,6 +202,16 @@ Les modifications sont **enregistrées dans `.orchestra/config.json`** (via le c
 > **(fiche)** en cyan. Idéal pour `Creation_Quiz` (pur texte) ou un `Web_Search` qui s'appuie
 > sur la primitive `Web_Fetch`.
 
+> 🧠 **Mémoire partagée + économie de tokens.** Tous les agents disposent de deux primitives
+> universelles : **`Remember{note}`** (consigne un fait/décision/synthèse dans
+> `.orchestra/memory.md`) et **`Recall{query?}`** (relit la mémoire, filtrée par mot-clé). La
+> mémoire est durable entre sessions et visible dans le navigateur `[2]`. C'est aussi un levier
+> d'économie : un agent résume une source volumineuse **une fois**, les autres lisent la
+> synthèse au lieu de relire le fichier. Le prompt système ne contient qu'un **rappel court** (le
+> contenu est lu à la demande via `Recall`). Côté infra, le system prompt — stable d'un tour à
+> l'autre — est marqué **cacheable** (Anthropic *prompt caching*) : les tours suivants paient une
+> fraction des tokens d'entrée sur ce préfixe.
+
 ### Converser avec le chef d'orchestre (`[5]`)
 
 Au-delà de l'exécution autonome (`[1]`), `[5]` ouvre une **conversation persistante** avec
