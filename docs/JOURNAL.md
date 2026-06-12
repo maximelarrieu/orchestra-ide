@@ -9,7 +9,8 @@ Plan global en 5 phases :
 1. Modèle des Espaces de Contexte + coquille du dashboard ✅
 2. Commande `orchestra init` (scaffolding interactif) ✅
 3. Runtime d'agents + flux temps réel → radar vivant ✅
-4. Intégration LLM + Skills écosystème Dev (Git / Jira / GitHub) ⏳
+4a. Intégration LLM (Claude **ou** Gemini) + Skills Dev exécutables (tool use) ✅
+4b. Intégrations écosystème : Git / GitHub / Jira ⏳
 5. Agent Documentaliste (Doc_Auto_Update, Mermaid) + finitions ⏳
 
 ---
@@ -67,13 +68,38 @@ Plan global en 5 phases :
 
 ---
 
-## Phase 4 — LLM + Skills + intégrations ⏳ (à venir)
+## Phase 4a — LLM Claude + Skills Dev exécutables ✅
+
+**Livré**
+- `orchestra-core::llm` : client **multi-fournisseurs** en HTTP brut (`reqwest`, rustls) —
+  **Claude** (`claude-opus-4-8`) ou **Gemini** (`gemini-2.0-flash`) au choix, via une
+  représentation neutre (`Msg`/`Block`/`ToolSpec`). Sélection par `ORCHESTRA_PROVIDER` ou
+  auto-détection de la clé (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) ; modèle surchargé par
+  `ORCHESTRA_MODEL`.
+- `orchestra-core::skills` : trois Skills Dev exécutables via tool use — `Read_File`,
+  `Write_File_Validated`, `Execute_Terminal_Command` — confinés au workspace (chemins
+  absolus/`..` refusés ; commande shell avec délai 30 s et sortie plafonnée).
+- `runtime` : boucle agentique réelle (Claude ↔ outils, max 6 tours) **sans changer la
+  signature de `spawn`** ; **repli automatique** sur le flux simulé sans clé ou si l'API
+  échoue.
+- TUI : indicateur de mode dans l'en-tête (`🤖 <modèle>` / `simulé · clé API absente`) et
+  rappel sur le radar des variables d'environnement à définir pour activer un vrai LLM.
+
+**Limites connues**
+- Pas d'intention saisie par l'utilisateur : chaque agent part d'un objectif générique
+  dérivé du persona (saisie interactive prévue plus tard).
+- Skills exécutables limités au triptyque Dev ; les autres types restent « parlants ».
+- Intégrations Git / GitHub / Jira non encore implémentées (Phase 4b).
+
+**Tests** : 14 verts (`cargo test --workspace`) — dont skills (round-trip fichier, garde
+anti-évasion, exécution shell) et runtime hors-ligne ; `clippy` sans warning. La vraie
+boucle LLM nécessite une clé API (testée en local).
+
+## Phase 4b — Intégrations écosystème ⏳ (à venir)
 
 **Visé**
-- Remplacer le corps simulé des agents par de vrais appels LLM + Skills exécutables,
-  **sans changer la signature de `runtime::spawn`**.
-- Premiers Skills écosystème Dev et intégrations Git / GitHub / Jira (tokens via variables
-  d'environnement, jamais en clair).
+- Git / GitHub / Jira (tokens via variables d'environnement, jamais en clair), exposés
+  comme Skills supplémentaires au LLM.
 
 ## Phase 5 — Documentaliste + finitions ⏳ (à venir)
 

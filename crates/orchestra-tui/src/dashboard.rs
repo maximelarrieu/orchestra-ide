@@ -44,11 +44,18 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         ),
     };
 
+    let mode = match &app.llm_model {
+        Some(model) => Span::styled(format!("🤖 {model}"), Style::new().magenta()),
+        None => Span::styled("simulé · clé API absente", Style::new().yellow()),
+    };
+
     let line = Line::from(vec![
         Span::styled("ORCHESTRA IDE v0.1.0", Style::new().bold().cyan()),
         Span::raw("  |  "),
         Span::styled(format!("[{name}]"), Style::new().yellow().bold()),
         Span::raw(format!(" ({kind})  |  ")),
+        mode,
+        Span::raw("  |  "),
         status,
     ]);
 
@@ -64,10 +71,23 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
             (false, _) => "  Aucun agent dans cet espace (ou aucun espace chargé).",
             _ => "  En attente d'activité…",
         };
-        Paragraph::new(vec![
+        let mut lines = vec![
             Line::raw(""),
             Line::from(Span::styled(hint, Style::new().dark_gray())),
-        ])
+        ];
+        // En mode simulé, rappeler comment activer un vrai LLM.
+        if app.llm_model.is_none() {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "  ⚠ Mode simulé — aucune clé API détectée.",
+                Style::new().yellow(),
+            )));
+            lines.push(Line::from(Span::styled(
+                "    Définis ANTHROPIC_API_KEY (Claude) ou GEMINI_API_KEY (Gemini) pour activer un vrai LLM.",
+                Style::new().dark_gray(),
+            )));
+        }
+        Paragraph::new(lines)
     } else {
         // On n'affiche que les dernières lignes qui tiennent dans la zone (auto-scroll).
         let visible = area.height.saturating_sub(2) as usize; // -2 : bordures

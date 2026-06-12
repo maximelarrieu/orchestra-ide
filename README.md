@@ -64,12 +64,44 @@ cargo run -p orchestra-tui -- examples/recherche-immo-aix
 ```
 
 Boucle async multiplexée par `tokio::select!` (clavier via `EventStream` + flux d'agents +
-tick de rafraîchissement). **Toujours sans LLM** : les agents sont *simulés* (flux
-d'activité crédible et étalé dans le temps) — le vrai modèle arrive en Phase 4, sans
-changer la signature de `runtime::spawn`. L'agrégation du flux (`orchestra-tui::app::App`)
-est isolée du rendu et testée.
+tick de rafraîchissement). L'agrégation du flux (`orchestra-tui::app::App`) est isolée du
+rendu et testée.
+
+## Phase 4a — LLM (Claude **ou** Gemini) + Skills Dev exécutables ✅
+
+Les agents deviennent réellement intelligents. `orchestra-core::llm` appelle l'API d'un
+fournisseur d'IA **au choix** en HTTP brut (pas de SDK Rust officiel) ; une représentation
+neutre découple la boucle agentique du format de chaque provider. Chaque agent mène une
+**boucle agentique** : le modèle raisonne, demande un *outil*, on l'exécute, on lui renvoie
+le résultat. Les trois Skills Dev sont branchés sur le système (`orchestra-core::skills`) :
+`Read_File`, `Write_File_Validated`, `Execute_Terminal_Command`, confinés au workspace.
+
+```bash
+# Claude (défaut claude-opus-4-8) :
+export ANTHROPIC_API_KEY="sk-ant-..."
+# …ou Gemini (défaut gemini-2.0-flash) :
+export GEMINI_API_KEY="..."
+# Forcer le fournisseur / le modèle si besoin :
+export ORCHESTRA_PROVIDER=gemini      # anthropic | gemini
+export ORCHESTRA_MODEL=gemini-2.0-flash
+
+cargo run -p orchestra-tui -- examples/recherche-immo-aix
+# [1] lance l'orchestre — le radar affiche les actions réelles des agents.
+```
+
+Sélection automatique selon la clé présente (`ANTHROPIC_API_KEY` puis `GEMINI_API_KEY`),
+`ORCHESTRA_PROVIDER` ayant priorité. Clés **jamais en dur**, lues depuis l'environnement.
+
+**Repli automatique** : sans aucune clé (ou si l'API est injoignable), on retombe sur les
+agents *simulés* de la Phase 3 — l'appli reste pleinement fonctionnelle hors-ligne, et la
+compilation/les tests n'exigent aucune clé. L'en-tête indique le mode (`🤖 <modèle>` ou
+`simulé · clé API absente`), et le radar rappelle alors quelles variables définir. La
+signature de `runtime::spawn` n'a pas changé.
+
+> ⚠️ `Execute_Terminal_Command` exécute des commandes shell dans le workspace (capacité
+> assumée pour un IDE de dev) : sortie plafonnée, délai max 30 s, chemins confinés.
 
 ## Phases suivantes
 
-4. Intégration LLM + Skills écosystème Dev (Git / Jira / GitHub).
+4b. Intégrations écosystème : Git / GitHub / Jira.
 5. Agent Documentaliste (Doc_Auto_Update, Mermaid) + finitions.

@@ -47,7 +47,9 @@ crates/
 │  ├─ lib.rs            # ré-exports publics
 │  ├─ error.rs          # OrchestraError (type d'erreur unique)
 │  ├─ events.rs         # AgentEvent — contrat cœur ↔ UI
-│  ├─ runtime.rs        # spawn() : lance les agents (Phase 3)
+│  ├─ runtime.rs        # spawn() : lance les agents (boucle LLM ou simulée)
+│  ├─ llm.rs            # LlmClient : API Messages de Claude en HTTP (Phase 4a)
+│  ├─ skills.rs         # Skills Dev exécutables via tool use (Phase 4a)
 │  ├─ scaffold.rs       # scaffold_space() : crée un Espace (Phase 2)
 │  └─ model/
 │     ├─ project_type.rs  # enum ProjectType
@@ -142,9 +144,56 @@ unique canal `tokio::sync::mpsc`. Le `Sender` original est lâché à la fin de 
 **quand tous les agents ont terminé, le canal se ferme et `recv()` renvoie `None`** —
 c'est ainsi que l'UI sait, sans drapeau dédié, que l'orchestre est au repos.
 
-> **Phase 3 = sans LLM.** Les agents sont *simulés* : ils jouent un scénario scripté
-> (`scripted_steps`) étalé dans le temps. La Phase 4 remplacera ce corps simulé par de
-> vrais appels LLM + Skills **sans changer la signature de `spawn`**.
+Depuis la **Phase 4a**, chaque agent mène — si une clé API est présente — une vraie boucle
+agentique Claude (voir §5bis). **Sans clé, ou si l'API échoue, le runtime retombe sur le
+corps simulé** (`scripted_steps`, scénario scripté étalé dans le temps). `spawn` lit
+`LlmClient::from_env()` ; un `spawn_inner(space, client)` interne, injectable, garde les
+tests hors-ligne et déterministes.
+
+## 5bis. Boucle agentique LLM + Skills exécutables (Phase 4a)
+
+`orchestra-core::llm::LlmClient` appelle, en **HTTP brut** via `reqwest` (Rust n'a pas de
+SDK officiel), l'un des deux fournisseurs **au choix** :
+
+| Provider | Endpoint | Modèle par défaut | Clé |
+|---|---|---|---|
+| `Anthropic` (Claude) | `POST /v1/messages` | `claude-opus-4-8` | `ANTHROPIC_API_KEY` |
+| `Gemini` | `…/{model}:generateContent` | `gemini-2.0-flash` | `GEMINI_API_KEY` |
+
+Une représentation **neutre** (`Msg` / `Block` / `ToolSpec` / `ToolResult`) découple la
+boucle agentique du format de chaque fournisseur : chaque provider *rend* cette
+représentation dans son protocole (content blocks vs `functionCall`/`functionResponse`) et
+*parse* sa réponse vers les mêmes `Block`. Le choix se fait via `ORCHESTRA_PROVIDER`
+(prioritaire) ou par auto-détection de la clé présente ; le modèle est surchargeable par
+`ORCHESTRA_MODEL`. `orchestra-core::skills` expose les Skills Dev comme *tools* et les
+exécute côté Rust, confinés au workspace.
+
+```mermaid
+sequenceDiagram
+    participant Ag as Tâche agent (runtime)
+    participant C as Claude (/v1/messages)
+    participant S as skills (workspace)
+
+    Ag->>C: system + tools + messages
+    loop tant que stop_reason == tool_use
+        C-->>Ag: text + tool_use(name, input)
+        Note over Ag: émet AgentEvent::Log (texte, 🔧 outil)
+        Ag->>S: execute_skill(name, input)
+        S-->>Ag: résultat (texte, is_error)
+        Ag->>C: tour assistant rejoué + tool_result
+    end
+    C-->>Ag: end_turn → Done
+```
+
+| Skill (tool) | Action | Garde-fou |
+|---|---|---|
+| `Read_File` | lit un fichier texte | chemin confiné au workspace |
+| `Write_File_Validated` | écrit/remplace un fichier | idem + création des parents |
+| `Execute_Terminal_Command` | commande shell dans le workspace | `cwd`=workspace, délai 30 s, sortie plafonnée |
+
+Garde-fous : `safe_join` refuse les chemins absolus et tout composant `..` ; la boucle est
+bornée à 6 tours ; les Skills non-Dev ne sont pas exposés (le modèle ne voit que ce qu'il
+peut actionner).
 
 ### Flux d'un lancement (touche `[1]`)
 

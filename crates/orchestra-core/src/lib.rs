@@ -7,9 +7,11 @@
 
 pub mod error;
 pub mod events;
+pub mod llm;
 pub mod model;
 pub mod runtime;
 pub mod scaffold;
+pub mod skills;
 
 pub use error::OrchestraError;
 pub use scaffold::{scaffold_space, InitOptions};
