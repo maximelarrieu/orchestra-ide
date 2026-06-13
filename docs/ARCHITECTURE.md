@@ -260,6 +260,13 @@ de cet agent (`run_agent_turn`, mutualisé avec le mode autonome) avec ses propr
 prompt/outils, émet son activité sur le radar, et renvoie son texte comme `tool_result`. La
 conversation se termine quand l'UI ferme le canal `user` (`Échap`).
 
+**Orchestration depuis le chat** : le coordinateur dispose en plus d'un outil `orchestrate`
+(`orchestrate_tool`). Quand il l'invoque, `run_coordinator_turn` appelle la boucle mutualisée
+`run_orchestration` (la même que `[1]` — cf. section suivante) : plan → approbation →
+exécution parallèle → auto-correction → synthèse. L'approbation passe par
+`ChatHandle.approve` (réutilise l'écran de plan du TUI) ; la synthèse renvoyée devient le
+`tool_result` que le coordinateur intègre à sa réponse, et le dialogue continue.
+
 ### Orchestration réelle (`[1]`) — plan → approbation → exécution → synthèse (post-Phase 5)
 
 `runtime::orchestrate(space, objectif) -> OrchestrationHandle { approve, events }` fait

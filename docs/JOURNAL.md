@@ -221,8 +221,14 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   bornée par `MAX_ROUNDS`. La mémoire fait le pont entre manches. Mécanisme **agnostique** :
   aucun agent/skill dédié (en Dev, l'`Agent_Testeur` + `Execute_Terminal_Command` existants
   suffisent). Hors-ligne → une seule manche.
+- **Orchestration depuis le chat `[5]`** : le coordinateur dispose d'un outil `orchestrate`
+  (en plus des outils de délégation) qui lance la boucle complète (plan validé → exécution
+  parallèle → auto-correction → synthèse) **en pleine conversation** ; `ChatHandle.approve`
+  porte l'approbation, réutilisant le même écran de plan. La synthèse revient au coordinateur
+  comme résultat d'outil et nourrit sa réponse. Logique d'orchestration mutualisée
+  (`run_orchestration`) entre `[1]` et `[5]`.
 - Correctif au passage : nom d'outil de délégation slugifié (agents accentués → API valide).
-- Hors périmètre (à suivre) : orchestration depuis le chat `[5]`, support MCP.
+- Hors périmètre (à suivre) : support MCP, parallélisme inter-manches plus fin.
 
 ## Skills « fiches » Markdown + création depuis l'UI (post-Phase 5) ✅
 

@@ -82,7 +82,7 @@ Le tableau de bord (TUI) s'ouvre en 3 zones :
 | Touche | Action | État |
 |---|---|---|
 | `[1]` | Orchestrer un objectif : plan (tâches + dépendances) → approbation → exécution → synthèse | ✅ actif |
-| `[5]` | Converser avec le chef d'orchestre (délègue aux agents, historique conservé) | ✅ actif |
+| `[5]` | Converser avec le chef d'orchestre (délègue aux agents, **ou orchestre un objectif complexe** ; historique conservé) | ✅ actif |
 | `[2]` | Navigateur de documents (persona/mémoire/ADRs/docs) + visualiseur Markdown | ✅ actif |
 | `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
 | `[4]` | Éditer le persona dans l'interface (`Ctrl+S` enregistre) | ✅ actif |
