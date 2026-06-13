@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use orchestra_core::events::AgentEvent;
+use orchestra_core::events::{AgentEvent, PlannedTask};
 use orchestra_core::model::{AgentDef, ContextSpace, DocKind, ProjectType, SpaceDoc};
 
 use crate::editor::Editor;
@@ -141,6 +141,26 @@ pub struct App {
     pub spinner: usize,
     /// Message transitoire affiché à l'utilisateur (succès/erreur d'une action).
     pub notice: Option<String>,
+    /// Plan d'orchestration courant (vide hors orchestration) + état de chaque tâche.
+    pub plan: Vec<PlanRow>,
+    /// Vrai quand un plan attend l'approbation de l'utilisateur (Entrée/Échap).
+    pub pending_plan: bool,
+}
+
+/// État d'une tâche du plan d'orchestration, côté affichage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanStatus {
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
+
+/// Une ligne du plan affiché : la tâche planifiée + son état courant.
+#[derive(Debug, Clone)]
+pub struct PlanRow {
+    pub task: PlannedTask,
+    pub status: PlanStatus,
 }
 
 /// Cadres du spinner d'activité (braille).
@@ -187,6 +207,8 @@ impl App {
             radar_scroll: 0,
             busy: None,
             busy_since: None,
+            plan: Vec::new(),
+            pending_plan: false,
             spinner: 0,
             notice: None,
         }
@@ -453,6 +475,8 @@ impl App {
         self.started = 0;
         self.done = 0;
         self.phase = Phase::Running;
+        self.plan.clear();
+        self.pending_plan = false;
         self.radar_scroll = 0;
         self.busy = None;
         self.busy_since = None;
@@ -461,6 +485,33 @@ impl App {
 
     /// Intègre un événement du runtime dans l'état (compteurs + historique + stats agents).
     pub fn on_event(&mut self, ev: AgentEvent) {
+        // Événements de plan d'orchestration : pilotent le panneau Plan, pas l'historique radar.
+        match &ev {
+            AgentEvent::PlanReady { tasks } => {
+                self.plan = tasks
+                    .iter()
+                    .cloned()
+                    .map(|task| PlanRow { task, status: PlanStatus::Pending })
+                    .collect();
+                self.pending_plan = true;
+                return;
+            }
+            AgentEvent::TaskStarted { id, .. } => {
+                self.pending_plan = false;
+                self.set_task_status(id, PlanStatus::Running);
+                return;
+            }
+            AgentEvent::TaskDone { id } => {
+                self.set_task_status(id, PlanStatus::Done);
+                return;
+            }
+            AgentEvent::TaskFailed { id, .. } => {
+                self.set_task_status(id, PlanStatus::Failed);
+                return;
+            }
+            _ => {}
+        }
+
         // « Thinking » ne va pas dans l'historique : il pilote l'indicateur + chronomètre.
         if let AgentEvent::Thinking { agent } = &ev {
             self.busy = Some(agent.clone());
@@ -480,7 +531,7 @@ impl App {
             AgentEvent::Done { agent } => {
                 self.agent_status.insert(agent.clone(), LiveStatus::Done);
             }
-            AgentEvent::Thinking { .. } => {}
+            _ => {}
         }
 
         match &ev {
@@ -493,7 +544,7 @@ impl App {
                     st.thinking += start.elapsed();
                 }
             }
-            AgentEvent::Thinking { .. } => {}
+            _ => {}
         }
         match &ev {
             AgentEvent::Started { .. } => self.started += 1,
@@ -504,6 +555,25 @@ impl App {
         if self.events.len() > HISTORY_CAP {
             self.events.remove(0);
         }
+    }
+
+    /// Met à jour l'état d'une tâche du plan (par id).
+    fn set_task_status(&mut self, id: &str, status: PlanStatus) {
+        if let Some(row) = self.plan.iter_mut().find(|r| r.task.id == id) {
+            row.status = status;
+        }
+    }
+
+    /// L'utilisateur approuve le plan → l'exécution peut démarrer.
+    pub fn approve_plan(&mut self) {
+        self.pending_plan = false;
+        self.notice = None;
+    }
+
+    /// L'utilisateur annule le plan → on efface l'état de plan.
+    pub fn cancel_plan(&mut self) {
+        self.pending_plan = false;
+        self.plan.clear();
     }
 
     // --- Gestionnaire d'agents (`[6]`) ---------------------------------------------
@@ -788,6 +858,30 @@ mod tests {
         assert!(matches!(app.editor_target, EditTarget::SkillFile(_)));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_events_drive_panel_without_polluting_radar() {
+        let mut app = App::new(None);
+        app.on_event(AgentEvent::PlanReady {
+            tasks: vec![
+                PlannedTask { id: "t1".into(), agent: "A".into(), objective: "x".into(), depends_on: vec![] },
+                PlannedTask { id: "t2".into(), agent: "B".into(), objective: "y".into(), depends_on: vec!["t1".into()] },
+            ],
+        });
+        assert!(app.pending_plan);
+        assert_eq!(app.plan.len(), 2);
+
+        app.approve_plan();
+        assert!(!app.pending_plan);
+
+        app.on_event(AgentEvent::TaskStarted { id: "t1".into(), agent: "A".into() });
+        assert_eq!(app.plan[0].status, PlanStatus::Running);
+        app.on_event(AgentEvent::TaskDone { id: "t1".into() });
+        assert_eq!(app.plan[0].status, PlanStatus::Done);
+
+        // Les événements de plan ne sont pas stockés dans l'historique du radar.
+        assert!(app.events.is_empty());
     }
 
     #[test]

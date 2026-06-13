@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, LiveStatus, Phase, View, Viewer};
+use crate::app::{App, LiveStatus, Phase, PlanStatus, View, Viewer};
 use crate::editor::Editor;
 use crate::markdown;
 
@@ -50,6 +50,14 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_markdown_viewer(frame, center, v);
     } else {
         match app.view {
+            View::Radar if !app.plan.is_empty() => {
+                // Plan d'orchestration au-dessus du radar (panneau borné à la moitié haute).
+                let plan_h = (app.plan.len() as u16 + 2).clamp(4, center.height / 2);
+                let [plan_area, radar_area] =
+                    Layout::vertical([Constraint::Length(plan_h), Constraint::Min(3)]).areas(center);
+                render_plan_panel(frame, plan_area, app);
+                render_radar(frame, radar_area, app);
+            }
             View::Radar => render_radar(frame, center, app),
             View::Docs => render_docs_list(frame, center, app),
             View::Agents => render_agents(frame, center, app),
@@ -354,6 +362,45 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(rows[start..end].to_vec()).block(block), area);
 }
 
+/// Panneau du plan d'orchestration : une ligne par tâche (état + agent + dépendances + objectif).
+fn render_plan_panel(frame: &mut Frame, area: Rect, app: &App) {
+    let title = if app.pending_plan {
+        " 🗺  PLAN — [Entrée] exécuter · [Échap] annuler ".to_string()
+    } else {
+        " 🗺  PLAN D'ORCHESTRATION ".to_string()
+    };
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let lines: Vec<Line> = app
+        .plan
+        .iter()
+        .map(|row| {
+            let (glyph, style) = match row.status {
+                PlanStatus::Pending => ("⋯", Style::new().dark_gray()),
+                PlanStatus::Running => ("▶", Style::new().yellow().bold()),
+                PlanStatus::Done => ("✓", Style::new().green().bold()),
+                PlanStatus::Failed => ("✗", Style::new().red().bold()),
+            };
+            let deps = if row.task.depends_on.is_empty() {
+                String::new()
+            } else {
+                format!(" ⟸ {}", row.task.depends_on.join(","))
+            };
+            // Objectif tronqué à la largeur restante pour rester sur une ligne.
+            let prefix = format!(" {glyph} {} {}{}  ", row.task.id, row.task.agent, deps);
+            let budget = inner_w.saturating_sub(prefix.chars().count());
+            let obj: String = row.task.objective.chars().take(budget).collect();
+            Line::from(vec![
+                Span::styled(format!(" {glyph} "), style),
+                Span::styled(format!("{} ", row.task.id), Style::new().dark_gray()),
+                Span::styled(row.task.agent.clone(), Style::new().cyan()),
+                Span::styled(deps, Style::new().dark_gray()),
+                Span::raw(format!("  {obj}")),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), area);
+}
+
 /// Style du nom selon l'émetteur (utilisateur / coordinateur / agent).
 fn speaker_style(agent: &str) -> Style {
     match agent {
@@ -413,6 +460,8 @@ fn event_rows(ev: &AgentEvent, width: usize, rows: &mut Vec<Line<'static>>) {
                 ]));
             }
         }
+        // Les événements de plan (PlanReady/Task*) pilotent le panneau Plan, pas le radar.
+        _ => {}
     }
 }
 
@@ -457,7 +506,12 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" 📋 OPTIONS & MENUS ");
 
     // Les modes (éditeur / visualiseur / chat / saisie) ont priorité sur le menu.
-    let lines: Vec<Line> = if app.editor.is_some() {
+    let lines: Vec<Line> = if app.pending_plan {
+        vec![Line::from(Span::styled(
+            "🗺  Plan proposé — [Entrée] exécuter l'orchestre · [Échap] annuler",
+            Style::new().yellow().bold(),
+        ))]
+    } else if app.editor.is_some() {
         vec![Line::from(Span::styled(
             "✏ Persona — Ctrl+S enregistrer · Échap annuler · ←↑↓→ naviguer",
             Style::new().magenta(),

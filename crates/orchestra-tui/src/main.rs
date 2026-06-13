@@ -95,6 +95,8 @@ async fn event_loop(
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
     // `Some` pendant une conversation : canal pour envoyer les messages au coordinateur.
     let mut chat_tx: Option<UnboundedSender<String>> = None;
+    // `Some` pendant une orchestration : canal d'approbation du plan (true = exécuter).
+    let mut plan_tx: Option<UnboundedSender<bool>> = None;
 
     loop {
         terminal.draw(|frame| dashboard::render(frame, app))?;
@@ -170,6 +172,25 @@ async fn event_loop(
                                 }
                                 _ => {}
                             }
+                        } else if app.pending_plan {
+                            // Un plan attend l'approbation : Entrée exécute, Échap annule.
+                            match key.code {
+                                KeyCode::Enter => {
+                                    if let Some(tx) = &plan_tx {
+                                        let _ = tx.send(true);
+                                    }
+                                    app.approve_plan();
+                                }
+                                KeyCode::Esc => {
+                                    if let Some(tx) = &plan_tx {
+                                        let _ = tx.send(false);
+                                    }
+                                    app.cancel_plan();
+                                }
+                                KeyCode::PageUp => app.radar_scroll_by(10),
+                                KeyCode::PageDown => app.radar_scroll_by(-10),
+                                _ => {}
+                            }
                         } else if app.agent_prompt.is_some() {
                             // Saisie d'un champ d'agent (nom / rôle / skills / ajout).
                             match key.code {
@@ -238,10 +259,11 @@ async fn event_loop(
                                     if let Some(goal) = app.take_intention() {
                                         app.notice = None;
                                         app.begin_run();
+                                        // Orchestration réelle : plan → approbation → exécution.
                                         let handle =
-                                            runtime::start_conversation(app.space.as_ref().unwrap());
-                                        let _ = handle.user.send(goal); // une seule intention…
-                                        rx = Some(handle.events); // …puis `user` est lâché → one-shot
+                                            runtime::orchestrate(app.space.as_ref().unwrap(), &goal);
+                                        plan_tx = Some(handle.approve);
+                                        rx = Some(handle.events);
                                     }
                                 }
                                 KeyCode::Backspace => app.intention_backspace(),
