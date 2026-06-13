@@ -35,6 +35,10 @@ const COORDINATOR: &str = "Coordinateur";
 /// Nombre maximal de tours LLM ↔ outils par agent (garde-fou anti-boucle).
 const MAX_TURNS: usize = 6;
 
+/// Nombre maximal de manches de planification (plan initial + manches correctives) — garde-fou
+/// de la re-planification itérative.
+const MAX_ROUNDS: usize = 3;
+
 /// Un agent prêt à tourner : nom, rôle, skills, et drapeau Documentaliste.
 #[derive(Clone)]
 struct RosterAgent {
@@ -265,11 +269,12 @@ async fn run_agent_turn(
 // --- Conversation avec le chef d'orchestre (coordinateur) ---------------------------
 
 /// Poignée d'une conversation : on envoie des messages utilisateur sur `user`, on reçoit
-/// les événements (réponses du coordinateur et activité des sous-agents) sur `events`.
-/// Fermer `user` (le `Sender`) met fin à la conversation.
+/// les événements sur `events`, et on **approuve** un plan proposé par l'outil `orchestrate`
+/// du coordinateur via `approve` (`true` = exécuter). Fermer `user` met fin à la conversation.
 pub struct ChatHandle {
     pub user: UnboundedSender<String>,
     pub events: UnboundedReceiver<AgentEvent>,
+    pub approve: UnboundedSender<bool>,
 }
 
 /// Démarre une conversation avec le coordinateur de l'espace.
@@ -281,11 +286,12 @@ pub fn start_conversation(space: &ContextSpace) -> ChatHandle {
 fn start_conversation_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>) -> ChatHandle {
     let (user_tx, user_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (approve_tx, approve_rx) = mpsc::unbounded_channel();
     let ctx = AgentContext::from_space(space);
     let roster = roster(space);
 
-    tokio::spawn(conversation_task(ctx, roster, client, user_rx, event_tx));
-    ChatHandle { user: user_tx, events: event_rx }
+    tokio::spawn(conversation_task(ctx, roster, client, user_rx, approve_rx, event_tx));
+    ChatHandle { user: user_tx, events: event_rx, approve: approve_tx }
 }
 
 /// Boucle de conversation : attend un message utilisateur, le confie au coordinateur, puis
@@ -295,6 +301,7 @@ async fn conversation_task(
     roster: Vec<RosterAgent>,
     client: Option<Arc<LlmClient>>,
     mut user_rx: UnboundedReceiver<String>,
+    mut approve_rx: UnboundedReceiver<bool>,
     tx: UnboundedSender<AgentEvent>,
 ) {
     let _ = tx.send(AgentEvent::Started { agent: COORDINATOR.to_string() });
@@ -304,7 +311,9 @@ async fn conversation_task(
     });
 
     let system = coordinator_prompt(&ctx, &roster);
-    let tools: Vec<ToolSpec> = roster.iter().map(delegation_tool).collect();
+    // Outils : un par agent (délégation) + `orchestrate` (plan complet validé/exécuté/corrigé).
+    let mut tools: Vec<ToolSpec> = roster.iter().map(delegation_tool).collect();
+    tools.push(orchestrate_tool());
     let mut conv: Vec<Msg> = Vec::new();
 
     while let Some(user_msg) = user_rx.recv().await {
@@ -315,7 +324,7 @@ async fn conversation_task(
             Some(c) => {
                 conv.push(Msg::User(user_msg));
                 if let Err(e) =
-                    run_coordinator_turn(c, &system, &tools, &mut conv, &ctx, &roster, &tx).await
+                    run_coordinator_turn(c, &system, &tools, &mut conv, &ctx, &roster, &mut approve_rx, &tx).await
                 {
                     emit_log(&tx, COORDINATOR, &format!("⚠ LLM injoignable ({e})"));
                 }
@@ -331,8 +340,9 @@ async fn conversation_task(
     let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
 }
 
-/// Un tour du coordinateur : il répond et/ou délègue à des sous-agents (chaque agent est
-/// exposé comme un outil). Boucle jusqu'à une réponse finale à l'utilisateur.
+/// Un tour du coordinateur : il répond, délègue à des sous-agents, ou orchestre un objectif
+/// complet. Boucle jusqu'à une réponse finale à l'utilisateur.
+#[allow(clippy::too_many_arguments)] // boucle agentique : dépendances explicites assumées
 async fn run_coordinator_turn(
     client: &LlmClient,
     system: &str,
@@ -340,6 +350,7 @@ async fn run_coordinator_turn(
     conv: &mut Vec<Msg>,
     ctx: &AgentContext,
     roster: &[RosterAgent],
+    approve_rx: &mut UnboundedReceiver<bool>,
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<(), crate::llm::LlmError> {
     for _ in 0..MAX_TURNS {
@@ -351,7 +362,8 @@ async fn run_coordinator_turn(
             match block {
                 Block::Text(t) => emit_log(tx, COORDINATOR, t.trim()),
                 Block::ToolUse { id, name, input } => {
-                    emit_log(tx, COORDINATOR, &format!("→ délègue à {name}"));
+                    let what = if name == ORCHESTRATE { "→ orchestration d'un objectif".to_string() } else { format!("→ délègue à {name}") };
+                    emit_log(tx, COORDINATOR, &what);
                     calls.push((id.clone(), name.clone(), input.clone()));
                 }
             }
@@ -363,20 +375,43 @@ async fn run_coordinator_turn(
 
         conv.push(Msg::Assistant(blocks));
         let mut results = Vec::with_capacity(calls.len());
-        for (id, agent, input) in calls {
-            let instruction = input
-                .get("instruction")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let text = run_subagent(client, ctx, roster, &agent, &instruction, tx)
-                .await
-                .unwrap_or_else(|e| format!("(échec du sous-agent : {e})"));
-            results.push(ToolResult { id, name: agent, content: text, is_error: false });
+        for (id, name, input) in calls {
+            let text = if name == ORCHESTRATE {
+                // Orchestration complète inline : plan → approbation → exécution → synthèse.
+                let objective = input.get("objective").and_then(Value::as_str).unwrap_or("").to_string();
+                run_orchestration(Some(client), ctx, roster, &objective, approve_rx, tx).await
+            } else {
+                let instruction = input.get("instruction").and_then(Value::as_str).unwrap_or("").to_string();
+                run_subagent(client, ctx, roster, &name, &instruction, tx)
+                    .await
+                    .unwrap_or_else(|e| format!("(échec du sous-agent : {e})"))
+            };
+            results.push(ToolResult { id, name, content: text, is_error: false });
         }
         conv.push(Msg::Tool(results));
     }
     Ok(())
+}
+
+/// Nom de l'outil d'orchestration exposé au coordinateur du chat.
+const ORCHESTRATE: &str = "orchestrate";
+
+/// Outil `orchestrate` : déclenche une orchestration complète d'un objectif depuis le chat.
+fn orchestrate_tool() -> ToolSpec {
+    ToolSpec {
+        name: ORCHESTRATE.to_string(),
+        description:
+            "Planifie et exécute un objectif complexe en plusieurs étapes coordonnées (plan \
+             validé par l'utilisateur, exécution parallèle, auto-correction). À utiliser pour une \
+             demande nécessitant plusieurs agents ou étapes ; pour une demande simple, réponds \
+             directement ou délègue à un seul agent."
+                .to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": { "objective": { "type": "string", "description": "L'objectif à orchestrer" } },
+            "required": ["objective"]
+        }),
+    }
 }
 
 /// Exécute un sous-agent sur une instruction du coordinateur, en émettant son activité, et
@@ -480,17 +515,76 @@ async fn orchestration_task(
     tx: UnboundedSender<AgentEvent>,
 ) {
     let _ = tx.send(AgentEvent::Started { agent: COORDINATOR.to_string() });
-    emit_log(&tx, COORDINATOR, "Planification de l'objectif…");
+    let synthesis = run_orchestration(client.as_deref(), &ctx, &roster, &objective, &mut approve_rx, &tx).await;
+    if !synthesis.trim().is_empty() {
+        emit_log(&tx, COORDINATOR, &synthesis);
+    }
+    let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
+}
 
-    let plan = plan_objective(client.as_deref(), &ctx, &roster, &objective, &tx).await;
-    if plan.is_empty() {
-        emit_log(&tx, COORDINATOR, "Aucun agent à orchestrer dans cet espace.");
-        let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
-        return;
+/// Boucle d'orchestration réutilisable (par `[1]` et par l'outil `orchestrate` du chat) :
+/// plan → approbation → exécution par vagues → évaluation/re-planification (bornée par
+/// `MAX_ROUNDS`) → synthèse. Émet PlanReady / Task* / logs, et **renvoie** la synthèse (le
+/// caller décide comment la présenter). N'émet pas les événements `Started`/`Done` du coordinateur.
+async fn run_orchestration(
+    client: Option<&LlmClient>,
+    ctx: &AgentContext,
+    roster: &[RosterAgent],
+    objective: &str,
+    approve_rx: &mut UnboundedReceiver<bool>,
+    tx: &UnboundedSender<AgentEvent>,
+) -> String {
+    emit_log(tx, COORDINATOR, "Planification de l'objectif…");
+    let mut plan = plan_objective(client, ctx, roster, objective, tx).await;
+    let mut transcript: Vec<(String, String)> = Vec::new();
+    let mut round = 1usize;
+
+    loop {
+        if plan.is_empty() {
+            emit_log(tx, COORDINATOR, "Aucune tâche à exécuter.");
+            break;
+        }
+        // Proposer le plan (initial ou correctif) et attendre l'approbation utilisateur.
+        let _ = tx.send(AgentEvent::PlanReady { tasks: plan_snapshot(&plan) });
+        match approve_rx.recv().await {
+            Some(true) => {}
+            _ => {
+                let msg = if round == 1 { "Plan annulé." } else { "Manche corrective annulée." };
+                emit_log(tx, COORDINATOR, msg);
+                break;
+            }
+        }
+
+        // Exécuter la manche (vagues concurrentes) et accumuler le transcript.
+        let mut round_out = run_waves(client, ctx, roster, &plan, tx).await;
+        transcript.append(&mut round_out);
+
+        // Re-planification itérative : uniquement avec LLM et dans la limite des manches.
+        let Some(c) = client else { break };
+        if round >= MAX_ROUNDS {
+            emit_log(tx, COORDINATOR, "Limite de manches atteinte — synthèse de l'état courant.");
+            break;
+        }
+        match evaluate_objective(c, ctx, roster, objective, &transcript).await {
+            Some(corrective) => {
+                round += 1;
+                emit_log(tx, COORDINATOR, &format!("Objectif non atteint — manche corrective {round}."));
+                plan = corrective;
+                continue;
+            }
+            None => {
+                emit_log(tx, COORDINATOR, "Objectif jugé atteint.");
+                break;
+            }
+        }
     }
 
-    let snapshot: Vec<PlannedTask> = plan
-        .tasks
+    synthesize(client, ctx, &transcript).await
+}
+
+/// Aperçu d'un plan pour l'UI (panneau Plan).
+fn plan_snapshot(plan: &Plan) -> Vec<PlannedTask> {
+    plan.tasks
         .iter()
         .map(|t| PlannedTask {
             id: t.id.clone(),
@@ -498,21 +592,7 @@ async fn orchestration_task(
             objective: t.objective.clone(),
             depends_on: t.depends_on.clone(),
         })
-        .collect();
-    let _ = tx.send(AgentEvent::PlanReady { tasks: snapshot });
-
-    // Attente de l'approbation de l'utilisateur (Entrée = exécuter, Échap = annuler).
-    match approve_rx.recv().await {
-        Some(true) => {}
-        _ => {
-            emit_log(&tx, COORDINATOR, "Plan annulé.");
-            let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
-            return;
-        }
-    }
-
-    execute_plan(client.as_deref(), &ctx, &roster, &plan, &tx).await;
-    let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
+        .collect()
 }
 
 /// Établit un plan : via le LLM (outil `submit_plan`) si une clé est présente et que le plan
@@ -559,7 +639,20 @@ async fn plan_via_llm(
         ctx.project_name,
         ctx.project_type.label(),
     );
-    let tool = ToolSpec {
+    let blocks = client.complete(&system, &[submit_plan_tool()], &[Msg::User(objective.to_string())]).await.ok()?;
+    for b in blocks {
+        if let Block::ToolUse { name, input, .. } = b {
+            if name == "submit_plan" {
+                return orchestration::parse_plan(&input);
+            }
+        }
+    }
+    None
+}
+
+/// Définition de l'outil `submit_plan` partagée par la planification et l'évaluation.
+fn submit_plan_tool() -> ToolSpec {
+    ToolSpec {
         name: "submit_plan".to_string(),
         description: "Soumets le plan décomposé en tâches ordonnées par dépendances.".to_string(),
         parameters: json!({
@@ -581,34 +674,71 @@ async fn plan_via_llm(
             },
             "required": ["tasks"]
         }),
-    };
-    let blocks = client.complete(&system, &[tool], &[Msg::User(objective.to_string())]).await.ok()?;
+    }
+}
+
+/// Évalue si l'objectif est atteint au vu du transcript. Renvoie `Some(plan correctif)` si des
+/// tâches manquent (manche supplémentaire), `None` si l'objectif est jugé atteint.
+async fn evaluate_objective(
+    client: &LlmClient,
+    ctx: &AgentContext,
+    roster: &[RosterAgent],
+    objective: &str,
+    transcript: &[(String, String)],
+) -> Option<Plan> {
+    let agents: Vec<String> = roster.iter().map(|a| a.name.clone()).collect();
+    let agents_desc = roster
+        .iter()
+        .map(|a| if a.role.is_empty() { format!("- {}", a.name) } else { format!("- {} ({})", a.name, a.role) })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let joined = transcript
+        .iter()
+        .map(|(id, o)| format!("### {id}\n{}", clip(o, 1500)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let system = format!(
+        "Tu es le chef d'orchestre du projet « {} ». Au vu des comptes rendus, évalue si \
+         l'objectif est ATTEINT. S'il l'est, réponds simplement « OK » sans appeler d'outil. \
+         Sinon, appelle `submit_plan` avec UNIQUEMENT les tâches CORRECTIVES manquantes (mêmes \
+         agents, nouveaux ids).\n\nObjectif : {objective}\n\nAgents :\n{agents_desc}",
+        ctx.project_name,
+    );
+    let blocks = client
+        .complete(&system, &[submit_plan_tool()], &[Msg::User(format!("Comptes rendus :\n\n{joined}"))])
+        .await
+        .ok()?;
     for b in blocks {
         if let Block::ToolUse { name, input, .. } = b {
             if name == "submit_plan" {
-                return orchestration::parse_plan(&input);
+                if let Some(plan) = orchestration::parse_plan(&input) {
+                    if !plan.is_empty() && plan.validate(&agents).is_ok() {
+                        return Some(plan); // tâches correctives → nouvelle manche
+                    }
+                }
             }
         }
     }
-    None
+    None // objectif atteint (ou correctif inexploitable → on s'arrête)
 }
 
-/// Exécute le plan par **vagues concurrentes** : à chaque vague, toutes les tâches dont les
-/// dépendances sont satisfaites s'exécutent **en parallèle** (les indépendantes avancent
-/// ensemble). Chaque tâche reçoit en contexte les sorties de ses dépendances, son résultat est
-/// tracé en mémoire (hand-off), puis une synthèse finale est émise.
-async fn execute_plan(
+/// Exécute UNE manche du plan par **vagues concurrentes** : à chaque vague, toutes les tâches
+/// dont les dépendances sont satisfaites s'exécutent **en parallèle** (les indépendantes
+/// avancent ensemble). Chaque tâche reçoit en contexte les sorties de ses dépendances et trace
+/// son résultat en mémoire (hand-off). Renvoie le transcript ordonné `(id, sortie)` de la manche
+/// (la synthèse et la re-planification sont gérées par l'appelant).
+async fn run_waves(
     client: Option<&LlmClient>,
     ctx: &AgentContext,
     roster: &[RosterAgent],
     plan: &Plan,
     tx: &UnboundedSender<AgentEvent>,
-) {
+) -> Vec<(String, String)> {
     let total = plan.tasks.len();
     let mut outputs: HashMap<String, String> = HashMap::new();
-    let mut completed_order: Vec<String> = Vec::with_capacity(total);
+    let mut transcript: Vec<(String, String)> = Vec::with_capacity(total);
 
-    while completed_order.len() < total {
+    while transcript.len() < total {
         // Tâches prêtes : non terminées et dont toutes les dépendances sont terminées.
         let ready: Vec<&orchestration::Task> = plan
             .tasks
@@ -659,25 +789,24 @@ async fn execute_plan(
         for (id, agent, output) in futures::future::join_all(waves).await {
             let _ = memory::append(&ctx.root, &agent, &format!("[{id}] {}", first_line(&output)));
             let _ = tx.send(AgentEvent::TaskDone { id: id.clone() });
-            outputs.insert(id.clone(), output);
-            completed_order.push(id);
+            outputs.insert(id.clone(), output.clone());
+            transcript.push((id, output));
         }
     }
 
-    synthesize(client, ctx, &completed_order, &outputs, tx).await;
+    transcript
 }
 
-/// Synthèse finale des comptes rendus, adressée à l'utilisateur (ou concaténation hors-ligne).
+/// Synthèse finale des comptes rendus (toutes manches confondues). **Renvoie** le texte (le
+/// caller l'émet sur le radar ou le transmet au coordinateur du chat).
 async fn synthesize(
     client: Option<&LlmClient>,
     ctx: &AgentContext,
-    order: &[String],
-    outputs: &HashMap<String, String>,
-    tx: &UnboundedSender<AgentEvent>,
-) {
-    let joined = order
+    transcript: &[(String, String)],
+) -> String {
+    let joined = transcript
         .iter()
-        .filter_map(|id| outputs.get(id).map(|o| format!("### {id}\n{}", clip(o, 2000))))
+        .map(|(id, o)| format!("### {id}\n{}", clip(o, 2000)))
         .collect::<Vec<_>>()
         .join("\n\n");
     match client {
@@ -687,15 +816,16 @@ async fn synthesize(
                  une synthèse finale des comptes rendus ci-dessous, orientée vers l'utilisateur.",
                 ctx.project_name,
             );
-            if let Ok(blocks) = c.complete(&system, &[], &[Msg::User(format!("Comptes rendus :\n\n{joined}"))]).await {
-                for b in blocks {
-                    if let Block::Text(t) = b {
-                        emit_log(tx, COORDINATOR, t.trim());
-                    }
-                }
+            match c.complete(&system, &[], &[Msg::User(format!("Comptes rendus :\n\n{joined}"))]).await {
+                Ok(blocks) => blocks
+                    .into_iter()
+                    .filter_map(|b| if let Block::Text(t) = b { Some(t.trim().to_string()) } else { None })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Err(_) => joined, // repli : comptes rendus bruts
             }
         }
-        None => emit_log(tx, COORDINATOR, &format!("Synthèse (simulée) — étapes réalisées :\n{joined}")),
+        None => format!("Synthèse (simulée) — étapes réalisées :\n{joined}"),
     }
 }
 
@@ -730,9 +860,11 @@ fn coordinator_prompt(ctx: &AgentContext, roster: &[RosterAgent]) -> String {
     let mut s = format!(
         "Tu es le chef d'orchestre d'Orchestra IDE pour le projet « {} » (type : {}). Tu \
          dialogues en français avec l'utilisateur. Tu peux solliciter des agents spécialisés \
-         via les outils (un par agent) : {agents}. Délègue quand c'est pertinent, synthétise \
-         leurs retours, et pose des questions à l'utilisateur si besoin. Quand tu peux répondre \
-         directement, fais-le sans outil. Sois concis.",
+         via les outils (un par agent) : {agents}. Pour une demande simple, réponds directement \
+         ou délègue à UN agent. Pour un objectif complexe nécessitant plusieurs étapes \
+         coordonnées, utilise l'outil `orchestrate` (il planifie, fait valider le plan par \
+         l'utilisateur, exécute en parallèle et corrige jusqu'à l'objectif). Synthétise les \
+         retours, pose des questions si besoin. Sois concis.",
         ctx.project_name,
         ctx.project_type.label(),
     );
@@ -1000,8 +1132,9 @@ mod tests {
         ]);
 
         let (tx, mut rx) = mpsc::unbounded_channel();
-        execute_plan(None, &ctx, &roster, &plan, &tx).await; // hors-ligne
+        let transcript = run_waves(None, &ctx, &roster, &plan, &tx).await; // hors-ligne
         drop(tx);
+        assert_eq!(transcript.len(), 4);
 
         let mut done = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -1061,7 +1194,7 @@ mod tests {
     #[tokio::test]
     async fn conversation_echoes_user_and_replies_offline() {
         let space = space_with_agents(&["Agent_Tuteur"]);
-        let ChatHandle { user, mut events } = start_conversation_inner(&space, None);
+        let ChatHandle { user, mut events, .. } = start_conversation_inner(&space, None);
 
         user.send("bonjour".to_string()).unwrap();
         drop(user); // fin de conversation après traitement du message

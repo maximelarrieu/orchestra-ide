@@ -229,6 +229,7 @@ async fn event_loop(
                                 KeyCode::Esc => {
                                     app.end_chat();
                                     chat_tx = None; // ferme le canal → termine la conversation
+                                    plan_tx = None;
                                 }
                                 // Maj/Alt+Entrée : nouvelle ligne ; Entrée seul : envoyer.
                                 KeyCode::Enter
@@ -317,6 +318,7 @@ async fn event_loop(
                                         let handle = runtime::start_conversation(app.space.as_ref().unwrap());
                                         rx = Some(handle.events);
                                         chat_tx = Some(handle.user);
+                                        plan_tx = Some(handle.approve); // approbation des plans proposés en chat
                                     }
                                 }
                                 KeyCode::Char('2') => app.toggle_docs(),

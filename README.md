@@ -223,6 +223,11 @@ coordinateur comme un *outil* qu'il invoque selon le besoin ; tu vois leur activ
 puis le coordinateur synthétise. L'historique est conservé d'un tour à l'autre. `Échap`
 quitte la conversation.
 
+Pour un **objectif complexe**, le coordinateur peut lancer une **orchestration complète** en
+pleine conversation (outil `orchestrate`) : il propose un **plan** (que tu approuves avec
+`Entrée` / annules avec `Échap`, comme en `[1]`), l'exécute en parallèle, s'auto-corrige, puis
+intègre la synthèse dans sa réponse — et le dialogue continue.
+
 ```
 [5] → « Fais-moi une leçon de 10 min sur les verbes à particule séparable »
    → le coordinateur délègue à Agent_Tuteur, récupère son retour, te répond et te questionne

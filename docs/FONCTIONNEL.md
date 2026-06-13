@@ -82,7 +82,7 @@ Le tableau de bord (TUI) s'ouvre en 3 zones :
 | Touche | Action | État |
 |---|---|---|
 | `[1]` | Orchestrer un objectif : plan (tâches + dépendances) → approbation → exécution → synthèse | ✅ actif |
-| `[5]` | Converser avec le chef d'orchestre (délègue aux agents, historique conservé) | ✅ actif |
+| `[5]` | Converser avec le chef d'orchestre (délègue aux agents, **ou orchestre un objectif complexe** ; historique conservé) | ✅ actif |
 | `[2]` | Navigateur de documents (persona/mémoire/ADRs/docs) + visualiseur Markdown | ✅ actif |
 | `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
 | `[4]` | Éditer le persona dans l'interface (`Ctrl+S` enregistre) | ✅ actif |
@@ -198,7 +198,9 @@ comme un vrai orchestre :
 3. **Exécution ordonnée et parallèle** — les tâches **indépendantes s'exécutent en même temps** ;
    une tâche n'attend que ses prérequis. Chaque agent reçoit en contexte les résultats de ses
    dépendances et **consigne le sien en mémoire** (passage de relais).
-4. **Synthèse** — le chef agrège les comptes rendus en une réponse finale.
+4. **Auto-correction** — le chef évalue si l'objectif est atteint ; sinon il propose un **plan
+   correctif** (que tu ré-approuves) et relance une manche, jusqu'à satisfaction (ou une limite).
+5. **Synthèse** — le chef agrège les comptes rendus de toutes les manches en une réponse finale.
 
 Le panneau **Plan** suit l'avancement en direct (⋯ en attente · ▶ en cours · ✓ fait · ✗ échec).
 Sans clé API, le plan de repli (pipeline linéaire) et un flux simulé restent fonctionnels.
