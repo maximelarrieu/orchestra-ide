@@ -4,7 +4,7 @@
 > à chaque phase. Détails techniques dans [`ARCHITECTURE.md`](./ARCHITECTURE.md), vision
 > produit dans [`FONCTIONNEL.md`](./FONCTIONNEL.md).
 
-Plan global en 5 phases :
+Plan global en 5 phases (+ évolutions post-Phase 5 ci-dessous) :
 
 1. Modèle des Espaces de Contexte + coquille du dashboard ✅
 2. Commande `orchestra init` (scaffolding interactif) ✅
@@ -203,6 +203,21 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   de tokens minimal élevé — faible ROI sur des boucles d'agents courtes, et difficile à tester
   hors-ligne. Les modèles Gemini récents font du caching *implicite* automatique ; la divulgation
   progressive réduit déjà le prompt côté Gemini. À reconsidérer si les boucles s'allongent.
+
+## Orchestration réelle : plan → approbation → exécution → synthèse (post-Phase 5) ✅
+
+- L'objectif `[1]` ne diffuse plus une consigne plate : le chef **décompose** en `Plan` de
+  `Task`s assignées + dépendances (`crate::orchestration`), validé (cycles, agents, deps).
+- Planification via LLM (outil `submit_plan`) avec **repli linéaire déterministe** hors-ligne ;
+  exécution en **ordre topologique** (`execute_plan`) où chaque tâche reçoit en contexte les
+  sorties de ses dépendances et **trace son résultat en mémoire** (hand-off), puis **synthèse**.
+- **Écran d'approbation** : le plan est montré (`AgentEvent::PlanReady`) et l'utilisateur
+  l'exécute (`Entrée`) ou l'annule (`Échap`) ; le radar suit l'avancement par tâche
+  (`TaskStarted`/`TaskDone`/`TaskFailed`) dans un panneau Plan.
+- **Exécution par vagues concurrentes** : les tâches indépendantes s'exécutent **en parallèle**
+  (`futures::future::join_all`) ; une tâche n'attend que ses dépendances directes.
+- Correctif au passage : nom d'outil de délégation slugifié (agents accentués → API valide).
+- Hors périmètre (à suivre) : re-planification itérative, orchestration depuis le chat `[5]`.
 
 ## Skills « fiches » Markdown + création depuis l'UI (post-Phase 5) ✅
 

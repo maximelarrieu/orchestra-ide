@@ -157,7 +157,7 @@ sur les terminaux étroits.
 
 | Touche | Action |
 |---|---|
-| `[1]` | **Lancer une intention** : tu saisis un objectif → le coordinateur l'exécute en autonomie (one-shot) et rend un compte-rendu, sans dialogue |
+| `[1]` | **Orchestrer un objectif** : tu saisis un but → le chef établit un **plan** (tâches assignées + dépendances), tu l'**approuves** (`Entrée`) ou l'annules (`Échap`), puis les agents s'enchaînent (passage de relais via la mémoire) et une **synthèse** finale est rendue. Le panneau Plan suit l'avancement par tâche |
 | `[5]` | **Converser** avec le chef d'orchestre (dialogue continu, voir ci-dessous) |
 | `[2]` | **Navigateur de documents** de l'espace (persona, ADRs, docs Markdown) avec **visualiseur Markdown** intégré |
 | `[3]` | **Changer d'Espace** (saisie d'un chemin, `Entrée` charge / `Échap` annule) |

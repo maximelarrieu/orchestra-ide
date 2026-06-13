@@ -52,6 +52,7 @@ crates/
 │  ├─ skills.rs         # primitives exécutables via tool use — registre (Phase 4a, +Web_Fetch)
 │  ├─ markdown_skill.rs # skills « fiches » SKILL.md + Load_Skill (divulgation progressive)
 │  ├─ memory.rs         # mémoire partagée d'espace : Remember / Recall (.orchestra/memory.md)
+│  ├─ orchestration.rs  # modèle de plan (Task/Plan, tri topo, validation, repli)
 │  ├─ integrations.rs   # Skills Git (local) + GitHub (REST) (Phase 4b)
 │  ├─ scaffold.rs       # scaffold_space() : crée un Espace (Phase 2)
 │  └─ model/
@@ -144,9 +145,14 @@ les agents.
 ```rust
 enum AgentEvent {
     Started  { agent: String },
-    Thinking { agent: String },              // appel LLM en cours → pilote le spinner
+    Thinking { agent: String },                       // appel LLM en cours → pilote le spinner
     Log      { agent: String, msg: String },
     Done     { agent: String },
+    // Orchestration réelle :
+    PlanReady   { tasks: Vec<PlannedTask> },          // plan établi, en attente d'approbation
+    TaskStarted { id: String, agent: String },        // une tâche du plan démarre
+    TaskDone    { id: String },                       // tâche réussie
+    TaskFailed  { id: String, error: String },        // tâche échouée
 }
 ```
 
@@ -253,6 +259,49 @@ outil (`delegation_tool`) ; quand le coordinateur l'invoque, `run_subagent` lanc
 de cet agent (`run_agent_turn`, mutualisé avec le mode autonome) avec ses propres
 prompt/outils, émet son activité sur le radar, et renvoie son texte comme `tool_result`. La
 conversation se termine quand l'UI ferme le canal `user` (`Échap`).
+
+### Orchestration réelle (`[1]`) — plan → approbation → exécution → synthèse (post-Phase 5)
+
+`runtime::orchestrate(space, objectif) -> OrchestrationHandle { approve, events }` fait
+travailler l'orchestre comme un pipeline plutôt qu'en délégation plate. La tâche `tokio` :
+
+1. **Planifie** (`plan_objective`) : via le LLM (outil `submit_plan` → `orchestration::parse_plan`)
+   si une clé est présente et le plan **valide** (`Plan::validate` : ids uniques, agents connus,
+   dépendances existantes, pas de cycle) ; sinon `orchestration::fallback_plan` (pipeline linéaire).
+2. Émet `PlanReady` et **attend l'approbation** sur le canal `approve` (`true` = exécuter).
+3. **Exécute** (`execute_plan`) par **vagues concurrentes** : à chaque vague, toutes les tâches
+   dont les dépendances sont satisfaites sont lancées **en parallèle** (`futures::future::join_all`
+   — les indépendantes avancent ensemble), chacune via `run_subagent` (mutualisé) avec en contexte
+   (borné) les sorties de ses dépendances ; le résultat est **tracé en mémoire** (`memory::append`,
+   hand-off). Émet `TaskStarted`/`TaskDone`. (`Plan::topo_order` reste utilisé par la validation.)
+4. **Synthétise** les comptes rendus en une réponse finale (`synthesize`).
+
+Le **modèle** (pur, testable) vit dans `orchestra-core::orchestration` (`Task`, `Plan`,
+`TaskStatus`, tri topo, validation, repli) ; l'**exécution** asynchrone et les appels LLM
+restent dans `runtime`. Hors-ligne, le plan de repli + un flux simulé gardent `[1]` fonctionnel.
+
+```mermaid
+sequenceDiagram
+    actor U as Utilisateur (UI)
+    participant O as orchestration_task
+    participant Cl as LLM
+    participant A as Sous-agents
+    participant M as mémoire
+
+    U->>O: objectif ([1])
+    O->>Cl: plan_objective (submit_plan) — ou repli linéaire
+    O-->>U: PlanReady (panneau Plan)
+    U->>O: approve(true) (Entrée) / false (Échap)
+    loop vagues (tâches prêtes en parallèle)
+        O-->>U: TaskStarted (×N de la vague)
+        O->>A: run_subagent concurrents (objectif + contexte des dépendances)
+        A->>M: Remember (résultat)
+        A-->>O: comptes rendus
+        O-->>U: TaskDone (×N)
+    end
+    O->>Cl: synthèse finale
+    O-->>U: synthèse + Done
+```
 
 ### Intégrations Git / GitHub (Phase 4b)
 

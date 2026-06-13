@@ -81,7 +81,7 @@ Le tableau de bord (TUI) s'ouvre en 3 zones :
 
 | Touche | Action | État |
 |---|---|---|
-| `[1]` | Lancer l'orchestre (autonome : chaque agent travaille une fois) | ✅ actif |
+| `[1]` | Orchestrer un objectif : plan (tâches + dépendances) → approbation → exécution → synthèse | ✅ actif |
 | `[5]` | Converser avec le chef d'orchestre (délègue aux agents, historique conservé) | ✅ actif |
 | `[2]` | Navigateur de documents (persona/mémoire/ADRs/docs) + visualiseur Markdown | ✅ actif |
 | `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
@@ -107,6 +107,7 @@ démarrages, les logs et les fins d'agents, puis bascule en `✓ terminé`.
 | Divulgation progressive des fiches (`Load_Skill`) | ✅ | post-5 |
 | Mémoire partagée d'espace (`Remember` / `Recall`) | ✅ | post-5 |
 | Économie de tokens (prompt caching Anthropic) | ✅ | post-5 |
+| Orchestration réelle (plan → approbation → exécution → synthèse) | ✅ | post-5 |
 | Repli simulé hors-ligne (sans clé) | ✅ | 4a |
 | Intégration Git (statut, diff, branche, commit) | ✅ si configuré | 4b |
 | Intégration GitHub (issues, commentaire, PR) | ✅ si configuré + token | 4b |
@@ -185,6 +186,22 @@ Un skill n'agit que s'il est **branché**. Deux façons de l'être :
 
 Idéal : `Creation_Quiz` (pur texte → fiche) ; `Web_Search` (une fiche qui s'appuie sur la
 primitive `Web_Fetch`).
+
+### Orchestration d'un objectif (`[1]`)
+
+Plutôt que de diffuser la même consigne à tous les agents, `[1]` fait travailler l'orchestre
+comme un vrai orchestre :
+
+1. **Plan** — le chef décompose l'objectif en **tâches** assignées à des agents, reliées par des
+   dépendances (qui doit passer avant qui).
+2. **Approbation** — le plan s'affiche ; tu l'exécutes (`Entrée`) ou l'annules (`Échap`).
+3. **Exécution ordonnée et parallèle** — les tâches **indépendantes s'exécutent en même temps** ;
+   une tâche n'attend que ses prérequis. Chaque agent reçoit en contexte les résultats de ses
+   dépendances et **consigne le sien en mémoire** (passage de relais).
+4. **Synthèse** — le chef agrège les comptes rendus en une réponse finale.
+
+Le panneau **Plan** suit l'avancement en direct (⋯ en attente · ▶ en cours · ✓ fait · ✗ échec).
+Sans clé API, le plan de repli (pipeline linéaire) et un flux simulé restent fonctionnels.
 
 ### Mémoire partagée
 

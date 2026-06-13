@@ -10,6 +10,7 @@
 //! (Phase 3) pour que l'appli reste pleinement fonctionnelle hors-ligne. La signature de
 //! [`spawn`] n'a pas changé depuis la Phase 3.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,12 +19,13 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 
-use crate::events::AgentEvent;
+use crate::events::{AgentEvent, PlannedTask};
 use crate::integrations::{self, IntegrationConn};
 use crate::llm::{Block, LlmClient, Msg, ToolResult, ToolSpec};
 use crate::markdown_skill::{self, MarkdownSkill};
 use crate::memory;
 use crate::model::project_type::ProjectType;
+use crate::orchestration::{self, Plan};
 use crate::model::space::ContextSpace;
 use crate::skills;
 
@@ -440,6 +442,278 @@ fn tool_slug(name: &str) -> String {
     slug
 }
 
+// --- Orchestration réelle : plan → (approbation) → exécution ordonnée → synthèse ---------
+
+/// Poignée d'une orchestration : l'UI reçoit les événements (dont `PlanReady`) sur `events`,
+/// et **approuve** (ou refuse) l'exécution du plan en envoyant `true`/`false` sur `approve`.
+pub struct OrchestrationHandle {
+    pub approve: UnboundedSender<bool>,
+    pub events: UnboundedReceiver<AgentEvent>,
+}
+
+/// Orchestre un objectif : planifie, attend l'approbation, exécute les tâches en ordre
+/// topologique (passage de relais via la mémoire) puis synthétise.
+pub fn orchestrate(space: &ContextSpace, objective: &str) -> OrchestrationHandle {
+    orchestrate_inner(space, objective, LlmClient::from_env().map(Arc::new))
+}
+
+/// Cœur testable : client LLM injecté (les tests passent `None` → plan de repli + simulé).
+fn orchestrate_inner(
+    space: &ContextSpace,
+    objective: &str,
+    client: Option<Arc<LlmClient>>,
+) -> OrchestrationHandle {
+    let (approve_tx, approve_rx) = mpsc::unbounded_channel();
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let ctx = AgentContext::from_space(space);
+    let roster = roster(space);
+    tokio::spawn(orchestration_task(ctx, roster, client, objective.to_string(), approve_rx, event_tx));
+    OrchestrationHandle { approve: approve_tx, events: event_rx }
+}
+
+async fn orchestration_task(
+    ctx: AgentContext,
+    roster: Vec<RosterAgent>,
+    client: Option<Arc<LlmClient>>,
+    objective: String,
+    mut approve_rx: UnboundedReceiver<bool>,
+    tx: UnboundedSender<AgentEvent>,
+) {
+    let _ = tx.send(AgentEvent::Started { agent: COORDINATOR.to_string() });
+    emit_log(&tx, COORDINATOR, "Planification de l'objectif…");
+
+    let plan = plan_objective(client.as_deref(), &ctx, &roster, &objective, &tx).await;
+    if plan.is_empty() {
+        emit_log(&tx, COORDINATOR, "Aucun agent à orchestrer dans cet espace.");
+        let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
+        return;
+    }
+
+    let snapshot: Vec<PlannedTask> = plan
+        .tasks
+        .iter()
+        .map(|t| PlannedTask {
+            id: t.id.clone(),
+            agent: t.agent.clone(),
+            objective: t.objective.clone(),
+            depends_on: t.depends_on.clone(),
+        })
+        .collect();
+    let _ = tx.send(AgentEvent::PlanReady { tasks: snapshot });
+
+    // Attente de l'approbation de l'utilisateur (Entrée = exécuter, Échap = annuler).
+    match approve_rx.recv().await {
+        Some(true) => {}
+        _ => {
+            emit_log(&tx, COORDINATOR, "Plan annulé.");
+            let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
+            return;
+        }
+    }
+
+    execute_plan(client.as_deref(), &ctx, &roster, &plan, &tx).await;
+    let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
+}
+
+/// Établit un plan : via le LLM (outil `submit_plan`) si une clé est présente et que le plan
+/// est valide, sinon pipeline linéaire de repli sur le roster.
+async fn plan_objective(
+    client: Option<&LlmClient>,
+    ctx: &AgentContext,
+    roster: &[RosterAgent],
+    objective: &str,
+    tx: &UnboundedSender<AgentEvent>,
+) -> Plan {
+    let agents: Vec<String> = roster.iter().map(|a| a.name.clone()).collect();
+    if let Some(c) = client {
+        if let Some(plan) = plan_via_llm(c, ctx, roster, objective).await {
+            match plan.validate(&agents) {
+                Ok(()) => {
+                    emit_log(tx, COORDINATOR, &format!("Plan établi : {} étape(s).", plan.tasks.len()));
+                    return plan;
+                }
+                Err(e) => emit_log(tx, COORDINATOR, &format!("Plan LLM invalide ({e}) — repli linéaire.")),
+            }
+        }
+    }
+    orchestration::fallback_plan(&agents, objective)
+}
+
+/// Demande au LLM de décomposer l'objectif via l'outil `submit_plan`.
+async fn plan_via_llm(
+    client: &LlmClient,
+    ctx: &AgentContext,
+    roster: &[RosterAgent],
+    objective: &str,
+) -> Option<Plan> {
+    let agents_desc = roster
+        .iter()
+        .map(|a| if a.role.is_empty() { format!("- {}", a.name) } else { format!("- {} ({})", a.name, a.role) })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let system = format!(
+        "Tu es le chef d'orchestre du projet « {} » (type : {}). Décompose l'objectif en tâches \
+         confiées aux agents ci-dessous (utilise EXACTEMENT ces noms), reliées par `depends_on` \
+         (ids des tâches prérequises). Une tâche par contribution réelle, pas plus. Appelle \
+         l'outil `submit_plan`.\n\nAgents :\n{agents_desc}",
+        ctx.project_name,
+        ctx.project_type.label(),
+    );
+    let tool = ToolSpec {
+        name: "submit_plan".to_string(),
+        description: "Soumets le plan décomposé en tâches ordonnées par dépendances.".to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "description": "Identifiant court, ex. t1" },
+                            "agent": { "type": "string", "description": "Nom exact de l'agent assigné" },
+                            "objective": { "type": "string", "description": "Ce que l'agent doit accomplir" },
+                            "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Ids des tâches prérequises" }
+                        },
+                        "required": ["id", "agent", "objective"]
+                    }
+                }
+            },
+            "required": ["tasks"]
+        }),
+    };
+    let blocks = client.complete(&system, &[tool], &[Msg::User(objective.to_string())]).await.ok()?;
+    for b in blocks {
+        if let Block::ToolUse { name, input, .. } = b {
+            if name == "submit_plan" {
+                return orchestration::parse_plan(&input);
+            }
+        }
+    }
+    None
+}
+
+/// Exécute le plan par **vagues concurrentes** : à chaque vague, toutes les tâches dont les
+/// dépendances sont satisfaites s'exécutent **en parallèle** (les indépendantes avancent
+/// ensemble). Chaque tâche reçoit en contexte les sorties de ses dépendances, son résultat est
+/// tracé en mémoire (hand-off), puis une synthèse finale est émise.
+async fn execute_plan(
+    client: Option<&LlmClient>,
+    ctx: &AgentContext,
+    roster: &[RosterAgent],
+    plan: &Plan,
+    tx: &UnboundedSender<AgentEvent>,
+) {
+    let total = plan.tasks.len();
+    let mut outputs: HashMap<String, String> = HashMap::new();
+    let mut completed_order: Vec<String> = Vec::with_capacity(total);
+
+    while completed_order.len() < total {
+        // Tâches prêtes : non terminées et dont toutes les dépendances sont terminées.
+        let ready: Vec<&orchestration::Task> = plan
+            .tasks
+            .iter()
+            .filter(|t| !outputs.contains_key(&t.id) && t.depends_on.iter().all(|d| outputs.contains_key(d)))
+            .collect();
+        if ready.is_empty() {
+            emit_log(tx, COORDINATOR, "Plan bloqué (dépendances non satisfiables) — arrêt.");
+            break;
+        }
+
+        // Une vague : on lance toutes les tâches prêtes concurremment (futures sur la même tâche
+        // tokio — la concurrence suffit pour des appels LLM I/O-bound).
+        let waves = ready.iter().map(|task| {
+            let id = task.id.clone();
+            let agent = task.agent.clone();
+            let slug = tool_slug(&task.agent);
+            // Instruction construite ici (contexte des dépendances déjà disponibles).
+            let mut instruction = task.objective.clone();
+            if !task.depends_on.is_empty() {
+                instruction.push_str("\n\n## Contexte des étapes précédentes");
+                for dep in &task.depends_on {
+                    if let Some(out) = outputs.get(dep) {
+                        instruction.push_str(&format!("\n\n### {dep}\n{}", clip(out, 1500)));
+                    }
+                }
+            }
+            async move {
+                let _ = tx.send(AgentEvent::TaskStarted { id: id.clone(), agent: agent.clone() });
+                let output = match client {
+                    Some(c) => run_subagent(c, ctx, roster, &slug, &instruction, tx)
+                        .await
+                        .unwrap_or_else(|e| format!("(échec du sous-agent : {e})")),
+                    None => {
+                        // Hors-ligne : montrer le flux (Started/Done) sans appel LLM.
+                        let _ = tx.send(AgentEvent::Started { agent: agent.clone() });
+                        sleep(Duration::from_millis(120)).await;
+                        emit_log(tx, &agent, "(simulé) — définis une clé API pour une exécution réelle.");
+                        let _ = tx.send(AgentEvent::Done { agent: agent.clone() });
+                        format!("(simulé) {agent} : {instruction}")
+                    }
+                };
+                (id, agent, output)
+            }
+        });
+
+        // `join_all` préserve l'ordre des entrées → traitement déterministe des résultats.
+        for (id, agent, output) in futures::future::join_all(waves).await {
+            let _ = memory::append(&ctx.root, &agent, &format!("[{id}] {}", first_line(&output)));
+            let _ = tx.send(AgentEvent::TaskDone { id: id.clone() });
+            outputs.insert(id.clone(), output);
+            completed_order.push(id);
+        }
+    }
+
+    synthesize(client, ctx, &completed_order, &outputs, tx).await;
+}
+
+/// Synthèse finale des comptes rendus, adressée à l'utilisateur (ou concaténation hors-ligne).
+async fn synthesize(
+    client: Option<&LlmClient>,
+    ctx: &AgentContext,
+    order: &[String],
+    outputs: &HashMap<String, String>,
+    tx: &UnboundedSender<AgentEvent>,
+) {
+    let joined = order
+        .iter()
+        .filter_map(|id| outputs.get(id).map(|o| format!("### {id}\n{}", clip(o, 2000))))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    match client {
+        Some(c) => {
+            let system = format!(
+                "Tu es le chef d'orchestre du projet « {} ». Rédige en français, de façon concise, \
+                 une synthèse finale des comptes rendus ci-dessous, orientée vers l'utilisateur.",
+                ctx.project_name,
+            );
+            if let Ok(blocks) = c.complete(&system, &[], &[Msg::User(format!("Comptes rendus :\n\n{joined}"))]).await {
+                for b in blocks {
+                    if let Block::Text(t) = b {
+                        emit_log(tx, COORDINATOR, t.trim());
+                    }
+                }
+            }
+        }
+        None => emit_log(tx, COORDINATOR, &format!("Synthèse (simulée) — étapes réalisées :\n{joined}")),
+    }
+}
+
+/// Tronque une chaîne à `max` caractères (UTF-8 sûr), avec « … » si coupée.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
+}
+
+/// Première ligne non vide d'un texte, tronquée — pour une trace mémoire compacte.
+fn first_line(s: &str) -> String {
+    let line = s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    clip(line, 200)
+}
+
 /// Prompt système du coordinateur : rôle + roster des agents délégables (avec leur rôle).
 fn coordinator_prompt(ctx: &AgentContext, roster: &[RosterAgent]) -> String {
     let agents = roster
@@ -675,6 +949,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Espace à racine temporaire (pour que la mémoire ne pollue pas le dépôt en test).
+    fn space_with_temp_root(agents: &[&str], tag: &str) -> (ContextSpace, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("orch-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".orchestra")).unwrap();
+        let mut space = space_with_agents(agents);
+        space.root = dir.clone();
+        (space, dir)
+    }
+
+    #[tokio::test]
+    async fn orchestrate_offline_runs_plan_after_approval() {
+        let (space, dir) = space_with_temp_root(&["A", "B"], "orch-ok");
+        let mut handle = orchestrate_inner(&space, "objectif", None);
+        handle.approve.send(true).unwrap(); // approbation (bufferisée jusqu'à la réception)
+
+        let (mut plan_ready, mut task_done, mut coord_done) = (false, 0, false);
+        while let Some(ev) = handle.events.recv().await {
+            match ev {
+                AgentEvent::PlanReady { tasks } => {
+                    assert_eq!(tasks.len(), 2); // pipeline linéaire A → B
+                    assert_eq!(tasks[1].depends_on, vec!["t1"]);
+                    plan_ready = true;
+                }
+                AgentEvent::TaskDone { .. } => task_done += 1,
+                AgentEvent::Done { agent } if agent == COORDINATOR => {
+                    coord_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(plan_ready && coord_done);
+        assert_eq!(task_done, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn execute_plan_parallel_waves_respect_dependencies() {
+        // Diamant : t1 → {t2, t3} (indépendantes, même vague) → t4.
+        let (space, dir) = space_with_temp_root(&["A"], "exec-diamond");
+        let ctx = AgentContext::from_space(&space);
+        let roster = roster(&space);
+        let plan = Plan::new(vec![
+            orchestration::Task::new("t1", "A", "o", vec![]),
+            orchestration::Task::new("t2", "A", "o", vec!["t1".into()]),
+            orchestration::Task::new("t3", "A", "o", vec!["t1".into()]),
+            orchestration::Task::new("t4", "A", "o", vec!["t2".into(), "t3".into()]),
+        ]);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        execute_plan(None, &ctx, &roster, &plan, &tx).await; // hors-ligne
+        drop(tx);
+
+        let mut done = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            if let AgentEvent::TaskDone { id } = ev {
+                done.push(id);
+            }
+        }
+        assert_eq!(done.len(), 4);
+        assert_eq!(done.first().unwrap(), "t1", "la racine s'exécute en premier");
+        assert_eq!(done.last().unwrap(), "t4", "la jointure s'exécute en dernier");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn orchestrate_cancel_runs_no_task() {
+        let (space, dir) = space_with_temp_root(&["A", "B"], "orch-cancel");
+        let mut handle = orchestrate_inner(&space, "objectif", None);
+        handle.approve.send(false).unwrap(); // refus
+
+        let mut task_started = 0;
+        while let Some(ev) = handle.events.recv().await {
+            match ev {
+                AgentEvent::TaskStarted { .. } => task_started += 1,
+                AgentEvent::Done { agent } if agent == COORDINATOR => break,
+                _ => {}
+            }
+        }
+        assert_eq!(task_started, 0, "aucune tâche ne doit s'exécuter si le plan est refusé");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn each_agent_starts_and_finishes_once_offline() {
         // `None` → pas de client LLM : chemin simulé, déterministe et hors-ligne.
@@ -686,7 +1044,7 @@ mod tests {
             match ev {
                 AgentEvent::Started { .. } => started += 1,
                 AgentEvent::Done { .. } => done += 1,
-                AgentEvent::Log { .. } | AgentEvent::Thinking { .. } => {}
+                _ => {}
             }
         }
         assert_eq!(started, 2, "chaque agent démarre une fois");
@@ -736,7 +1094,7 @@ mod tests {
                     saw_doc |= agent.contains("Documentaliste");
                 }
                 AgentEvent::Done { .. } => done += 1,
-                AgentEvent::Log { .. } | AgentEvent::Thinking { .. } => {}
+                _ => {}
             }
         }
         assert_eq!((started, done), (1, 1));
