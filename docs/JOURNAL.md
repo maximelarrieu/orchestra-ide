@@ -214,9 +214,10 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - **Écran d'approbation** : le plan est montré (`AgentEvent::PlanReady`) et l'utilisateur
   l'exécute (`Entrée`) ou l'annule (`Échap`) ; le radar suit l'avancement par tâche
   (`TaskStarted`/`TaskDone`/`TaskFailed`) dans un panneau Plan.
+- **Exécution par vagues concurrentes** : les tâches indépendantes s'exécutent **en parallèle**
+  (`futures::future::join_all`) ; une tâche n'attend que ses dépendances directes.
 - Correctif au passage : nom d'outil de délégation slugifié (agents accentués → API valide).
-- Hors périmètre v1 (à suivre) : parallélisation des tâches indépendantes, re-planification
-  itérative, orchestration depuis le chat `[5]`.
+- Hors périmètre (à suivre) : re-planification itérative, orchestration depuis le chat `[5]`.
 
 ## Skills « fiches » Markdown + création depuis l'UI (post-Phase 5) ✅
 

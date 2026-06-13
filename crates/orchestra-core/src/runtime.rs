@@ -593,8 +593,10 @@ async fn plan_via_llm(
     None
 }
 
-/// Exécute le plan en ordre topologique : chaque tâche reçoit en contexte les sorties de ses
-/// dépendances, son résultat est tracé en mémoire (hand-off), puis une synthèse finale est émise.
+/// Exécute le plan par **vagues concurrentes** : à chaque vague, toutes les tâches dont les
+/// dépendances sont satisfaites s'exécutent **en parallèle** (les indépendantes avancent
+/// ensemble). Chaque tâche reçoit en contexte les sorties de ses dépendances, son résultat est
+/// tracé en mémoire (hand-off), puis une synthèse finale est émise.
 async fn execute_plan(
     client: Option<&LlmClient>,
     ctx: &AgentContext,
@@ -602,50 +604,67 @@ async fn execute_plan(
     plan: &Plan,
     tx: &UnboundedSender<AgentEvent>,
 ) {
-    let order = match plan.topo_order() {
-        Ok(o) => o,
-        Err(e) => {
-            emit_log(tx, COORDINATOR, &format!("Plan inexécutable : {e}"));
-            return;
-        }
-    };
+    let total = plan.tasks.len();
     let mut outputs: HashMap<String, String> = HashMap::new();
+    let mut completed_order: Vec<String> = Vec::with_capacity(total);
 
-    for id in &order {
-        let Some(task) = plan.tasks.iter().find(|t| &t.id == id) else { continue };
-        let _ = tx.send(AgentEvent::TaskStarted { id: id.clone(), agent: task.agent.clone() });
+    while completed_order.len() < total {
+        // Tâches prêtes : non terminées et dont toutes les dépendances sont terminées.
+        let ready: Vec<&orchestration::Task> = plan
+            .tasks
+            .iter()
+            .filter(|t| !outputs.contains_key(&t.id) && t.depends_on.iter().all(|d| outputs.contains_key(d)))
+            .collect();
+        if ready.is_empty() {
+            emit_log(tx, COORDINATOR, "Plan bloqué (dépendances non satisfiables) — arrêt.");
+            break;
+        }
 
-        // Instruction = objectif de la tâche + contexte (bornés) des dépendances.
-        let mut instruction = task.objective.clone();
-        if !task.depends_on.is_empty() {
-            instruction.push_str("\n\n## Contexte des étapes précédentes");
-            for dep in &task.depends_on {
-                if let Some(out) = outputs.get(dep) {
-                    instruction.push_str(&format!("\n\n### {dep}\n{}", clip(out, 1500)));
+        // Une vague : on lance toutes les tâches prêtes concurremment (futures sur la même tâche
+        // tokio — la concurrence suffit pour des appels LLM I/O-bound).
+        let waves = ready.iter().map(|task| {
+            let id = task.id.clone();
+            let agent = task.agent.clone();
+            let slug = tool_slug(&task.agent);
+            // Instruction construite ici (contexte des dépendances déjà disponibles).
+            let mut instruction = task.objective.clone();
+            if !task.depends_on.is_empty() {
+                instruction.push_str("\n\n## Contexte des étapes précédentes");
+                for dep in &task.depends_on {
+                    if let Some(out) = outputs.get(dep) {
+                        instruction.push_str(&format!("\n\n### {dep}\n{}", clip(out, 1500)));
+                    }
                 }
             }
-        }
-
-        let output = match client {
-            Some(c) => run_subagent(c, ctx, roster, &tool_slug(&task.agent), &instruction, tx)
-                .await
-                .unwrap_or_else(|e| format!("(échec du sous-agent : {e})")),
-            None => {
-                // Hors-ligne : on montre le flux (Started/Done) sans appel LLM.
-                let _ = tx.send(AgentEvent::Started { agent: task.agent.clone() });
-                sleep(Duration::from_millis(120)).await;
-                emit_log(tx, &task.agent, "(simulé) — définis une clé API pour une exécution réelle.");
-                let _ = tx.send(AgentEvent::Done { agent: task.agent.clone() });
-                format!("(simulé) {} : {}", task.agent, task.objective)
+            async move {
+                let _ = tx.send(AgentEvent::TaskStarted { id: id.clone(), agent: agent.clone() });
+                let output = match client {
+                    Some(c) => run_subagent(c, ctx, roster, &slug, &instruction, tx)
+                        .await
+                        .unwrap_or_else(|e| format!("(échec du sous-agent : {e})")),
+                    None => {
+                        // Hors-ligne : montrer le flux (Started/Done) sans appel LLM.
+                        let _ = tx.send(AgentEvent::Started { agent: agent.clone() });
+                        sleep(Duration::from_millis(120)).await;
+                        emit_log(tx, &agent, "(simulé) — définis une clé API pour une exécution réelle.");
+                        let _ = tx.send(AgentEvent::Done { agent: agent.clone() });
+                        format!("(simulé) {agent} : {instruction}")
+                    }
+                };
+                (id, agent, output)
             }
-        };
+        });
 
-        let _ = memory::append(&ctx.root, &task.agent, &format!("[{id}] {}", first_line(&output)));
-        outputs.insert(id.clone(), output);
-        let _ = tx.send(AgentEvent::TaskDone { id: id.clone() });
+        // `join_all` préserve l'ordre des entrées → traitement déterministe des résultats.
+        for (id, agent, output) in futures::future::join_all(waves).await {
+            let _ = memory::append(&ctx.root, &agent, &format!("[{id}] {}", first_line(&output)));
+            let _ = tx.send(AgentEvent::TaskDone { id: id.clone() });
+            outputs.insert(id.clone(), output);
+            completed_order.push(id);
+        }
     }
 
-    synthesize(client, ctx, &order, &outputs, tx).await;
+    synthesize(client, ctx, &completed_order, &outputs, tx).await;
 }
 
 /// Synthèse finale des comptes rendus, adressée à l'utilisateur (ou concaténation hors-ligne).
@@ -964,6 +983,35 @@ mod tests {
         }
         assert!(plan_ready && coord_done);
         assert_eq!(task_done, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn execute_plan_parallel_waves_respect_dependencies() {
+        // Diamant : t1 → {t2, t3} (indépendantes, même vague) → t4.
+        let (space, dir) = space_with_temp_root(&["A"], "exec-diamond");
+        let ctx = AgentContext::from_space(&space);
+        let roster = roster(&space);
+        let plan = Plan::new(vec![
+            orchestration::Task::new("t1", "A", "o", vec![]),
+            orchestration::Task::new("t2", "A", "o", vec!["t1".into()]),
+            orchestration::Task::new("t3", "A", "o", vec!["t1".into()]),
+            orchestration::Task::new("t4", "A", "o", vec!["t2".into(), "t3".into()]),
+        ]);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        execute_plan(None, &ctx, &roster, &plan, &tx).await; // hors-ligne
+        drop(tx);
+
+        let mut done = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            if let AgentEvent::TaskDone { id } = ev {
+                done.push(id);
+            }
+        }
+        assert_eq!(done.len(), 4);
+        assert_eq!(done.first().unwrap(), "t1", "la racine s'exécute en premier");
+        assert_eq!(done.last().unwrap(), "t4", "la jointure s'exécute en dernier");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

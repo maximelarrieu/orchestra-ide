@@ -195,9 +195,9 @@ comme un vrai orchestre :
 1. **Plan** — le chef décompose l'objectif en **tâches** assignées à des agents, reliées par des
    dépendances (qui doit passer avant qui).
 2. **Approbation** — le plan s'affiche ; tu l'exécutes (`Entrée`) ou l'annules (`Échap`).
-3. **Exécution ordonnée** — les tâches s'enchaînent dans l'ordre des dépendances ; chaque agent
-   reçoit en contexte les résultats de ses prérequis et **consigne le sien en mémoire**
-   (passage de relais).
+3. **Exécution ordonnée et parallèle** — les tâches **indépendantes s'exécutent en même temps** ;
+   une tâche n'attend que ses prérequis. Chaque agent reçoit en contexte les résultats de ses
+   dépendances et **consigne le sien en mémoire** (passage de relais).
 4. **Synthèse** — le chef agrège les comptes rendus en une réponse finale.
 
 Le panneau **Plan** suit l'avancement en direct (⋯ en attente · ▶ en cours · ✓ fait · ✗ échec).
