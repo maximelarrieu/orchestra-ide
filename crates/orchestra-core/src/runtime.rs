@@ -387,30 +387,35 @@ async fn run_subagent(
     instruction: &str,
     tx: &UnboundedSender<AgentEvent>,
 ) -> Result<String, crate::llm::LlmError> {
-    // Agent connu du roster (sinon, agent minimal au cas où le modèle invente un nom).
+    // `name` est le slug d'outil reçu du coordinateur : on retrouve l'agent par son slug
+    // (sinon agent minimal, au cas où le modèle invente un nom). Les événements/le label
+    // utilisent le **vrai** nom d'agent pour rester cohérents avec le reste de l'UI.
     let fallback = RosterAgent { name: name.to_string(), role: String::new(), skills: Vec::new(), documentalist: false };
-    let agent = roster.iter().find(|a| a.name == name).unwrap_or(&fallback);
-    let _ = tx.send(AgentEvent::Started { agent: name.to_string() });
+    let agent = roster.iter().find(|a| tool_slug(&a.name) == name).unwrap_or(&fallback);
+    let label = agent.name.clone();
+    let _ = tx.send(AgentEvent::Started { agent: label.clone() });
 
     let effective = if agent.skills.is_empty() { &ctx.skills } else { &agent.skills };
     let system = build_system_prompt(&agent.name, &agent.role, agent.documentalist, effective, ctx);
     let tools = agent_tools(agent, ctx);
     let mut conv: Vec<Msg> = vec![Msg::User(instruction.to_string())];
-    let text = run_agent_turn(client, &system, &tools, &mut conv, name, ctx, tx).await;
+    let text = run_agent_turn(client, &system, &tools, &mut conv, &label, ctx, tx).await;
 
-    let _ = tx.send(AgentEvent::Done { agent: name.to_string() });
+    let _ = tx.send(AgentEvent::Done { agent: label });
     text
 }
 
 /// Outil de délégation exposé au coordinateur pour solliciter un agent (un par agent).
 fn delegation_tool(agent: &RosterAgent) -> ToolSpec {
-    let name = &agent.name;
     let role = if agent.role.is_empty() { "agent spécialisé" } else { &agent.role };
     ToolSpec {
-        name: name.to_string(),
+        // Le nom d'outil doit respecter `^[a-zA-Z0-9_-]{1,128}$` (contrainte API) : on slugifie
+        // le nom d'agent (accents/espaces → « _ »). Le vrai nom reste dans la description.
+        name: tool_slug(&agent.name),
         description: format!(
-            "Délègue une tâche à l'agent « {name} » ({role}). Fournis une instruction claire et autonome ; \
-             tu recevras son compte rendu."
+            "Délègue une tâche à l'agent « {} » ({role}). Fournis une instruction claire et autonome ; \
+             tu recevras son compte rendu.",
+            agent.name
         ),
         parameters: json!({
             "type": "object",
@@ -418,6 +423,21 @@ fn delegation_tool(agent: &RosterAgent) -> ToolSpec {
             "required": ["instruction"]
         }),
     }
+}
+
+/// Normalise un nom d'agent en identifiant d'outil valide pour l'API LLM
+/// (`^[a-zA-Z0-9_-]{1,128}$`) : tout caractère hors ASCII alphanumérique / `_` / `-` devient
+/// « _ ». Résultat non vide et borné à 128 caractères (tous ASCII → troncature sûre).
+fn tool_slug(name: &str) -> String {
+    let mut slug: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    if slug.is_empty() {
+        slug.push('_');
+    }
+    slug.truncate(128);
+    slug
 }
 
 /// Prompt système du coordinateur : rôle + roster des agents délégables (avec leur rôle).
@@ -594,6 +614,28 @@ mod tests {
             persona: None,
             adrs: vec![],
         }
+    }
+
+    #[test]
+    fn delegation_tool_name_is_api_valid_for_accented_agents() {
+        let valid = |s: &str| !s.is_empty() && s.len() <= 128
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+
+        // Le nom d'agent peut contenir accents/espaces ; le nom d'OUTIL doit rester ASCII-safe.
+        let agent = RosterAgent {
+            name: "Agent Modélisateur & Co".to_string(),
+            role: String::new(),
+            skills: Vec::new(),
+            documentalist: false,
+        };
+        let tool = delegation_tool(&agent);
+        assert!(valid(&tool.name), "nom d'outil invalide : {}", tool.name);
+        // La description conserve le vrai nom (lisibilité).
+        assert!(tool.description.contains("Agent Modélisateur & Co"));
+
+        // Le slug retrouve bien l'agent (dispatch).
+        assert_eq!(tool_slug(&agent.name), tool.name);
+        assert!(valid(&tool_slug("")) && valid(&tool_slug("é")));
     }
 
     #[test]
