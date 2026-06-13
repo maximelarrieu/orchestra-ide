@@ -216,8 +216,13 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   (`TaskStarted`/`TaskDone`/`TaskFailed`) dans un panneau Plan.
 - **Exécution par vagues concurrentes** : les tâches indépendantes s'exécutent **en parallèle**
   (`futures::future::join_all`) ; une tâche n'attend que ses dépendances directes.
+- **Re-planification itérative** (auto-correction) : après chaque manche, `evaluate_objective`
+  (LLM) juge l'objectif atteint ou renvoie un **plan correctif** ré-approuvé → nouvelle manche,
+  bornée par `MAX_ROUNDS`. La mémoire fait le pont entre manches. Mécanisme **agnostique** :
+  aucun agent/skill dédié (en Dev, l'`Agent_Testeur` + `Execute_Terminal_Command` existants
+  suffisent). Hors-ligne → une seule manche.
 - Correctif au passage : nom d'outil de délégation slugifié (agents accentués → API valide).
-- Hors périmètre (à suivre) : re-planification itérative, orchestration depuis le chat `[5]`.
+- Hors périmètre (à suivre) : orchestration depuis le chat `[5]`, support MCP.
 
 ## Skills « fiches » Markdown + création depuis l'UI (post-Phase 5) ✅
 
