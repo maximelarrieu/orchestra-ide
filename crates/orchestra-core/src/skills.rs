@@ -37,6 +37,22 @@ pub fn is_executable(id: &str) -> bool {
     EXECUTABLE_SKILLS.contains(&id)
 }
 
+/// Métadonnée d'un skill primitif, pour un sélecteur côté UI (id + description lisible).
+pub struct SkillMeta {
+    pub id: &'static str,
+    pub description: String,
+}
+
+/// Catalogue des primitives exécutables (id + description), pour proposer/choisir un skill
+/// sans avoir à connaître son nom par cœur.
+pub fn catalog() -> Vec<SkillMeta> {
+    EXECUTABLE_SKILLS
+        .iter()
+        .copied()
+        .filter_map(|id| tool_definition(id).map(|t| SkillMeta { id, description: t.description }))
+        .collect()
+}
+
 /// Types de diagrammes Mermaid reconnus (préfixe de la 1re ligne).
 const MERMAID_KINDS: &[&str] = &[
     "graph", "flowchart", "sequenceDiagram", "classDiagram", "stateDiagram",

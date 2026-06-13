@@ -378,10 +378,11 @@ l'outil :
 - `[3]` charge un autre espace (`ContextSpace::load`).
 - `[4]` ouvre l'**éditeur de persona** (`orchestra-tui::editor`, multi-ligne UTF-8 pur) ;
   `Ctrl+S` persiste via `ContextSpace::save_persona`.
-- `[6]` ouvre le **gestionnaire d'agents** (rôle/skills/stats, éditables) ; `[n]` y crée une
-  fiche de skill (`markdown_skill::create`), ouverte dans le même éditeur (`editor_target =
-  SkillFile`, `Ctrl+S` → `markdown_skill::save`). Les skills assignés y sont marqués selon
-  leur nature : primitive (vert), fiche (cyan), ou inactif (gris).
+- `[6]` ouvre le **gestionnaire d'agents** (rôle/stats, éditables) ; `[s]` ouvre le **sélecteur
+  de skills** (`SkillPicker`) : catalogue à cocher des primitives (`skills::catalog()`) et fiches
+  (`markdown_skill::load_all`), `Espace` (re)écrit `agent.skills` puis persiste, `[e]` édite une
+  fiche, `[n]` en crée une (`markdown_skill::create`, ouverte dans l'éditeur — `editor_target =
+  SkillFile`, `Ctrl+S` → `markdown_skill::save`). Plus de saisie de noms à l'aveugle.
 
 Toute lecture/écriture passe par le cœur (`documents`/`load_document`/`save_persona`) — l'UI
 ne touche jamais le système de fichiers directement. Objectif produit : limiter au maximum

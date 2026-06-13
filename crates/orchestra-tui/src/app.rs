@@ -33,7 +33,6 @@ pub enum LiveStatus {
 pub enum AgentField {
     Name,
     Role,
-    Skills,
     Add,
     /// Création d'un skill Markdown (`.orchestra/skills/<id>/SKILL.md`).
     NewSkill,
@@ -44,7 +43,6 @@ impl AgentField {
         match self {
             AgentField::Name => "Nouveau nom",
             AgentField::Role => "Rôle",
-            AgentField::Skills => "Skills (séparés par des virgules)",
             AgentField::Add => "Nom du nouvel agent",
             AgentField::NewSkill => "Nom du nouveau skill (fiche Markdown)",
         }
@@ -145,6 +143,8 @@ pub struct App {
     pub plan: Vec<PlanRow>,
     /// Vrai quand un plan attend l'approbation de l'utilisateur (Entrée/Échap).
     pub pending_plan: bool,
+    /// Sélecteur de skills ouvert (`Some`) ou fermé (`None`).
+    pub skill_picker: Option<SkillPicker>,
 }
 
 /// État d'une tâche du plan d'orchestration, côté affichage.
@@ -161,6 +161,34 @@ pub enum PlanStatus {
 pub struct PlanRow {
     pub task: PlannedTask,
     pub status: PlanStatus,
+}
+
+/// Nature d'un skill dans le sélecteur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillKind {
+    /// Primitive exécutable (code).
+    Primitive,
+    /// Fiche d'instructions (`SKILL.md`).
+    Fiche,
+    /// Assigné mais non branché (étiquette inactive).
+    Label,
+}
+
+/// Une entrée du sélecteur de skills : id, nature, description, et si l'agent l'a assigné.
+#[derive(Debug, Clone)]
+pub struct SkillEntry {
+    pub id: String,
+    pub kind: SkillKind,
+    pub description: String,
+    pub selected: bool,
+}
+
+/// Sélecteur de skills pour un agent : catalogue navigable + cases à cocher.
+pub struct SkillPicker {
+    /// Index de l'agent édité (dans `config.agents`).
+    pub agent: usize,
+    pub entries: Vec<SkillEntry>,
+    pub cursor: usize,
 }
 
 /// Cadres du spinner d'activité (braille).
@@ -209,6 +237,7 @@ impl App {
             busy_since: None,
             plan: Vec::new(),
             pending_plan: false,
+            skill_picker: None,
             spinner: 0,
             notice: None,
         }
@@ -619,10 +648,86 @@ impl App {
             self.agent_prompt = Some((AgentField::Role, a.role.clone()));
         }
     }
-    pub fn start_agent_skills(&mut self) {
-        if let Some(a) = self.selected_agent() {
-            self.agent_prompt = Some((AgentField::Skills, a.skills.join(", ")));
+    /// Ouvre le **sélecteur de skills** pour l'agent sélectionné : catalogue (primitives +
+    /// fiches) avec descriptions, où l'on coche/décoche au lieu de taper des noms à l'aveugle.
+    pub fn open_skill_picker(&mut self) {
+        let Some(space) = self.space.as_ref() else { return };
+        let Some(agent) = space.config.agents.get(self.agent_sel) else { return };
+        let assigned = agent.skills.clone();
+        let root = space.root.clone();
+
+        let mut entries: Vec<SkillEntry> = Vec::new();
+        // Primitives (code) — depuis le registre du cœur.
+        for m in orchestra_core::skills::catalog() {
+            let selected = assigned.iter().any(|s| s == m.id);
+            entries.push(SkillEntry { id: m.id.to_string(), kind: SkillKind::Primitive, description: m.description, selected });
         }
+        // Fiches Markdown — depuis `.orchestra/skills/`.
+        for f in orchestra_core::markdown_skill::load_all(&root) {
+            if entries.iter().any(|e| e.id == f.id) {
+                continue;
+            }
+            let selected = assigned.iter().any(|s| s == &f.id || s == &f.name);
+            entries.push(SkillEntry { id: f.id, kind: SkillKind::Fiche, description: f.description, selected });
+        }
+        // Skills assignés mais non branchés → on les garde (cochés) pour pouvoir les retirer.
+        for s in &assigned {
+            if !entries.iter().any(|e| &e.id == s) {
+                entries.push(SkillEntry { id: s.clone(), kind: SkillKind::Label, description: "(non branché)".into(), selected: true });
+            }
+        }
+
+        self.skill_picker = Some(SkillPicker { agent: self.agent_sel, entries, cursor: 0 });
+        self.notice = None;
+    }
+
+    pub fn picker_move(&mut self, delta: isize) {
+        if let Some(p) = self.skill_picker.as_mut() {
+            if p.entries.is_empty() {
+                return;
+            }
+            let last = p.entries.len() - 1;
+            p.cursor = (p.cursor as isize + delta).clamp(0, last as isize) as usize;
+        }
+    }
+
+    /// Coche/décoche le skill courant et réécrit la liste de l'agent (persistée).
+    pub fn picker_toggle(&mut self) {
+        let Some(p) = self.skill_picker.as_mut() else { return };
+        if let Some(e) = p.entries.get_mut(p.cursor) {
+            e.selected = !e.selected;
+        }
+        let agent_idx = p.agent;
+        let selected: Vec<String> = p.entries.iter().filter(|e| e.selected).map(|e| e.id.clone()).collect();
+        if let Some(space) = self.space.as_mut() {
+            if let Some(a) = space.config.agents.get_mut(agent_idx) {
+                a.skills = selected;
+            }
+        }
+        self.persist_config();
+    }
+
+    pub fn close_skill_picker(&mut self) {
+        self.skill_picker = None;
+    }
+
+    /// Ouvre la fiche `SKILL.md` du skill courant dans l'éditeur (uniquement pour une fiche).
+    pub fn picker_edit_fiche(&mut self) {
+        let Some(p) = self.skill_picker.as_ref() else { return };
+        let Some(e) = p.entries.get(p.cursor) else { return };
+        if e.kind != SkillKind::Fiche {
+            self.notice = Some("Seules les fiches sont éditables (les primitives sont du code).".into());
+            return;
+        }
+        let id = e.id.clone();
+        let Some(root) = self.space.as_ref().map(|s| s.root.clone()) else { return };
+        let path = orchestra_core::markdown_skill::skills_dir(&root).join(&id).join("SKILL.md");
+        let content = orchestra_core::model::load_document(&path).unwrap_or_default();
+        let label = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string();
+        self.editor = Some(Editor::from_str(&content));
+        self.editor_target = EditTarget::SkillFile(path);
+        self.editor_title = format!(" ✏ SKILL ({label})");
+        self.skill_picker = None;
     }
     pub fn start_agent_add(&mut self) {
         if self.space.is_some() {
@@ -665,15 +770,6 @@ impl App {
             AgentField::Role => {
                 if let Some(a) = space.config.agents.get_mut(sel) {
                     a.role = value;
-                }
-            }
-            AgentField::Skills => {
-                if let Some(a) = space.config.agents.get_mut(sel) {
-                    a.skills = value
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
                 }
             }
             AgentField::Add => {
@@ -882,6 +978,49 @@ mod tests {
 
         // Les événements de plan ne sont pas stockés dans l'historique du radar.
         assert!(app.events.is_empty());
+    }
+
+    #[test]
+    fn skill_picker_toggles_and_persists() {
+        use orchestra_core::model::project_type::ProjectType;
+        use orchestra_core::{scaffold_space, InitOptions};
+
+        let dir = std::env::temp_dir().join(format!("orch-picker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        scaffold_space(
+            &dir,
+            InitOptions {
+                project_name: "T".into(),
+                project_type: ProjectType::Dev,
+                workspace_path: None,
+                documentalist_enabled: false,
+                integrations: Default::default(),
+            },
+        )
+        .unwrap();
+
+        let mut app = App::new(Some(ContextSpace::load(&dir).unwrap()));
+        app.toggle_agents();
+        app.agent_sel = 0;
+        app.open_skill_picker();
+
+        // Le catalogue contient au moins les primitives (avec descriptions).
+        let idx = {
+            let p = app.skill_picker.as_ref().unwrap();
+            assert!(p.entries.iter().any(|e| e.kind == SkillKind::Primitive && !e.description.is_empty()));
+            p.entries.iter().position(|e| e.id == "Web_Fetch").expect("Web_Fetch dans le catalogue")
+        };
+        let was = app.skill_picker.as_ref().unwrap().entries[idx].selected;
+        app.skill_picker.as_mut().unwrap().cursor = idx;
+        app.picker_toggle();
+
+        // L'assignation est persistée dans config.json (sans avoir tapé le nom).
+        let reloaded = ContextSpace::load(&dir).unwrap();
+        let has = reloaded.config.agents[0].skills.iter().any(|s| s == "Web_Fetch");
+        assert_eq!(has, !was, "le toggle doit inverser l'assignation et la persister");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
