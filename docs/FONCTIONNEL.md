@@ -86,7 +86,7 @@ Le tableau de bord (TUI) s'ouvre en 3 zones :
 | `[2]` | Navigateur de documents (persona/mémoire/ADRs/docs) + visualiseur Markdown | ✅ actif |
 | `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
 | `[4]` | Éditer le persona dans l'interface (`Ctrl+S` enregistre) | ✅ actif |
-| `[6]` | Gérer les agents (rôle, skills, stats ; renommer/éditer/ajouter/supprimer) + `[n]` créer un skill « fiche » | ✅ actif |
+| `[6]` | Gérer les agents (rôle, stats ; renommer/ajouter/supprimer) ; `[s]` **sélecteur de skills** à cocher ; `[n]` créer une fiche | ✅ actif |
 | `q` / `Échap` | Quitter | ✅ actif |
 
 Quand l'orchestre tourne, l'en-tête indique `▶ N agent(s) en cours`, le radar liste les
@@ -186,6 +186,11 @@ Un skill n'agit que s'il est **branché**. Deux façons de l'être :
 
 Idéal : `Creation_Quiz` (pur texte → fiche) ; `Web_Search` (une fiche qui s'appuie sur la
 primitive `Web_Fetch`).
+
+**Assigner sans rien connaître par cœur** : dans `[6]`, `[s]` ouvre un **sélecteur** — un
+catalogue navigable de tous les skills (primitives + fiches) avec leur **description** et leur
+nature (`prim.`/`fiche`). On **coche** (`Espace`) pour assigner/retirer ; `[e]` édite la fiche
+sélectionnée, `[n]` en crée une. Fini la saisie de noms à l'aveugle.
 
 ### Orchestration d'un objectif (`[1]`)
 

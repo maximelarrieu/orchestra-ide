@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, LiveStatus, Phase, PlanStatus, View, Viewer};
+use crate::app::{App, LiveStatus, Phase, PlanStatus, SkillKind, View, Viewer};
 use crate::editor::Editor;
 use crate::markdown;
 
@@ -48,6 +48,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_text_editor(frame, center, ed, &app.editor_title);
     } else if let Some(v) = &app.viewer {
         render_markdown_viewer(frame, center, v);
+    } else if app.skill_picker.is_some() {
+        render_skill_picker(frame, center, app);
     } else {
         match app.view {
             View::Radar if !app.plan.is_empty() => {
@@ -362,6 +364,45 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(rows[start..end].to_vec()).block(block), area);
 }
 
+/// Sélecteur de skills : catalogue à cocher (primitives + fiches) avec descriptions.
+fn render_skill_picker(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(picker) = &app.skill_picker else { return };
+    let agent_name = app
+        .space
+        .as_ref()
+        .and_then(|s| s.config.agents.get(picker.agent))
+        .map(|a| a.name.clone())
+        .unwrap_or_default();
+    let block = Block::bordered().title(format!(" 🧩 SKILLS DE « {agent_name} » "));
+
+    let mut lines: Vec<Line> = Vec::new();
+    if picker.entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Aucun skill disponible. [n] pour créer une fiche.",
+            Style::new().dark_gray(),
+        )));
+    }
+    for (i, e) in picker.entries.iter().enumerate() {
+        let sel = i == picker.cursor;
+        let check = if e.selected { "[x] " } else { "[ ] " };
+        let (badge, badge_style) = match e.kind {
+            SkillKind::Primitive => ("prim.", Style::new().green()),
+            SkillKind::Fiche => ("fiche", Style::new().cyan()),
+            SkillKind::Label => ("inact", Style::new().dark_gray()),
+        };
+        let name_style = if sel { Style::new().bold().reversed() } else { Style::new() };
+        let check_style = if e.selected { Style::new().green().bold() } else { Style::new().dark_gray() };
+        lines.push(Line::from(vec![
+            Span::raw(if sel { "▶ " } else { "  " }),
+            Span::styled(check, check_style),
+            Span::styled(format!("{:<26} ", e.id), name_style),
+            Span::styled(format!("{badge}  "), badge_style),
+            Span::styled(e.description.clone(), Style::new().dark_gray()),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 /// Panneau du plan d'orchestration : une ligne par tâche (état + agent + dépendances + objectif).
 fn render_plan_panel(frame: &mut Frame, area: Rect, app: &App) {
     let title = if app.pending_plan {
@@ -506,7 +547,12 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" 📋 OPTIONS & MENUS ");
 
     // Les modes (éditeur / visualiseur / chat / saisie) ont priorité sur le menu.
-    let lines: Vec<Line> = if app.pending_plan {
+    let lines: Vec<Line> = if app.skill_picker.is_some() {
+        vec![Line::from(Span::styled(
+            "🧩 Skills — ↑↓ choisir · [Espace] assigner/retirer · [n] nouvelle fiche · [e] éditer · Échap",
+            Style::new().cyan(),
+        ))]
+    } else if app.pending_plan {
         vec![Line::from(Span::styled(
             "🗺  Plan proposé — [Entrée] exécuter l'orchestre · [Échap] annuler",
             Style::new().yellow().bold(),

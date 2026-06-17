@@ -230,6 +230,17 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - Correctif au passage : nom d'outil de délégation slugifié (agents accentués → API valide).
 - Hors périmètre (à suivre) : support MCP, parallélisme inter-manches plus fin.
 
+## Sélecteur de skills (catalogue à cocher) (post-Phase 5) ✅
+
+- Assignation des skills repensée : `[6]` → `[s]` ouvre un **sélecteur** au lieu d'un champ
+  texte. Catalogue navigable des primitives (`skills::catalog()`, id + description) et des
+  fiches (`markdown_skill::load_all`), avec cases à cocher (`Espace`), `[e]` éditer une fiche,
+  `[n]` en créer. Les skills assignés non branchés restent listés (`inact`) pour pouvoir les
+  retirer. Résout le « il faut connaître les noms par cœur ».
+- Cœur : `skills::catalog()` expose les primitives (id + description) depuis le registre.
+- TUI : `SkillPicker`/`SkillEntry` + rendu dédié ; suppression de l'ancienne saisie texte
+  (`AgentField::Skills`). Persistance via `save_config`.
+
 ## Skills « fiches » Markdown + création depuis l'UI (post-Phase 5) ✅
 
 - Modèle « skill = dossier + `SKILL.md` » (façon *Agent Skills*) : `crate::markdown_skill`

@@ -191,6 +191,20 @@ async fn event_loop(
                                 KeyCode::PageDown => app.radar_scroll_by(-10),
                                 _ => {}
                             }
+                        } else if app.skill_picker.is_some() {
+                            // Sélecteur de skills : navigation + cocher + créer/éditer une fiche.
+                            match key.code {
+                                KeyCode::Up => app.picker_move(-1),
+                                KeyCode::Down => app.picker_move(1),
+                                KeyCode::Char(' ') => app.picker_toggle(),
+                                KeyCode::Char('n') => {
+                                    app.close_skill_picker();
+                                    app.start_new_skill();
+                                }
+                                KeyCode::Char('e') => app.picker_edit_fiche(),
+                                KeyCode::Esc => app.close_skill_picker(),
+                                _ => {}
+                            }
                         } else if app.agent_prompt.is_some() {
                             // Saisie d'un champ d'agent (nom / rôle / skills / ajout).
                             match key.code {
@@ -207,7 +221,7 @@ async fn event_loop(
                                 KeyCode::Down => app.agents_move(1),
                                 KeyCode::Char('r') => app.start_agent_rename(),
                                 KeyCode::Char('o') => app.start_agent_role(),
-                                KeyCode::Char('s') => app.start_agent_skills(),
+                                KeyCode::Char('s') => app.open_skill_picker(),
                                 KeyCode::Char('a') => app.start_agent_add(),
                                 KeyCode::Char('n') => app.start_new_skill(),
                                 KeyCode::Char('d') => app.delete_selected_agent(),
