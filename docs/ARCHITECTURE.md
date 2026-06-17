@@ -183,10 +183,18 @@ SDK officiel), l'un des deux fournisseurs **au choix** :
 Une représentation **neutre** (`Msg` / `Block` / `ToolSpec` / `ToolResult`) découple la
 boucle agentique du format de chaque fournisseur : chaque provider *rend* cette
 représentation dans son protocole (content blocks vs `functionCall`/`functionResponse`) et
-*parse* sa réponse vers les mêmes `Block`. Le choix se fait via `ORCHESTRA_PROVIDER`
-(prioritaire) ou par auto-détection de la clé présente ; le modèle est surchargeable par
-`ORCHESTRA_MODEL`. `orchestra-core::skills` expose les Skills Dev comme *tools* et les
-exécute côté Rust, confinés au workspace.
+*parse* sa réponse vers les mêmes `Block`. `orchestra-core::skills` expose les Skills Dev comme
+*tools* et les exécute côté Rust, confinés au workspace.
+
+**Bascule automatique de fournisseur.** `LlmClient` détient une liste ordonnée de `Backend`
+(provider + clé + modèle) construite par `from_env` : `ORCHESTRA_PROVIDER` force un backend
+unique, sinon tous ceux dont la clé est présente sont enregistrés — **Claude préféré, Gemini en
+repli** (`ORCHESTRA_MODEL` surcharge le principal). `complete()` essaie les backends à partir de
+`active` (un `AtomicUsize` partagé via l'`Arc`) et **bascule** sur le suivant si l'erreur est
+rattrapable (`should_failover` : réseau, 5xx, 429, 401/403, ou 400 de facturation). Un échec
+**permanent** (`is_permanent` : 401/402/403, ou 400 « credit balance/quota ») fait avancer
+`active` → le backend mort est écarté des tours suivants. Une requête malformée (400 hors
+facturation) n'est **pas** masquée par bascule : elle remonte telle quelle.
 
 ```mermaid
 sequenceDiagram

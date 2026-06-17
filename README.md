@@ -97,14 +97,25 @@ cargo run -p orchestra-tui -- examples/recherche-immo-aix
 # [1] lance l'orchestre — le radar affiche les actions réelles des agents.
 ```
 
-Sélection automatique selon la clé présente (`ANTHROPIC_API_KEY` puis `GEMINI_API_KEY`),
-`ORCHESTRA_PROVIDER` ayant priorité. Clés **jamais en dur**, lues depuis l'environnement.
+Sélection automatique selon les clés présentes, `ORCHESTRA_PROVIDER` ayant priorité (force un
+fournisseur unique). Clés **jamais en dur**, lues depuis l'environnement.
 
-**Repli automatique** : sans aucune clé (ou si l'API est injoignable), on retombe sur les
-agents *simulés* de la Phase 3 — l'appli reste pleinement fonctionnelle hors-ligne, et la
-compilation/les tests n'exigent aucune clé. L'en-tête indique le mode (`🤖 <modèle>` ou
-`simulé · clé API absente`), et le radar rappelle alors quelles variables définir. La
-signature de `runtime::spawn` n'a pas changé.
+**Bascule automatique de fournisseur** : si **les deux** clés sont définies, le client garde
+**Claude en préférence et Gemini en repli**. Quand Claude est indisponible — réseau, surcharge,
+quota, ou **crédit épuisé** (Anthropic renvoie alors un 400 « credit balance too low ») — le
+client **bascule sur Gemini** automatiquement, sans interrompre l'orchestre. Un échec permanent
+(clé invalide / plus de crédit) écarte Claude pour les appels suivants (on ne le re-tente pas à
+chaque tour). L'en-tête affiche le fournisseur actif et le repli, ex. `Claude · claude-opus-4-8
+(repli : Gemini)`.
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."   # préféré
+export GEMINI_API_KEY="..."             # repli automatique si Claude tombe
+```
+
+**Repli simulé** : sans **aucune** clé (ou si tous les fournisseurs échouent), on retombe sur les
+agents *simulés* — l'appli reste pleinement fonctionnelle hors-ligne, et la compilation/les tests
+n'exigent aucune clé. L'en-tête indique alors `simulé · clé API absente`.
 
 > ⚠️ `Execute_Terminal_Command` exécute des commandes shell dans le workspace (capacité
 > assumée pour un IDE de dev) : sortie plafonnée, délai max 30 s, chemins confinés.

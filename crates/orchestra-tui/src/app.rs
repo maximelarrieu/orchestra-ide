@@ -216,7 +216,7 @@ impl App {
             started: 0,
             done: 0,
             phase: Phase::Idle,
-            llm_model: orchestra_core::llm::LlmClient::from_env().map(|c| c.model().to_string()),
+            llm_model: orchestra_core::llm::LlmClient::from_env().map(|c| c.describe()),
             view: View::Radar,
             input: None,
             intention: None,

@@ -8,6 +8,7 @@
 //! Le client est *optionnel* : sans clé API, [`LlmClient::from_env`] renvoie `None` et le
 //! runtime retombe sur les agents simulés. Les clés ne sont jamais codées en dur.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -82,77 +83,135 @@ pub enum Msg {
     Tool(Vec<ToolResult>),
 }
 
-/// Client réutilisable (le `reqwest::Client` est `Arc` en interne).
-#[derive(Clone)]
-pub struct LlmClient {
+/// Un backend LLM configuré : fournisseur + clé + modèle.
+struct Backend {
     provider: Provider,
-    http: reqwest::Client,
     api_key: String,
     model: String,
+}
+
+/// Client LLM avec **bascule automatique** de fournisseur.
+///
+/// Il essaie les backends dans l'ordre de préférence (par défaut Claude puis Gemini, selon les
+/// clés présentes) et **bascule sur le suivant** si l'actuel est indisponible — réseau,
+/// surcharge, quota, ou **crédit épuisé**. Un backend en échec *permanent* (clé invalide, plus
+/// de crédit) est écarté pour les appels suivants. Le `reqwest::Client` est `Arc` en interne ;
+/// l'état de bascule (`active`) vit derrière l'`Arc<LlmClient>` partagé par le runtime.
+pub struct LlmClient {
+    http: reqwest::Client,
+    backends: Vec<Backend>,
+    /// Index du premier backend à essayer (avance au-delà des backends morts).
+    active: AtomicUsize,
 }
 
 impl LlmClient {
     /// Construit le client depuis l'environnement, ou `None` (→ mode simulé).
     ///
-    /// Sélection : `ORCHESTRA_PROVIDER` (`anthropic`/`claude` ou `gemini`) force le choix ;
-    /// sinon auto-détection selon la clé présente (`ANTHROPIC_API_KEY` puis
-    /// `GEMINI_API_KEY`). Le modèle vient de `ORCHESTRA_MODEL`, sinon le défaut du provider.
+    /// - `ORCHESTRA_PROVIDER` (`anthropic`/`claude` ou `gemini`) force un fournisseur **unique** ;
+    /// - sinon, on enregistre **tous** les fournisseurs dont la clé est présente — Claude en
+    ///   préférence, Gemini en repli (bascule auto si Claude est indisponible ou sans crédit) ;
+    /// - `ORCHESTRA_MODEL` surcharge le modèle du fournisseur principal.
     pub fn from_env() -> Option<Self> {
-        let forced = std::env::var("ORCHESTRA_PROVIDER")
-            .ok()
-            .map(|p| p.trim().to_lowercase());
+        let forced = std::env::var("ORCHESTRA_PROVIDER").ok().map(|p| p.trim().to_lowercase());
+        let model_override = std::env::var("ORCHESTRA_MODEL").ok().filter(|m| !m.trim().is_empty());
 
-        let (provider, api_key) = match forced.as_deref() {
-            Some("gemini") => (Provider::Gemini, key("GEMINI_API_KEY")?),
-            Some("anthropic") | Some("claude") => (Provider::Anthropic, key("ANTHROPIC_API_KEY")?),
-            _ => {
-                if let Some(k) = key("ANTHROPIC_API_KEY") {
-                    (Provider::Anthropic, k)
-                } else {
-                    (Provider::Gemini, key("GEMINI_API_KEY")?)
-                }
+        let mut backends: Vec<Backend> = Vec::new();
+        match forced.as_deref() {
+            Some("gemini") => push_backend(&mut backends, Provider::Gemini, "GEMINI_API_KEY", model_override.as_deref()),
+            Some("anthropic") | Some("claude") => {
+                push_backend(&mut backends, Provider::Anthropic, "ANTHROPIC_API_KEY", model_override.as_deref())
             }
-        };
-
-        let model = std::env::var("ORCHESTRA_MODEL")
-            .ok()
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or_else(|| match provider {
-                Provider::Anthropic => DEFAULT_ANTHROPIC_MODEL.to_string(),
-                Provider::Gemini => DEFAULT_GEMINI_MODEL.to_string(),
-            });
+            _ => {
+                push_backend(&mut backends, Provider::Anthropic, "ANTHROPIC_API_KEY", model_override.as_deref());
+                // Gemini en repli ; la surcharge de modèle ne vaut que pour le principal.
+                let gem_override = if backends.is_empty() { model_override.as_deref() } else { None };
+                push_backend(&mut backends, Provider::Gemini, "GEMINI_API_KEY", gem_override);
+            }
+        }
+        if backends.is_empty() {
+            return None;
+        }
 
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(120))
             .build()
             .ok()?;
+        Some(Self { http, backends, active: AtomicUsize::new(0) })
+    }
 
-        Some(Self { provider, http, api_key, model })
+    fn active_backend(&self) -> &Backend {
+        let i = self.active.load(Ordering::Relaxed).min(self.backends.len() - 1);
+        &self.backends[i]
     }
 
     pub fn provider(&self) -> Provider {
-        self.provider
+        self.active_backend().provider
     }
     pub fn model(&self) -> &str {
-        &self.model
+        &self.active_backend().model
     }
 
-    /// Un tour de conversation : envoie l'historique + les outils, renvoie les blocs émis
-    /// par le modèle (texte et/ou appels d'outils).
+    /// Description lisible pour l'UI : fournisseur·modèle actif (+ repli éventuel).
+    pub fn describe(&self) -> String {
+        let active = self.active_backend();
+        let mut s = format!("{} · {}", active.provider.label(), active.model);
+        let fallbacks: Vec<&str> = self
+            .backends
+            .iter()
+            .filter(|b| b.provider != active.provider)
+            .map(|b| b.provider.label())
+            .collect();
+        if !fallbacks.is_empty() {
+            s.push_str(&format!(" (repli : {})", fallbacks.join(", ")));
+        }
+        s
+    }
+
+    /// Un tour de conversation, avec **bascule automatique** de fournisseur en cas
+    /// d'indisponibilité (réseau, surcharge, quota, crédit épuisé).
     pub async fn complete(
         &self,
         system: &str,
         tools: &[ToolSpec],
         conv: &[Msg],
     ) -> Result<Vec<Block>, LlmError> {
-        match self.provider {
+        let start = self.active.load(Ordering::Relaxed).min(self.backends.len() - 1);
+        let mut last_err: Option<LlmError> = None;
+        for i in start..self.backends.len() {
+            match self.try_backend(&self.backends[i], system, tools, conv).await {
+                Ok(blocks) => return Ok(blocks),
+                Err(e) => {
+                    // Échec permanent (clé invalide / plus de crédit) → on écarte ce backend.
+                    if is_permanent(&e) {
+                        self.active.store(i + 1, Ordering::Relaxed);
+                    }
+                    // Erreur non rattrapable par bascule (ex. requête malformée) → on remonte.
+                    if !should_failover(&e) {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| LlmError::Shape("aucun fournisseur LLM disponible".into())))
+    }
+
+    /// Un appel à un backend précis.
+    async fn try_backend(
+        &self,
+        backend: &Backend,
+        system: &str,
+        tools: &[ToolSpec],
+        conv: &[Msg],
+    ) -> Result<Vec<Block>, LlmError> {
+        match backend.provider {
             Provider::Anthropic => {
-                let body = anthropic_body(&self.model, system, tools, conv);
+                let body = anthropic_body(&backend.model, system, tools, conv);
                 let resp = self
                     .http
                     .post(ANTHROPIC_URL)
-                    .header("x-api-key", &self.api_key)
+                    .header("x-api-key", &backend.api_key)
                     .header("anthropic-version", ANTHROPIC_VERSION)
                     .json(&body)
                     .send()
@@ -160,12 +219,12 @@ impl LlmClient {
                 parse_anthropic(&checked_json(resp).await?)
             }
             Provider::Gemini => {
-                let url = format!("{GEMINI_BASE}/{}:generateContent", self.model);
+                let url = format!("{GEMINI_BASE}/{}:generateContent", backend.model);
                 let body = gemini_body(system, tools, conv);
                 let resp = self
                     .http
                     .post(url)
-                    .header("x-goog-api-key", &self.api_key)
+                    .header("x-goog-api-key", &backend.api_key)
                     .json(&body)
                     .send()
                     .await?;
@@ -173,6 +232,46 @@ impl LlmClient {
             }
         }
     }
+}
+
+fn push_backend(backends: &mut Vec<Backend>, provider: Provider, key_var: &str, model_override: Option<&str>) {
+    if let Some(k) = key(key_var) {
+        let model = model_override.map(str::to_string).unwrap_or_else(|| default_model(provider));
+        backends.push(Backend { provider, api_key: k, model });
+    }
+}
+
+fn default_model(provider: Provider) -> String {
+    match provider {
+        Provider::Anthropic => DEFAULT_ANTHROPIC_MODEL.to_string(),
+        Provider::Gemini => DEFAULT_GEMINI_MODEL.to_string(),
+    }
+}
+
+/// Vrai si l'erreur justifie d'essayer le fournisseur suivant (réseau, surcharge, quota, crédit
+/// épuisé, auth). Une requête malformée (400 hors facturation) n'est pas rattrapable par bascule.
+fn should_failover(e: &LlmError) -> bool {
+    match e {
+        LlmError::Transport(_) => true,
+        LlmError::Shape(_) => false,
+        LlmError::Api { status, body } => {
+            matches!(status, 401 | 402 | 403 | 429) || *status >= 500 || (*status == 400 && is_billing(body))
+        }
+    }
+}
+
+/// Vrai si l'échec est *permanent* pour ce fournisseur (clé invalide, plus de crédit) → on
+/// l'écarte des appels suivants (inutile de le re-tenter à chaque tour).
+fn is_permanent(e: &LlmError) -> bool {
+    matches!(e, LlmError::Api { status, body }
+        if matches!(status, 401..=403) || (*status == 400 && is_billing(body)))
+}
+
+/// Détecte un message d'erreur lié au crédit/quota/facturation (Anthropic renvoie un 400
+/// « Your credit balance is too low » quand il n'y a plus de crédit).
+fn is_billing(body: &str) -> bool {
+    let b = body.to_lowercase();
+    b.contains("credit") || b.contains("quota") || b.contains("billing") || b.contains("balance")
 }
 
 fn key(var: &str) -> Option<String> {
@@ -327,6 +426,28 @@ fn parse_gemini(v: &Value) -> Result<Vec<Block>, LlmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failover_classification() {
+        // Crédit épuisé (Anthropic renvoie un 400 avec « credit balance ») → bascule + permanent.
+        let no_credit = LlmError::Api { status: 400, body: "Your credit balance is too low".into() };
+        assert!(should_failover(&no_credit) && is_permanent(&no_credit));
+
+        // Auth invalide → bascule + permanent.
+        let auth = LlmError::Api { status: 401, body: "authentication_error".into() };
+        assert!(should_failover(&auth) && is_permanent(&auth));
+
+        // Rate limit → on bascule pour cet appel, mais pas permanent (on retentera le principal).
+        let rate = LlmError::Api { status: 429, body: "rate_limit".into() };
+        assert!(should_failover(&rate) && !is_permanent(&rate));
+
+        // Réseau → bascule, non permanent.
+        // (pas d'instance reqwest::Error simple à fabriquer ici ; couvert par le type)
+
+        // Requête malformée (notre bug) → ni bascule ni permanent.
+        let bad = LlmError::Api { status: 400, body: "tools.0.custom.name: invalid".into() };
+        assert!(!should_failover(&bad) && !is_permanent(&bad));
+    }
 
     fn sample_conv() -> Vec<Msg> {
         vec![

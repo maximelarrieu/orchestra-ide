@@ -230,6 +230,17 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - Correctif au passage : nom d'outil de délégation slugifié (agents accentués → API valide).
 - Hors périmètre (à suivre) : support MCP, parallélisme inter-manches plus fin.
 
+## Bascule automatique de fournisseur LLM (Claude ↔ Gemini) (post-Phase 5) ✅
+
+- `LlmClient` gère une liste ordonnée de `Backend` (Claude préféré, Gemini en repli, selon les
+  clés). `complete()` bascule sur le fournisseur suivant si l'actuel est indisponible (réseau,
+  surcharge, 429, auth, ou **crédit épuisé** → 400 « credit balance too low »).
+- Échec **permanent** (clé invalide / plus de crédit) → le backend est écarté pour la suite
+  (`active: AtomicUsize`). Une requête malformée (400 hors facturation) remonte sans bascule.
+- `ORCHESTRA_PROVIDER` force un fournisseur unique ; `describe()` affiche l'actif + le repli
+  dans l'en-tête (ex. `Claude · claude-opus-4-8 (repli : Gemini)`).
+- Tests : classification crédit-épuisé / auth / rate-limit / requête-malformée.
+
 ## Sélecteur de skills (catalogue à cocher) (post-Phase 5) ✅
 
 - Assignation des skills repensée : `[6]` → `[s]` ouvre un **sélecteur** au lieu d'un champ
