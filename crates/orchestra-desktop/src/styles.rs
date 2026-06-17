@@ -54,6 +54,9 @@ pub const CSS: &str = r#"
               max-height: 70vh; overflow: auto; }
     .error { color: #ff8a8a; }
 
+    .viewerpane { flex: 1; display: flex; flex-direction: column; gap: .4rem; }
+    .docactions { display: flex; gap: .5rem; }
+
     /* Rendu Markdown du visualiseur de documents */
     .markdown { line-height: 1.55; }
     .markdown h1, .markdown h2, .markdown h3, .markdown h4 { color: #cfe0ff; line-height: 1.25; margin: 1rem 0 .5rem; }

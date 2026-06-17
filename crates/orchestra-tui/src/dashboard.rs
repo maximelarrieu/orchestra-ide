@@ -644,9 +644,8 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().magenta(),
         ))]
     } else if app.viewer.is_some() {
-        let edit = if app.viewer_is_persona() { " · [e] éditer" } else { "" };
         vec![Line::from(Span::styled(
-            format!("📖 Document — ↑↓ défiler · Échap fermer{edit}"),
+            "📖 Document — ↑↓ défiler · [e] éditer · Échap fermer",
             Style::new().cyan(),
         ))]
     } else if app.view == View::Docs {
@@ -803,6 +802,7 @@ mod tests {
             title: "doc.md".into(),
             text: "# Titre\n\n- a\n- b\n\n```\ncode\n```\nfin".into(),
             scroll: 100, // au-delà de la fin → clampé au rendu
+            path: std::path::PathBuf::from("doc.md"),
             is_persona: false,
         });
         terminal.draw(|f| render(f, &app)).unwrap();

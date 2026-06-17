@@ -282,6 +282,11 @@ pub fn save_fiche(path: &Path, content: &str) -> bool {
     orchestra_core::markdown_skill::save(path, content).is_ok()
 }
 
+/// Enregistre un document quelconque de l'espace (persona, memory, ADR, `.md`) via le cœur.
+pub fn save_document(path: &Path, content: &str) -> bool {
+    orchestra_core::model::save_document(path, content).is_ok()
+}
+
 // --- Espaces : registre des espaces connus (récents) ---------------------------------------
 
 /// Espaces connus (récents d'abord), depuis le registre global.

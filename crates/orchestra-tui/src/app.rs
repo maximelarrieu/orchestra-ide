@@ -51,11 +51,13 @@ impl AgentField {
     }
 }
 
-/// Cible de l'éditeur de texte : le persona de l'espace, ou un fichier `SKILL.md`.
+/// Cible de l'éditeur de texte : le persona de l'espace, un fichier `SKILL.md`, ou un document
+/// quelconque de l'espace (memory, ADR, `.md` du workspace).
 #[derive(Debug, Clone)]
 pub enum EditTarget {
     Persona,
     SkillFile(std::path::PathBuf),
+    Document(std::path::PathBuf),
 }
 
 /// Nombre d'événements conservés dans l'historique du radar (les plus anciens sont
@@ -98,7 +100,9 @@ pub struct Viewer {
     pub title: String,
     pub text: String,
     pub scroll: usize,
-    /// Vrai si le document affiché est le persona (→ raccourci d'édition).
+    /// Chemin du document affiché (pour l'édition).
+    pub path: std::path::PathBuf,
+    /// Vrai si le document affiché est le persona (→ sauvegarde via `save_persona`).
     pub is_persona: bool,
 }
 
@@ -402,6 +406,7 @@ impl App {
                     title: doc.label.clone(),
                     text,
                     scroll: 0,
+                    path: doc.path.clone(),
                     is_persona: doc.kind == DocKind::Persona,
                 });
             }
@@ -420,9 +425,21 @@ impl App {
         }
     }
 
-    /// Vrai si le visualiseur affiche le persona (→ raccourci `e` pour l'éditer).
-    pub fn viewer_is_persona(&self) -> bool {
-        self.viewer.as_ref().is_some_and(|v| v.is_persona)
+    /// `[e]` (visualiseur) — édite le document affiché, **quel qu'il soit** (persona, memory,
+    /// ADR, `.md` du workspace). Le persona passe par `save_persona` (met à jour la copie en
+    /// mémoire) ; les autres par `save_document`.
+    pub fn edit_current_doc(&mut self) {
+        let Some(v) = self.viewer.as_ref() else { return };
+        let text = v.text.clone();
+        let target = if v.is_persona {
+            EditTarget::Persona
+        } else {
+            EditTarget::Document(v.path.clone())
+        };
+        self.editor_title = format!(" ✏ {}", v.title);
+        self.editor = Some(Editor::from_str(&text));
+        self.editor_target = target;
+        self.viewer = None;
     }
 
     /// `[3]` — ouvre/ferme le **sélecteur d'espaces connus** (récents), rafraîchi depuis le

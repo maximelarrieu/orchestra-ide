@@ -147,6 +147,10 @@ async fn event_loop(
                                                 orchestra_core::markdown_skill::save(path, &text)
                                                     .map(|()| "Skill enregistré.")
                                             }
+                                            app::EditTarget::Document(path) => {
+                                                orchestra_core::model::save_document(path, &text)
+                                                    .map(|()| "Document enregistré.")
+                                            }
                                         };
                                         match result {
                                             Ok(msg) => {
@@ -185,10 +189,7 @@ async fn event_loop(
                                 KeyCode::Down => app.viewer_scroll(1),
                                 KeyCode::PageUp => app.viewer_scroll(-10),
                                 KeyCode::PageDown => app.viewer_scroll(10),
-                                KeyCode::Char('e') if app.viewer_is_persona() => {
-                                    app.close_viewer();
-                                    app.open_persona_editor();
-                                }
+                                KeyCode::Char('e') => app.edit_current_doc(),
                                 _ => {}
                             }
                         } else if app.pending_plan {

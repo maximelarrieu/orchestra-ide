@@ -314,6 +314,10 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   graphique d'un diagramme Mermaid est propre au médium graphique (le terminal montre le code,
   ce qu'il faisait déjà). La capacité « voir ses documents mis en forme » est donc des deux côtés.
 - Prérequis runtime : accès réseau de la webview pour le CDN mermaid (build/poste).
+- **Édition des documents** depuis la vue Documents (persona, memory, ADR, `.md` du workspace) :
+  nouveau `model::save_document(path, content)` (écriture centralisée). TUI : `[e]` dans le
+  visualiseur édite **n'importe quel** document (plus seulement le persona) — `EditTarget::Document`,
+  Ctrl+S enregistre. Desktop : bouton « ✏ Éditer » dans `DocumentsView` (textarea + 💾 Enregistrer).
 
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 

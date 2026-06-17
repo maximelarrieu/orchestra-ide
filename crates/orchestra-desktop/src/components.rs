@@ -188,11 +188,16 @@ const MERMAID_BOOT: &str = r#"
 "#;
 
 /// Vue Documents : liste des documents + visualiseur **Markdown rendu** (titres, listes, code,
-/// tableaux) et **diagrammes Mermaid** affichés visuellement.
+/// tableaux) et **diagrammes Mermaid**, avec **édition** du document affiché (persona, memory…).
 #[component]
 pub fn DocumentsView(space: Signal<Option<ContextSpace>>, content: Signal<String>) -> Element {
     let docs = space().map(|s| s.documents()).unwrap_or_default();
     let html = state::render_markdown_html(&content());
+
+    // Chemin du document affiché + état d'édition (textarea) + brouillon.
+    let mut sel_path = use_signal(|| None::<PathBuf>);
+    let mut editing = use_signal(|| false);
+    let mut draft = use_signal(String::new);
 
     // Après chaque changement de document, (re)rend les diagrammes Mermaid dans la webview.
     use_effect(move || {
@@ -206,24 +211,54 @@ pub fn DocumentsView(space: Signal<Option<ContextSpace>>, content: Signal<String
         div { class: "cols",
             ul { class: "list",
                 for d in docs {
-                    { doc_item(d.label.clone(), d.path.clone(), content) }
+                    { doc_item(d.label.clone(), d.path.clone(), content, sel_path, editing) }
                 }
             }
-            if content().is_empty() {
-                div { class: "viewer markdown", p { class: "muted", "Sélectionne un document à gauche." } }
-            } else {
-                div { class: "viewer markdown", dangerous_inner_html: html }
+            div { class: "viewerpane",
+                // Barre d'actions : éditer / enregistrer / annuler.
+                div { class: "docactions",
+                    if editing() {
+                        button { class: "go",
+                            onclick: move |_| {
+                                if let Some(p) = sel_path() {
+                                    if state::save_document(&p, &draft()) { content.set(draft()); }
+                                }
+                                editing.set(false);
+                            },
+                            "💾 Enregistrer" }
+                        button { onclick: move |_| editing.set(false), "Annuler" }
+                    } else if sel_path().is_some() {
+                        button { onclick: move |_| { draft.set(content()); editing.set(true); }, "✏ Éditer" }
+                    }
+                }
+
+                if editing() {
+                    textarea { class: "fichearea", value: "{draft}",
+                        oninput: move |e| draft.set(e.value()) }
+                } else if content().is_empty() {
+                    div { class: "viewer markdown", p { class: "muted", "Sélectionne un document à gauche." } }
+                } else {
+                    div { class: "viewer markdown", dangerous_inner_html: html }
+                }
             }
         }
     }
 }
 
-fn doc_item(label: String, path: PathBuf, mut content: Signal<String>) -> Element {
+fn doc_item(
+    label: String,
+    path: PathBuf,
+    mut content: Signal<String>,
+    mut sel_path: Signal<Option<PathBuf>>,
+    mut editing: Signal<bool>,
+) -> Element {
     rsx! {
         li {
             button { class: "row", onclick: move |_| {
                     if let Ok(text) = orchestra_core::model::load_document(&path) {
                         content.set(text);
+                        sel_path.set(Some(path.clone()));
+                        editing.set(false); // on quitte l'édition en changeant de document
                     }
                 },
                 "{label}"
