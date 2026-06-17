@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use dioxus::prelude::*;
 use orchestra_core::model::ContextSpace;
 
-use crate::state::{self, PlanRow, SkillEntry, SkillKind, View};
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::state::{self, ChatMsg, MsgKind, PlanRow, SkillEntry, SkillKind, View};
 
 /// Barre de navigation entre les vues.
 pub fn nav(mut view: Signal<View>) -> Element {
@@ -14,6 +16,7 @@ pub fn nav(mut view: Signal<View>) -> Element {
     rsx! {
         div { class: "nav",
             button { class: "{tab(cur, View::Orchestrate)}", onclick: move |_| view.set(View::Orchestrate), "Orchestrer" }
+            button { class: "{tab(cur, View::Chat)}", onclick: move |_| view.set(View::Chat), "Chat" }
             button { class: "{tab(cur, View::Documents)}", onclick: move |_| view.set(View::Documents), "Documents" }
             button { class: "{tab(cur, View::Agents)}", onclick: move |_| view.set(View::Agents), "Agents & skills" }
         }
@@ -78,7 +81,7 @@ fn doc_item(label: String, path: PathBuf, mut content: Signal<String>) -> Elemen
 }
 
 /// Vue Agents & skills : liste des agents + sélecteur de skills à cocher pour l'agent choisi.
-pub fn agents_view(space: Signal<Option<ContextSpace>>, mut selected: Signal<usize>) -> Element {
+pub fn agents_view(space: Signal<Option<ContextSpace>>, selected: Signal<usize>) -> Element {
     let Some(sp) = space() else {
         return rsx! { p { class: "error", "Aucun espace chargé." } };
     };
@@ -105,6 +108,95 @@ pub fn agents_view(space: Signal<Option<ContextSpace>>, mut selected: Signal<usi
                     }
                 }
             }
+        }
+    }
+}
+
+/// Vue Chat : conversation avec le coordinateur (bulles + saisie + approbation de plan inline).
+#[allow(clippy::too_many_arguments)]
+pub fn chat_view(
+    messages: Signal<Vec<ChatMsg>>,
+    thinking: Signal<bool>,
+    mut draft: Signal<String>,
+    user_tx: Signal<Option<UnboundedSender<String>>>,
+    plan: Signal<Vec<PlanRow>>,
+    mut pending: Signal<bool>,
+    approve_tx: Signal<Option<UnboundedSender<bool>>>,
+) -> Element {
+    // Envoi via le bouton…
+    let send_click = move |_| {
+        let text = draft();
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Some(tx) = user_tx() {
+            let _ = tx.send(text);
+        }
+        draft.set(String::new());
+    };
+    // …et via la touche Entrée (logique dupliquée : un même closure ne peut être déplacé 2×).
+    let send_key = move |e: KeyboardEvent| {
+        if e.key() != Key::Enter {
+            return;
+        }
+        let text = draft();
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Some(tx) = user_tx() {
+            let _ = tx.send(text);
+        }
+        draft.set(String::new());
+    };
+    let approve = move |_| {
+        if let Some(tx) = approve_tx() {
+            let _ = tx.send(true);
+        }
+        pending.set(false);
+    };
+
+    rsx! {
+        div { class: "chat",
+            div { class: "messages",
+                for (i, m) in messages().into_iter().enumerate() {
+                    { chat_bubble(i, m) }
+                }
+                if thinking() {
+                    div { class: "bubble agent", "…" }
+                }
+            }
+            if pending() {
+                div { class: "planbox",
+                    {plan_panel(&plan())}
+                    button { class: "go", onclick: approve, "✓ Approuver et exécuter le plan" }
+                }
+            }
+            div { class: "composer",
+                input {
+                    class: "chatinput",
+                    value: "{draft}",
+                    placeholder: "Écris au chef d'orchestre…  (Entrée pour envoyer)",
+                    oninput: move |e| draft.set(e.value()),
+                    onkeydown: send_key,
+                }
+                button { onclick: send_click, "Envoyer" }
+            }
+        }
+    }
+}
+
+fn chat_bubble(index: usize, m: ChatMsg) -> Element {
+    let cls = match m.kind {
+        MsgKind::User => "bubble user",
+        MsgKind::Agent => "bubble agent",
+        MsgKind::System => "bubble system",
+    };
+    rsx! {
+        div { key: "{index}", class: "{cls}",
+            if m.kind != MsgKind::User {
+                span { class: "who", "{m.who}" }
+            }
+            div { class: "text", "{m.text}" }
         }
     }
 }

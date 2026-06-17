@@ -14,8 +14,25 @@ pub const DEFAULT_GOAL: &str = "Avance concrètement sur l'objectif de cet espac
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Orchestrate,
+    Chat,
     Documents,
     Agents,
+}
+
+/// Nature d'un message de chat (pour le style de bulle).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MsgKind {
+    User,
+    Agent,
+    System,
+}
+
+/// Un message affiché dans la conversation.
+#[derive(Clone, PartialEq)]
+pub struct ChatMsg {
+    pub who: String,
+    pub text: String,
+    pub kind: MsgKind,
 }
 
 /// Une ligne du panneau Plan.
@@ -89,6 +106,60 @@ fn set_status(plan: &mut Signal<Vec<PlanRow>>, id: &str, status: &str) {
     if let Some(row) = rows.iter_mut().find(|r| r.id == id) {
         row.status = status.to_string();
     }
+}
+
+/// Démarre une **conversation avec le coordinateur** (équivalent `[5]` du TUI) : ouvre le
+/// canal bidirectionnel du cœur, mémorise les `Sender` (messages utilisateur + approbation de
+/// plan) et **streame les événements** dans les signaux du chat. Un plan proposé en cours de
+/// conversation passe par `plan`/`pending` (mêmes signaux que l'orchestration directe).
+#[allow(clippy::too_many_arguments)]
+pub fn start_chat(
+    space: ContextSpace,
+    mut user_tx: Signal<Option<UnboundedSender<String>>>,
+    mut messages: Signal<Vec<ChatMsg>>,
+    mut thinking: Signal<bool>,
+    mut plan: Signal<Vec<PlanRow>>,
+    mut pending: Signal<bool>,
+    mut approve_tx: Signal<Option<UnboundedSender<bool>>>,
+) {
+    messages.set(Vec::new());
+    plan.set(Vec::new());
+    pending.set(false);
+    thinking.set(false);
+
+    let handle = runtime::start_conversation(&space);
+    user_tx.set(Some(handle.user));
+    approve_tx.set(Some(handle.approve));
+    let mut events = handle.events;
+
+    spawn(async move {
+        while let Some(ev) = events.recv().await {
+            match ev {
+                AgentEvent::Thinking { .. } => thinking.set(true),
+                AgentEvent::Log { agent, msg } => {
+                    thinking.set(false);
+                    let kind = if agent == "Vous" { MsgKind::User } else { MsgKind::Agent };
+                    messages.write().push(ChatMsg { who: agent, text: msg, kind });
+                }
+                AgentEvent::Started { agent } => messages
+                    .write()
+                    .push(ChatMsg { who: agent, text: "rejoint la conversation".into(), kind: MsgKind::System }),
+                AgentEvent::Done { .. } => thinking.set(false),
+                AgentEvent::PlanReady { tasks } => {
+                    plan.set(
+                        tasks
+                            .into_iter()
+                            .map(|t| PlanRow { id: t.id, agent: t.agent, status: "en attente".into() })
+                            .collect(),
+                    );
+                    pending.set(true);
+                }
+                AgentEvent::TaskStarted { id, .. } => set_status(&mut plan, &id, "en cours"),
+                AgentEvent::TaskDone { id } => set_status(&mut plan, &id, "fait ✓"),
+                AgentEvent::TaskFailed { id, .. } => set_status(&mut plan, &id, "échec ✗"),
+            }
+        }
+    });
 }
 
 /// Catalogue des skills pour un agent : primitives (code) + fiches (`SKILL.md`) + skills

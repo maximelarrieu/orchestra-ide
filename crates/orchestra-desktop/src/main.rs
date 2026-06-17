@@ -19,7 +19,7 @@ use orchestra_core::model::ContextSpace;
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
-use state::{drive_orchestration, PlanRow, View};
+use state::{drive_orchestration, ChatMsg, PlanRow, View};
 
 /// Espace ouvert au démarrage.
 const DEFAULT_SPACE: &str = "examples/recherche-immo-aix";
@@ -32,9 +32,9 @@ fn app() -> Element {
     let mut space = use_signal(|| ContextSpace::load(&PathBuf::from(DEFAULT_SPACE)).ok());
     let mut space_path = use_signal(|| DEFAULT_SPACE.to_string());
     let mut objective = use_signal(|| state::DEFAULT_GOAL.to_string());
-    let mut view = use_signal(|| View::Orchestrate);
+    let view = use_signal(|| View::Orchestrate);
 
-    // État d'orchestration.
+    // État d'orchestration / plan (partagé avec le chat pour l'approbation inline).
     let log = use_signal(Vec::<String>::new);
     let plan = use_signal(Vec::<PlanRow>::new);
     let mut pending = use_signal(|| false);
@@ -43,6 +43,12 @@ fn app() -> Element {
     // État des vues Documents / Agents.
     let selected_agent = use_signal(|| 0usize);
     let doc_content = use_signal(String::new);
+
+    // État du chat.
+    let messages = use_signal(Vec::<ChatMsg>::new);
+    let thinking = use_signal(|| false);
+    let draft = use_signal(String::new);
+    let user_tx = use_signal(|| None::<UnboundedSender<String>>);
 
     let load_space = move |_| {
         space.set(ContextSpace::load(&PathBuf::from(space_path())).ok());
@@ -57,6 +63,11 @@ fn app() -> Element {
             let _ = tx.send(true);
         }
         pending.set(false);
+    };
+    let start_chat = move |_| {
+        if let Some(sp) = space() {
+            state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx);
+        }
     };
 
     rsx! {
@@ -93,6 +104,20 @@ fn app() -> Element {
                             {components::plan_panel(&plan())}
                         }
                         {components::radar(&log())}
+                    }
+                },
+                View::Chat => rsx! {
+                    div { class: "chatwrap",
+                        div { class: "actions",
+                            button { onclick: start_chat,
+                                if user_tx().is_some() { "↻ Nouvelle conversation" } else { "▶ Démarrer la conversation" }
+                            }
+                        }
+                        if user_tx().is_some() {
+                            {components::chat_view(messages, thinking, draft, user_tx, plan, pending, approve_tx)}
+                        } else {
+                            p { class: "agents", "Démarre une conversation pour parler au chef d'orchestre." }
+                        }
                     }
                 },
                 View::Documents => components::documents_view(space, doc_content),

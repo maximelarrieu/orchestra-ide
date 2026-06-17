@@ -6,8 +6,9 @@ Port **bureau** d'Orchestra IDE, en **Rust pur** (Dioxus). L'UI consomme directe
 
 > État : montée en parité avec le TUI. Présent : **navigation par vues**, **sélecteur d'espace**
 > (chemin), **saisie d'objectif** + orchestration (radar + panneau Plan + approbation),
-> **Documents** (liste + visualiseur), **Agents & skills** (catalogue à cocher, persisté).
-> À venir : **chat coordinateur** et **édition du persona**.
+> **Chat coordinateur** (conversation, délégation, approbation de plan inline), **Documents**
+> (liste + visualiseur), **Agents & skills** (catalogue à cocher, persisté).
+> À venir : **édition du persona**.
 
 ## Prérequis de build (webview système)
 
@@ -42,7 +43,6 @@ quand ils grossiront (Dioxus, c'est du Rust normal — on découpe librement).
 
 ## Prochaines étapes
 
-- **Chat coordinateur** (`[5]`) : conversation persistante + orchestration inline.
 - **Édition du persona** (`[4]`) : zone de texte + sauvegarde via le cœur.
 - Création/édition de fiches de skill depuis la vue Agents (`[n]`/`[e]`).
 - Sélecteur de dossier natif (au lieu de la saisie de chemin).

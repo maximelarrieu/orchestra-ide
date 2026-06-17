@@ -41,4 +41,18 @@ pub const CSS: &str = r#"
                       max-height: 360px; overflow: auto; white-space: pre-wrap; font-size: .85rem; }
     .viewer { flex: 1; }
     .error { color: #ff8a8a; }
+
+    /* Chat */
+    .chat { display: flex; flex-direction: column; gap: .6rem; }
+    .messages { display: flex; flex-direction: column; gap: .5rem; max-height: 420px;
+                overflow: auto; padding: .4rem; background: #05070c; border-radius: 8px; }
+    .bubble { max-width: 78%; padding: .5rem .7rem; border-radius: 10px; }
+    .bubble .who { display: block; font-size: .72rem; color: #8ab4ff; margin-bottom: .15rem; }
+    .bubble .text { white-space: pre-wrap; }
+    .bubble.user { align-self: flex-end; background: #1f5132; }
+    .bubble.agent { align-self: flex-start; background: #1d2535; }
+    .bubble.system { align-self: center; background: transparent; color: #788; font-size: .8rem; }
+    .planbox { border: 1px solid #2c3a55; border-radius: 8px; padding: .5rem .7rem; }
+    .composer { display: flex; gap: .5rem; }
+    .chatinput { flex: 1; }
 "#;
