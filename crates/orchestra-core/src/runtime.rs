@@ -29,8 +29,9 @@ use crate::orchestration::{self, Plan};
 use crate::model::space::ContextSpace;
 use crate::skills;
 
-/// Nom affiché du chef d'orchestre dans le flux de conversation.
-const COORDINATOR: &str = "Coordinateur";
+/// Nom affiché du chef d'orchestre dans le flux de conversation. Public pour que les UI
+/// distinguent ses messages de ceux des sous-agents.
+pub const COORDINATOR: &str = "Coordinateur";
 
 /// Nombre maximal de tours LLM ↔ outils par agent (garde-fou anti-boucle).
 const MAX_TURNS: usize = 6;

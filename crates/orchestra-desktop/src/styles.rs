@@ -1,0 +1,112 @@
+//! Feuille de style de la fenêtre (injectée via un nœud `<style>`).
+
+pub const CSS: &str = r#"
+    body { margin: 0; background: #0b0e14; color: #e6e6e6; }
+    .app { font-family: ui-sans-serif, system-ui, sans-serif; padding: 1rem 1.25rem; }
+    h1 { font-size: 1.3rem; margin: .2rem 0 .6rem; }
+    h2 { color: #8ab4ff; margin: .2rem 0; }
+    h3 { margin: .6rem 0 .3rem; }
+    .agents { color: #9aa; }
+
+    input, textarea { background: #0f1420; color: #e6e6e6; border: 1px solid #2c3a55;
+                      border-radius: 6px; padding: .4rem; font: inherit; }
+    .spaces { margin-bottom: .6rem; }
+    .spacebar { display: flex; gap: .5rem; align-items: center; }
+    .spacebar input { flex: 1; }
+    .spacename { color: #8ab4ff; white-space: nowrap; }
+    .chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .4rem; }
+    .chip { display: inline-flex; align-items: center; background: #1d2535; border: 1px solid #2c3a55;
+            border-radius: 14px; overflow: hidden; }
+    .chiplabel { background: none; border: none; color: #cdd6e0; cursor: pointer; padding: .25rem .6rem; }
+    .chiplabel:hover { color: #fff; background: #263150; }
+    .chipx { background: none; border: none; color: #8895a7; cursor: pointer; padding: .25rem .5rem; }
+    .chipx:hover { color: #ff8a8a; }
+    .browser { margin-top: .5rem; border: 1px solid #2c3a55; border-radius: 8px; padding: .5rem; }
+    .browsebar { display: flex; gap: .6rem; align-items: center; margin-bottom: .4rem; }
+    .browser .list { max-height: 320px; overflow: auto; }
+
+    .nav { display: flex; gap: .4rem; margin: .5rem 0 .8rem; border-bottom: 1px solid #1c2535; padding-bottom: .5rem; }
+    .tab { background: #1d2535; color: #cdd6e0; border: 1px solid #2c3a55; border-radius: 6px;
+           padding: .4rem .8rem; cursor: pointer; }
+    .tab.on { background: #2e7d4a; border-color: #3aa55f; color: #fff; }
+
+    button { background: #1d2535; color: #e6e6e6; border: 1px solid #2c3a55;
+             border-radius: 6px; padding: .45rem .8rem; cursor: pointer; font-size: .95rem; }
+    button:hover { background: #263150; }
+    button.go { background: #1f5132; border-color: #2e7d4a; margin-left: .5rem; }
+
+    .actions { margin: .6rem 0; }
+    .goal { width: 100%; min-height: 60px; box-sizing: border-box; }
+
+    .cols { display: flex; gap: 1rem; align-items: flex-start; }
+    .list { list-style: none; padding-left: 0; margin: 0; min-width: 240px; }
+    .detail { flex: 1; }
+    .row { background: none; border: none; color: #cdd6e0; cursor: pointer; text-align: left;
+           padding: .25rem .4rem; width: 100%; }
+    .row:hover { color: #fff; }
+    .row.on { color: #8ab4ff; font-weight: 600; }
+
+    .plan { list-style: none; padding-left: 0; }
+    .plan li { padding: .2rem .4rem; border-left: 3px solid #2c3a55; margin: .2rem 0; }
+    .radar { background: #05070c; color: #cdd6e0; padding: .6rem; border-radius: 6px;
+             max-height: 360px; overflow: auto; white-space: pre-wrap; font-size: .85rem; }
+    .viewer { flex: 1; background: #05070c; color: #cdd6e0; padding: .6rem 1rem; border-radius: 6px;
+              max-height: 70vh; overflow: auto; }
+    .error { color: #ff8a8a; }
+
+    .viewerpane { flex: 1; display: flex; flex-direction: column; gap: .4rem; }
+    .docactions { display: flex; gap: .5rem; }
+
+    /* Rendu Markdown du visualiseur de documents */
+    .markdown { line-height: 1.55; }
+    .markdown h1, .markdown h2, .markdown h3, .markdown h4 { color: #cfe0ff; line-height: 1.25; margin: 1rem 0 .5rem; }
+    .markdown h1 { font-size: 1.5rem; border-bottom: 1px solid #1c2535; padding-bottom: .3rem; }
+    .markdown h2 { font-size: 1.25rem; border-bottom: 1px solid #1c2535; padding-bottom: .25rem; }
+    .markdown h3 { font-size: 1.08rem; }
+    .markdown p { margin: .5rem 0; }
+    .markdown ul, .markdown ol { padding-left: 1.4rem; margin: .4rem 0; }
+    .markdown li { margin: .15rem 0; }
+    .markdown a { color: #8ab4ff; }
+    .markdown code { background: #11161f; padding: .1rem .35rem; border-radius: 4px; font-size: .88em; }
+    .markdown pre { background: #11161f; padding: .7rem; border-radius: 8px; overflow: auto; }
+    .markdown pre code { background: none; padding: 0; }
+    .markdown blockquote { border-left: 3px solid #2c3a55; margin: .5rem 0; padding: .1rem .8rem; color: #9fb0c3; }
+    .markdown table { border-collapse: collapse; margin: .6rem 0; }
+    .markdown th, .markdown td { border: 1px solid #2c3a55; padding: .3rem .6rem; }
+    .markdown th { background: #11161f; }
+    .markdown hr { border: none; border-top: 1px solid #1c2535; margin: 1rem 0; }
+    .markdown .mermaid { background: #0f1420; padding: .8rem; border-radius: 8px; text-align: center; }
+
+    /* Chat */
+    .chat { display: flex; flex-direction: column; gap: .6rem; }
+    .messages { display: flex; flex-direction: column; gap: .5rem; height: 65vh; min-height: 320px;
+                overflow: auto; padding: .4rem; background: #05070c; border-radius: 8px; }
+    .bubble { max-width: 78%; padding: .5rem .7rem; border-radius: 10px; }
+    .bubble .who { display: block; font-size: .72rem; color: #8ab4ff; margin-bottom: .15rem; }
+    .bubble .text { white-space: pre-wrap; }
+    .bubble.user { align-self: flex-end; background: #1f5132; }
+    .bubble.coord { align-self: flex-start; background: #1d2535; border-left: 3px solid #8ab4ff; }
+    .bubble.agent { align-self: flex-start; background: #11161f; max-width: 88%; }
+    .bubble.agent .text { margin-top: .35rem; color: #aab4c0; border-top: 1px dashed #2c3a55; padding-top: .35rem; }
+    .bubble.system { align-self: center; background: transparent; color: #788; font-size: .8rem; }
+    .disclosure { background: none; border: none; color: #8ab4ff; cursor: pointer;
+                  padding: 0; font-size: .8rem; }
+    .disclosure:hover { color: #fff; background: none; }
+    .planbox { border: 1px solid #2c3a55; border-radius: 8px; padding: .5rem .7rem; }
+    .composer { display: flex; gap: .5rem; align-items: flex-end; }
+    .chatinput { flex: 1; resize: none; min-height: 2.4rem; max-height: 7rem; line-height: 1.3; }
+
+    /* Menu Agents & skills */
+    .agentsmenu .toolbar { display: flex; gap: .5rem; margin-bottom: .3rem; }
+    .hint { color: #788; font-size: .82rem; margin: .1rem 0 .6rem; }
+    .muted { color: #9aa; }
+    .rolerow { margin: .2rem 0; }
+    .linklike { background: none; border: none; color: #8ab4ff; cursor: pointer; padding: 0 .3rem; font-size: .82rem; }
+    .linklike:hover { color: #fff; background: none; }
+    .danger { background: #4a1f1f; border-color: #7d2e2e; margin: .4rem 0; }
+    .danger:hover { background: #5d2626; }
+    .skillrow { display: flex; align-items: center; gap: .2rem; }
+    .ficheeditor { margin-top: .6rem; border-top: 1px solid #2c3a55; padding-top: .5rem; }
+    .fichearea { width: 100%; min-height: 220px; box-sizing: border-box; resize: vertical; }
+    h4 { margin: .6rem 0 .3rem; }
+"#;

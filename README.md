@@ -1,7 +1,12 @@
 # Orchestra IDE — Prototype CLI (Rust)
 
-Moteur + interface d'un « IDE pour l'ère agentique ». TUI aujourd'hui (`ratatui`),
-portage Tauri + React prévu — d'où le **découplage strict** logique métier / affichage.
+Moteur + interfaces d'un « IDE pour l'ère agentique ». **Deux UIs, un seul cœur** : un TUI
+(`ratatui`) et une **GUI bureau Dioxus** (`orchestra-desktop`, tout-Rust, sans IPC) — toutes
+deux consommatrices du même `orchestra-core`, grâce au **découplage strict** métier / affichage.
+
+> 🖥️ **GUI bureau (Dioxus)** : `cargo run -p orchestra-desktop` (prérequis webview : WebView2 sur
+> Windows, `webkit2gtk` sur Linux — voir `crates/orchestra-desktop/README.md`). Tranche verticale
+> en place (charge un espace, liste les agents, lance l'orchestration avec radar + plan live).
 
 ## 📚 Documentation
 

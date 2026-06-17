@@ -6,8 +6,10 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use orchestra_core::browser::DirEntry;
 use orchestra_core::events::{AgentEvent, PlannedTask};
 use orchestra_core::model::{AgentDef, ContextSpace, DocKind, ProjectType, SpaceDoc};
+use orchestra_core::registry::KnownSpace;
 
 use crate::editor::Editor;
 
@@ -49,11 +51,13 @@ impl AgentField {
     }
 }
 
-/// Cible de l'éditeur de texte : le persona de l'espace, ou un fichier `SKILL.md`.
+/// Cible de l'éditeur de texte : le persona de l'espace, un fichier `SKILL.md`, ou un document
+/// quelconque de l'espace (memory, ADR, `.md` du workspace).
 #[derive(Debug, Clone)]
 pub enum EditTarget {
     Persona,
     SkillFile(std::path::PathBuf),
+    Document(std::path::PathBuf),
 }
 
 /// Nombre d'événements conservés dans l'historique du radar (les plus anciens sont
@@ -80,6 +84,15 @@ pub enum View {
     Docs,
     /// Gestionnaire d'agents (rôle, skills, stats, édition).
     Agents,
+    /// Sélecteur d'espaces connus (récents) — ouvrir sans retaper le chemin.
+    Spaces,
+}
+
+/// État du navigateur de dossiers (sélecteur d'espaces `[3]` → `[b]`).
+pub struct BrowseState {
+    pub dir: std::path::PathBuf,
+    pub entries: Vec<DirEntry>,
+    pub sel: usize,
 }
 
 /// Visualiseur Markdown ouvert sur un document.
@@ -87,7 +100,9 @@ pub struct Viewer {
     pub title: String,
     pub text: String,
     pub scroll: usize,
-    /// Vrai si le document affiché est le persona (→ raccourci d'édition).
+    /// Chemin du document affiché (pour l'édition).
+    pub path: std::path::PathBuf,
+    /// Vrai si le document affiché est le persona (→ sauvegarde via `save_persona`).
     pub is_persona: bool,
 }
 
@@ -145,6 +160,12 @@ pub struct App {
     pub pending_plan: bool,
     /// Sélecteur de skills ouvert (`Some`) ou fermé (`None`).
     pub skill_picker: Option<SkillPicker>,
+    /// Espaces connus (récents d'abord), pour le sélecteur `[3]`.
+    pub spaces: Vec<KnownSpace>,
+    /// Index de l'espace sélectionné dans le sélecteur.
+    pub space_sel: usize,
+    /// Navigateur de dossiers ouvert (`Some`) dans le sélecteur d'espaces, ou fermé.
+    pub browse: Option<BrowseState>,
 }
 
 /// État d'une tâche du plan d'orchestration, côté affichage.
@@ -163,25 +184,9 @@ pub struct PlanRow {
     pub status: PlanStatus,
 }
 
-/// Nature d'un skill dans le sélecteur.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkillKind {
-    /// Primitive exécutable (code).
-    Primitive,
-    /// Fiche d'instructions (`SKILL.md`).
-    Fiche,
-    /// Assigné mais non branché (étiquette inactive).
-    Label,
-}
-
-/// Une entrée du sélecteur de skills : id, nature, description, et si l'agent l'a assigné.
-#[derive(Debug, Clone)]
-pub struct SkillEntry {
-    pub id: String,
-    pub kind: SkillKind,
-    pub description: String,
-    pub selected: bool,
-}
+// Types du sélecteur de skills : **partagés avec la GUI** via `orchestra-core::catalog` pour
+// garantir un comportement identique (cf. CLAUDE.md, règle de parité TUI ⇄ GUI).
+pub use orchestra_core::catalog::{SkillEntry, SkillKind};
 
 /// Sélecteur de skills pour un agent : catalogue navigable + cases à cocher.
 pub struct SkillPicker {
@@ -240,6 +245,9 @@ impl App {
             skill_picker: None,
             spinner: 0,
             notice: None,
+            spaces: orchestra_core::registry::known_spaces(),
+            space_sel: 0,
+            browse: None,
         }
     }
 
@@ -398,6 +406,7 @@ impl App {
                     title: doc.label.clone(),
                     text,
                     scroll: 0,
+                    path: doc.path.clone(),
                     is_persona: doc.kind == DocKind::Persona,
                 });
             }
@@ -416,12 +425,112 @@ impl App {
         }
     }
 
-    /// Vrai si le visualiseur affiche le persona (→ raccourci `e` pour l'éditer).
-    pub fn viewer_is_persona(&self) -> bool {
-        self.viewer.as_ref().is_some_and(|v| v.is_persona)
+    /// `[e]` (visualiseur) — édite le document affiché, **quel qu'il soit** (persona, memory,
+    /// ADR, `.md` du workspace). Le persona passe par `save_persona` (met à jour la copie en
+    /// mémoire) ; les autres par `save_document`.
+    pub fn edit_current_doc(&mut self) {
+        let Some(v) = self.viewer.as_ref() else { return };
+        let text = v.text.clone();
+        let target = if v.is_persona {
+            EditTarget::Persona
+        } else {
+            EditTarget::Document(v.path.clone())
+        };
+        self.editor_title = format!(" ✏ {}", v.title);
+        self.editor = Some(Editor::from_str(&text));
+        self.editor_target = target;
+        self.viewer = None;
     }
 
-    /// `[3]` — entre en saisie d'un chemin d'espace.
+    /// `[3]` — ouvre/ferme le **sélecteur d'espaces connus** (récents), rafraîchi depuis le
+    /// registre global. Plus besoin de retaper un chemin de mémoire.
+    pub fn toggle_spaces(&mut self) {
+        self.browse = None;
+        if self.view == View::Spaces {
+            self.view = View::Radar;
+            return;
+        }
+        self.spaces = orchestra_core::registry::known_spaces();
+        self.space_sel = 0;
+        self.notice = None;
+        self.view = View::Spaces;
+    }
+
+    pub fn spaces_move(&mut self, delta: isize) {
+        if self.spaces.is_empty() {
+            return;
+        }
+        let last = self.spaces.len() as isize - 1;
+        self.space_sel = (self.space_sel as isize + delta).clamp(0, last) as usize;
+    }
+
+    /// Chemin de l'espace sélectionné dans le sélecteur (pour l'ouvrir).
+    pub fn selected_space_path(&self) -> Option<String> {
+        self.spaces.get(self.space_sel).map(|k| k.path.to_string_lossy().to_string())
+    }
+
+    /// `[x]` (sélecteur) — retire l'espace sélectionné du registre (« ne plus suivre »).
+    pub fn forget_selected_space(&mut self) {
+        if let Some(k) = self.spaces.get(self.space_sel) {
+            let name = k.name.clone();
+            orchestra_core::registry::forget_space(&k.path);
+            self.spaces = orchestra_core::registry::known_spaces();
+            if self.space_sel >= self.spaces.len() {
+                self.space_sel = self.spaces.len().saturating_sub(1);
+            }
+            self.notice = Some(format!("Espace « {name} » retiré du suivi."));
+        }
+    }
+
+    /// `[b]` (sélecteur) — ouvre le **navigateur de dossiers** pour découvrir un espace sans
+    /// taper son chemin (départ : répertoire personnel).
+    pub fn start_browse(&mut self) {
+        self.reload_browse(orchestra_core::browser::home_dir());
+        self.notice = None;
+    }
+
+    fn reload_browse(&mut self, dir: std::path::PathBuf) {
+        let entries = orchestra_core::browser::browse(&dir);
+        self.browse = Some(BrowseState { dir, entries, sel: 0 });
+    }
+
+    pub fn cancel_browse(&mut self) {
+        self.browse = None;
+    }
+
+    pub fn browse_move(&mut self, delta: isize) {
+        if let Some(b) = self.browse.as_mut() {
+            if b.entries.is_empty() {
+                return;
+            }
+            let last = b.entries.len() as isize - 1;
+            b.sel = (b.sel as isize + delta).clamp(0, last) as usize;
+        }
+    }
+
+    /// Remonte au dossier parent.
+    pub fn browse_up(&mut self) {
+        if let Some(parent) = self.browse.as_ref().and_then(|b| orchestra_core::browser::parent(&b.dir)) {
+            self.reload_browse(parent);
+        }
+    }
+
+    /// Entrée sélectionnée : si c'est un espace, **renvoie son chemin** à ouvrir ; sinon entre
+    /// dans le dossier et renvoie `None`.
+    pub fn browse_enter(&mut self) -> Option<String> {
+        let entry = {
+            let b = self.browse.as_ref()?;
+            b.entries.get(b.sel)?.clone()
+        };
+        if entry.is_space {
+            Some(entry.path.to_string_lossy().to_string())
+        } else {
+            self.reload_browse(entry.path);
+            None
+        }
+    }
+
+    /// `[3]`/`[a]` — entre en saisie d'un chemin d'espace (ajouter un espace non listé).
     pub fn start_space_input(&mut self) {
         self.input = Some(String::new());
         self.notice = None;
@@ -652,31 +761,11 @@ impl App {
     /// fiches) avec descriptions, où l'on coche/décoche au lieu de taper des noms à l'aveugle.
     pub fn open_skill_picker(&mut self) {
         let Some(space) = self.space.as_ref() else { return };
-        let Some(agent) = space.config.agents.get(self.agent_sel) else { return };
-        let assigned = agent.skills.clone();
-        let root = space.root.clone();
-
-        let mut entries: Vec<SkillEntry> = Vec::new();
-        // Primitives (code) — depuis le registre du cœur.
-        for m in orchestra_core::skills::catalog() {
-            let selected = assigned.iter().any(|s| s == m.id);
-            entries.push(SkillEntry { id: m.id.to_string(), kind: SkillKind::Primitive, description: m.description, selected });
+        if space.config.agents.get(self.agent_sel).is_none() {
+            return;
         }
-        // Fiches Markdown — depuis `.orchestra/skills/`.
-        for f in orchestra_core::markdown_skill::load_all(&root) {
-            if entries.iter().any(|e| e.id == f.id) {
-                continue;
-            }
-            let selected = assigned.iter().any(|s| s == &f.id || s == &f.name);
-            entries.push(SkillEntry { id: f.id, kind: SkillKind::Fiche, description: f.description, selected });
-        }
-        // Skills assignés mais non branchés → on les garde (cochés) pour pouvoir les retirer.
-        for s in &assigned {
-            if !entries.iter().any(|e| &e.id == s) {
-                entries.push(SkillEntry { id: s.clone(), kind: SkillKind::Label, description: "(non branché)".into(), selected: true });
-            }
-        }
-
+        // Construction du catalogue **déléguée au cœur** (même logique que la GUI).
+        let entries = orchestra_core::catalog::skill_entries(space, self.agent_sel);
         self.skill_picker = Some(SkillPicker { agent: self.agent_sel, entries, cursor: 0 });
         self.notice = None;
     }
@@ -729,6 +818,29 @@ impl App {
         self.editor_title = format!(" ✏ SKILL ({label})");
         self.skill_picker = None;
     }
+
+    /// `[b]` (sélecteur de skills) — **branche** le skill non branché sélectionné : crée sa
+    /// fiche (via le cœur), rafraîchit le catalogue et rouvre le sélecteur (le skill devient
+    /// une « fiche » éditable via `[e]`).
+    pub fn picker_wire_fiche(&mut self) {
+        let Some(p) = self.skill_picker.as_ref() else { return };
+        let Some(e) = p.entries.get(p.cursor) else { return };
+        if e.kind != SkillKind::Unwired {
+            self.notice = Some("Ce skill est déjà branché (primitive ou fiche).".into());
+            return;
+        }
+        let id = e.id.clone();
+        let Some(space) = self.space.as_ref() else { return };
+        match orchestra_core::catalog::wire_skill(space, &id) {
+            Ok(_) => {
+                self.refresh_md_skills();
+                self.open_skill_picker(); // recharge : le skill apparaît désormais comme « fiche »
+                self.notice = Some(format!("Skill « {id} » branché — [e] pour rédiger sa fiche."));
+            }
+            Err(err) => self.notice = Some(format!("Échec du branchement : {err}")),
+        }
+    }
+
     pub fn start_agent_add(&mut self) {
         if self.space.is_some() {
             self.agent_prompt = Some((AgentField::Add, String::new()));
@@ -797,6 +909,46 @@ impl App {
                 self.notice = Some(format!("Agent « {} » supprimé.", removed.name));
             }
         }
+    }
+
+    /// `[t]` (menu Agents) — active/désactive l'**Agent Documentaliste** (prise de notes :
+    /// cours, exercices, corrections, fiches de révision…). Disponible quel que soit le type de
+    /// projet. Persisté.
+    pub fn toggle_documentalist(&mut self) {
+        let Some(space) = self.space.as_mut() else {
+            self.notice = Some("Aucun espace chargé.".into());
+            return;
+        };
+        space.config.documentalist_enabled = !space.config.documentalist_enabled;
+        let on = space.config.documentalist_enabled;
+        self.persist_config();
+        self.notice = Some(if on {
+            "Agent Documentaliste activé.".into()
+        } else {
+            "Agent Documentaliste désactivé.".into()
+        });
+    }
+
+    /// `[g]` (menu Agents) — ajoute le prochain agent **suggéré** (catalogue du type de projet)
+    /// pas encore présent, avec son rôle et ses skills par défaut. Persisté.
+    pub fn add_suggested_agent(&mut self) {
+        let Some(space) = self.space.as_ref() else {
+            self.notice = Some("Aucun espace chargé.".into());
+            return;
+        };
+        let mut suggestions = orchestra_core::catalog::inactive_agent_templates(space);
+        if suggestions.is_empty() {
+            self.notice = Some("Tous les agents suggérés sont déjà présents.".into());
+            return;
+        }
+        let agent = suggestions.remove(0);
+        let name = agent.name.clone();
+        if let Some(space) = self.space.as_mut() {
+            space.config.agents.push(agent);
+            self.agent_sel = space.config.agents.len() - 1;
+        }
+        self.persist_config();
+        self.notice = Some(format!("Agent suggéré « {name} » ajouté."));
     }
 
     fn persist_config(&mut self) {

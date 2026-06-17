@@ -1,0 +1,15 @@
+[package]
+name = "orchestra-desktop"
+description = "Interface graphique de bureau (Dioxus) — consomme orchestra-core, sans IPC."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+orchestra-core = { path = "../orchestra-core" }
+# UI tout-Rust « React-like » ; sur desktop, webview système (WebView2 sur Windows,
+# webkit2gtk sur Linux). Voir README pour les prérequis de build.
+dioxus = { version = "0.6", features = ["desktop"] }
+tokio = { workspace = true, features = ["sync"] }
+# Rendu Markdown → HTML pour le visualiseur de documents (titres, listes, code, tableaux…).
+pulldown-cmark = "0.12"

@@ -32,6 +32,21 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::app::{App, View};
 
+/// Charge un espace depuis un chemin, le **mémorise** dans le registre (récents) et renvoie un
+/// `App` neuf prêt à l'afficher. Centralise l'ouverture (saisie de chemin **et** sélecteur).
+fn open_space(path: &str) -> Result<App, String> {
+    match ContextSpace::load(Path::new(path)) {
+        Ok(space) => {
+            let _ = orchestra_core::registry::remember_space(Path::new(path));
+            let name = space.config.project_name.clone();
+            let mut app = App::new(Some(space));
+            app.notice = Some(format!("Espace chargé : {name}"));
+            Ok(app)
+        }
+        Err(e) => Err(format!("Échec du chargement : {e}")),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -69,7 +84,11 @@ fn print_usage() {
 
 async fn run_dashboard(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // On tolère l'absence d'espace : le dashboard s'affiche quand même (état « vide »).
-    let mut app = App::new(ContextSpace::load(root).ok());
+    let loaded = ContextSpace::load(root).ok();
+    if loaded.is_some() {
+        let _ = orchestra_core::registry::remember_space(root); // mémorise l'espace d'ouverture
+    }
+    let mut app = App::new(loaded);
 
     let mut terminal = ratatui::init();
     // Best-effort : permet de distinguer Maj/Alt+Entrée (terminaux compatibles kitty).
@@ -128,6 +147,10 @@ async fn event_loop(
                                                 orchestra_core::markdown_skill::save(path, &text)
                                                     .map(|()| "Skill enregistré.")
                                             }
+                                            app::EditTarget::Document(path) => {
+                                                orchestra_core::model::save_document(path, &text)
+                                                    .map(|()| "Document enregistré.")
+                                            }
                                         };
                                         match result {
                                             Ok(msg) => {
@@ -166,10 +189,7 @@ async fn event_loop(
                                 KeyCode::Down => app.viewer_scroll(1),
                                 KeyCode::PageUp => app.viewer_scroll(-10),
                                 KeyCode::PageDown => app.viewer_scroll(10),
-                                KeyCode::Char('e') if app.viewer_is_persona() => {
-                                    app.close_viewer();
-                                    app.open_persona_editor();
-                                }
+                                KeyCode::Char('e') => app.edit_current_doc(),
                                 _ => {}
                             }
                         } else if app.pending_plan {
@@ -201,6 +221,7 @@ async fn event_loop(
                                     app.close_skill_picker();
                                     app.start_new_skill();
                                 }
+                                KeyCode::Char('b') => app.picker_wire_fiche(),
                                 KeyCode::Char('e') => app.picker_edit_fiche(),
                                 KeyCode::Esc => app.close_skill_picker(),
                                 _ => {}
@@ -223,6 +244,8 @@ async fn event_loop(
                                 KeyCode::Char('o') => app.start_agent_role(),
                                 KeyCode::Char('s') => app.open_skill_picker(),
                                 KeyCode::Char('a') => app.start_agent_add(),
+                                KeyCode::Char('g') => app.add_suggested_agent(),
+                                KeyCode::Char('t') => app.toggle_documentalist(),
                                 KeyCode::Char('n') => app.start_new_skill(),
                                 KeyCode::Char('d') => app.delete_selected_agent(),
                                 KeyCode::Esc | KeyCode::Char('6') => app.toggle_agents(),
@@ -235,6 +258,48 @@ async fn event_loop(
                                 KeyCode::Down => app.docs_move(1),
                                 KeyCode::Enter => app.open_selected_doc(),
                                 KeyCode::Esc | KeyCode::Char('2') => app.toggle_docs(),
+                                _ => {}
+                            }
+                        } else if app.view == View::Spaces && app.browse.is_some() {
+                            // Navigateur de dossiers : explorer et ouvrir un espace repéré.
+                            match key.code {
+                                KeyCode::Up => app.browse_move(-1),
+                                KeyCode::Down => app.browse_move(1),
+                                KeyCode::Enter => {
+                                    if let Some(path) = app.browse_enter() {
+                                        match open_space(&path) {
+                                            Ok(new_app) => {
+                                                *app = new_app;
+                                                rx = None;
+                                            }
+                                            Err(msg) => app.notice = Some(msg),
+                                        }
+                                    }
+                                }
+                                KeyCode::Left | KeyCode::Char('u') => app.browse_up(),
+                                KeyCode::Esc => app.cancel_browse(),
+                                _ => {}
+                            }
+                        } else if app.view == View::Spaces && app.input.is_none() {
+                            // Sélecteur d'espaces connus : navigation + ouverture + suivi.
+                            match key.code {
+                                KeyCode::Up => app.spaces_move(-1),
+                                KeyCode::Down => app.spaces_move(1),
+                                KeyCode::Enter => {
+                                    if let Some(path) = app.selected_space_path() {
+                                        match open_space(&path) {
+                                            Ok(new_app) => {
+                                                *app = new_app;
+                                                rx = None; // stoppe l'orchestre précédent
+                                            }
+                                            Err(msg) => app.notice = Some(msg),
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('b') => app.start_browse(),
+                                KeyCode::Char('a') => app.start_space_input(),
+                                KeyCode::Char('x') => app.forget_selected_space(),
+                                KeyCode::Esc | KeyCode::Char('3') => app.toggle_spaces(),
                                 _ => {}
                             }
                         } else if app.chat.is_some() {
@@ -292,14 +357,12 @@ async fn event_loop(
                                 KeyCode::Backspace => app.input_backspace(),
                                 KeyCode::Enter => {
                                     if let Some(path) = app.take_input() {
-                                        match ContextSpace::load(Path::new(&path)) {
-                                            Ok(space) => {
-                                                let name = space.config.project_name.clone();
-                                                *app = App::new(Some(space));
-                                                app.notice = Some(format!("Espace chargé : {name}"));
+                                        match open_space(&path) {
+                                            Ok(new_app) => {
+                                                *app = new_app;
                                                 rx = None; // stoppe l'orchestre précédent
                                             }
-                                            Err(e) => app.notice = Some(format!("Échec du chargement : {e}")),
+                                            Err(msg) => app.notice = Some(msg),
                                         }
                                     }
                                 }
@@ -336,7 +399,7 @@ async fn event_loop(
                                     }
                                 }
                                 KeyCode::Char('2') => app.toggle_docs(),
-                                KeyCode::Char('3') => app.start_space_input(),
+                                KeyCode::Char('3') => app.toggle_spaces(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
                                 KeyCode::Char('6') if app.space.is_some() => app.toggle_agents(),
                                 KeyCode::PageUp => app.radar_scroll_by(10),

@@ -63,6 +63,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             View::Radar => render_radar(frame, center, app),
             View::Docs => render_docs_list(frame, center, app),
             View::Agents => render_agents(frame, center, app),
+            View::Spaces => render_spaces(frame, center, app),
         }
     }
     render_menu(frame, menu, app);
@@ -125,6 +126,20 @@ fn truncate_str(s: &str, max: usize) -> String {
 }
 
 /// Gestionnaire d'agents : liste + fiche (rôle, skills, stats de session).
+/// Ligne d'état de l'Agent Documentaliste (activable par `[t]`).
+fn documentalist_line(enabled: bool) -> Line<'static> {
+    let (state, style) = if enabled {
+        ("activé", Style::new().green().bold())
+    } else {
+        ("désactivé", Style::new().dark_gray())
+    };
+    Line::from(vec![
+        Span::styled("Agent Documentaliste : ", Style::new().bold()),
+        Span::styled(state, style),
+        Span::styled("  ([t] basculer — notes : cours, exercices, corrections, révisions)", Style::new().dark_gray()),
+    ])
+}
+
 fn render_agents(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" 📇 GESTION DES AGENTS ");
     let mut lines: Vec<Line> = Vec::new();
@@ -173,15 +188,81 @@ fn render_agents(frame: &mut Frame, area: Rect, app: &App) {
                     Span::raw(format!("{inv} invocation(s) · {secs}s de réflexion")),
                 ]));
             }
+            lines.push(Line::raw(""));
+            lines.push(documentalist_line(s.config.documentalist_enabled));
         }
-        Some(_) => lines.push(Line::from(Span::styled(
-            "  Aucun agent. Appuie sur [a] pour en ajouter.",
-            Style::new().dark_gray(),
-        ))),
+        Some(s) => {
+            lines.push(Line::from(Span::styled(
+                "  Aucun agent. [a] ajouter · [g] ajouter un agent suggéré.",
+                Style::new().dark_gray(),
+            )));
+            lines.push(Line::raw(""));
+            lines.push(documentalist_line(s.config.documentalist_enabled));
+        }
         None => lines.push(Line::from(Span::styled(
             "  Aucun espace chargé.",
             Style::new().dark_gray(),
         ))),
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Navigateur de dossiers : parcourt l'arborescence et repère les espaces (sans saisie).
+fn render_browse(frame: &mut Frame, area: Rect, b: &crate::app::BrowseState) {
+    let block = Block::bordered().title(" 📂 PARCOURIR — choisir un espace ");
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(format!(" {}", b.dir.display()), Style::new().yellow())),
+        Line::raw(""),
+    ];
+    if b.entries.is_empty() {
+        lines.push(Line::from(Span::styled("  (dossier vide)", Style::new().dark_gray())));
+    }
+    for (i, e) in b.entries.iter().enumerate() {
+        let selected = i == b.sel;
+        let (icon, style) = if e.is_space {
+            ("🧩", Style::new().green().bold())
+        } else {
+            ("📁", Style::new().cyan())
+        };
+        let name_style = if selected { style.reversed() } else { style };
+        lines.push(Line::from(vec![
+            Span::raw(if selected { "▶ " } else { "  " }),
+            Span::raw(format!("{icon} ")),
+            Span::styled(e.name.clone(), name_style),
+            Span::styled(if e.is_space { "  (espace)" } else { "" }, Style::new().dark_gray()),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Sélecteur d'espaces connus (récents), pour rouvrir sans retaper le chemin.
+fn render_spaces(frame: &mut Frame, area: Rect, app: &App) {
+    if let Some(b) = &app.browse {
+        render_browse(frame, area, b);
+        return;
+    }
+    let block = Block::bordered().title(" 🗂  ESPACES CONNUS ");
+    let mut lines: Vec<Line> = Vec::new();
+    if app.spaces.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Aucun espace mémorisé. [b] parcourir · [a] saisir un chemin.",
+            Style::new().dark_gray(),
+        )));
+    } else {
+        for (i, k) in app.spaces.iter().enumerate() {
+            let selected = i == app.space_sel;
+            lines.push(Line::from(vec![
+                Span::raw(if selected { "▶ " } else { "  " }),
+                Span::styled(
+                    k.name.clone(),
+                    if selected { Style::new().cyan().bold() } else { Style::new().cyan() },
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("    {}", k.path.display()),
+                Style::new().dark_gray(),
+            )));
+        }
     }
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -388,7 +469,7 @@ fn render_skill_picker(frame: &mut Frame, area: Rect, app: &App) {
         let (badge, badge_style) = match e.kind {
             SkillKind::Primitive => ("prim.", Style::new().green()),
             SkillKind::Fiche => ("fiche", Style::new().cyan()),
-            SkillKind::Label => ("inact", Style::new().dark_gray()),
+            SkillKind::Unwired => ("inact", Style::new().dark_gray()),
         };
         let name_style = if sel { Style::new().bold().reversed() } else { Style::new() };
         let check_style = if e.selected { Style::new().green().bold() } else { Style::new().dark_gray() };
@@ -549,7 +630,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     // Les modes (éditeur / visualiseur / chat / saisie) ont priorité sur le menu.
     let lines: Vec<Line> = if app.skill_picker.is_some() {
         vec![Line::from(Span::styled(
-            "🧩 Skills — ↑↓ choisir · [Espace] assigner/retirer · [n] nouvelle fiche · [e] éditer · Échap",
+            "🧩 Skills — ↑↓ · [Espace] assigner/retirer · [b] brancher · [n] nouvelle fiche · [e] éditer · Échap",
             Style::new().cyan(),
         ))]
     } else if app.pending_plan {
@@ -563,14 +644,23 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().magenta(),
         ))]
     } else if app.viewer.is_some() {
-        let edit = if app.viewer_is_persona() { " · [e] éditer" } else { "" };
         vec![Line::from(Span::styled(
-            format!("📖 Document — ↑↓ défiler · Échap fermer{edit}"),
+            "📖 Document — ↑↓ défiler · [e] éditer · Échap fermer",
             Style::new().cyan(),
         ))]
     } else if app.view == View::Docs {
         vec![Line::from(Span::styled(
             "📚 Documents — ↑↓ choisir · Entrée ouvrir · Échap retour",
+            Style::new().cyan(),
+        ))]
+    } else if app.view == View::Spaces && app.browse.is_some() {
+        vec![Line::from(Span::styled(
+            "📂 Parcourir — ↑↓ choisir · Entrée ouvrir/entrer · [u]/← remonter · Échap retour",
+            Style::new().cyan(),
+        ))]
+    } else if app.view == View::Spaces && app.input.is_none() {
+        vec![Line::from(Span::styled(
+            "🗂  Espaces — ↑↓ · Entrée ouvrir · [b] parcourir · [a] chemin · [x] ne plus suivre · Échap",
             Style::new().cyan(),
         ))]
     } else if let Some((field, buf)) = &app.agent_prompt {
@@ -582,7 +672,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         ])]
     } else if app.view == View::Agents {
         vec![Line::from(Span::styled(
-            "📇 Agents — ↑↓ · [r] renommer · [o] rôle · [s] skills · [a] ajouter · [n] nouveau skill · [d] suppr · Échap",
+            "📇 Agents — ↑↓ · [r] renom · [o] rôle · [s] skills · [a] ajout · [g] suggéré · [t] documentaliste · [n] skill · [d] suppr · Échap",
             Style::new().cyan(),
         ))]
     } else if let Some(buf) = &app.chat {
@@ -712,6 +802,7 @@ mod tests {
             title: "doc.md".into(),
             text: "# Titre\n\n- a\n- b\n\n```\ncode\n```\nfin".into(),
             scroll: 100, // au-delà de la fin → clampé au rendu
+            path: std::path::PathBuf::from("doc.md"),
             is_persona: false,
         });
         terminal.draw(|f| render(f, &app)).unwrap();

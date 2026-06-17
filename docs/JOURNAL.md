@@ -230,6 +230,19 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - Correctif au passage : nom d'outil de délégation slugifié (agents accentués → API valide).
 - Hors périmètre (à suivre) : support MCP, parallélisme inter-manches plus fin.
 
+## GUI bureau Dioxus — tranche verticale (post-Phase 5) 🚧
+
+- Nouveau crate `orchestra-desktop` : interface graphique **tout-Rust** (Dioxus) qui consomme
+  directement `orchestra-core` — **aucune frontière IPC, aucun Node**. Bénéfice direct du
+  découplage : 2e consommateur du même cœur, à côté du TUI.
+- Tranche verticale : charge l'espace exemple, liste les agents, lance `runtime::orchestrate`
+  et streame les `AgentEvent` (radar + panneau Plan + bouton d'approbation) — `match` natif sur
+  le contrat d'événements.
+- Choix : **Dioxus** plutôt que Tauri+React (rester mono-langage, appel direct du cœur).
+- Limite : Dioxus desktop exige une webview système (WebView2 Windows / `webkit2gtk` Linux) —
+  non compilable dans le conteneur cloud (libs GUI absentes) ; build/run sur poste (Windows).
+  Premier jet, à affiner au premier build.
+
 ## Bascule automatique de fournisseur LLM (Claude ↔ Gemini) (post-Phase 5) ✅
 
 - `LlmClient` gère une liste ordonnée de `Backend` (Claude préféré, Gemini en repli, selon les
@@ -264,6 +277,66 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   primitives exécutables (vert) et des étiquettes inactives (gris).
 - Deux couches assumées : **primitives = code** (registre `skills`), **skills = fichiers**
   (`markdown_skill`) qui orchestrent les primitives.
+
+## Règle de parité TUI ⇄ GUI + gestion complète Agents & skills (post-Phase 5) ✅
+
+- **Règle permanente** (cf. `CLAUDE.md`) : toute feature/amélioration est livrée **dans les deux
+  interfaces** (`orchestra-tui` *et* `orchestra-desktop`), comportement identique. Tenable grâce au
+  découplage : la logique vit dans le cœur, les UIs ne font qu'appeler.
+- **Nouveau module cœur `catalog`** (partagé) : `SkillEntry`/`SkillKind` (Primitive/Fiche/Unwired),
+  `skill_entries`, `agent_templates`/`inactive_agent_templates`, `wire_skill` (crée la fiche d'un
+  skill non branché). Testé. Le TUI **et** le desktop consomment ces mêmes fonctions (fini la
+  duplication ; parité par construction).
+- **Documentaliste activable après coup** : c'était un drapeau `documentalist_enabled` fixé
+  seulement à l'init → il « disparaissait » (ex. mode Langue). Désormais un **bouton/touche le
+  bascule** dans les deux UIs (TUI `[t]`, desktop bouton du bandeau), persisté.
+- **Brancher un skill « non branché »** : dans les deux UIs, un skill assigné sans implémentation
+  ni fiche peut être **branché** (création de sa fiche `SKILL.md`, puis édition). TUI `[b]` dans le
+  sélecteur ; desktop bouton « brancher ».
+- **Agents suggérés** : ajout en un geste des rôles du catalogue du type de projet pas encore
+  présents (`inactive_agent_templates`). TUI `[g]`, desktop « + Agent suggéré ».
+- **Desktop — vue Agents reconstruite** en menu complet : toggle Documentaliste, liste d'agents +
+  ajout suggéré/personnalisé, renommer / éditer le rôle / supprimer, sélecteur de skills à cocher,
+  brancher, créer/éditer les fiches (éditeur intégré). Parité atteinte avec le menu `[6]` du TUI,
+  enrichi des nouveautés ci-dessus des deux côtés.
+
+## Desktop — visualiseur Markdown rendu + Mermaid (post-Phase 5) ✅
+
+- La vue **Documents** du desktop n'affiche plus le Markdown brut : rendu **HTML** via
+  `pulldown-cmark` (`state::render_markdown_html`) — titres (`#`/`##`/`###`), listes, code,
+  tableaux, citations — injecté avec `dangerous_inner_html` + CSS dédié `.markdown`.
+- **Diagrammes Mermaid affichés visuellement** : les blocs ` ```mermaid ` deviennent des
+  `<pre class="mermaid">`, rendus par **mermaid.js** (chargé une fois depuis le CDN, exécuté
+  via `document::eval` à chaque changement de document). Dégradé propre si indisponible
+  (affiche le code source). *Skill produit par l'Agent Documentaliste enfin lisible comme un
+  vrai schéma.*
+- Parité : le **TUI rend déjà le Markdown** (`markdown.rs` → lignes ratatui) ; le rendu
+  graphique d'un diagramme Mermaid est propre au médium graphique (le terminal montre le code,
+  ce qu'il faisait déjà). La capacité « voir ses documents mis en forme » est donc des deux côtés.
+- Prérequis runtime : accès réseau de la webview pour le CDN mermaid (build/poste).
+- **Édition des documents** depuis la vue Documents (persona, memory, ADR, `.md` du workspace) :
+  nouveau `model::save_document(path, content)` (écriture centralisée). TUI : `[e]` dans le
+  visualiseur édite **n'importe quel** document (plus seulement le persona) — `EditTarget::Document`,
+  Ctrl+S enregistre. Desktop : bouton « ✏ Éditer » dans `DocumentsView` (textarea + 💾 Enregistrer).
+
+## Registre des espaces connus (récents) (post-Phase 5) ✅
+
+- Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts
+  (`<config>/orchestra/spaces.json` — `%APPDATA%`/`$XDG_CONFIG_HOME`/`$HOME/.config`).
+  `known_spaces()`, `remember_space()` (valide l'espace + lit son nom, récents d'abord, dédup),
+  `forget_space()`. Mémorisation automatique à chaque ouverture réussie.
+- **TUI** : `[3]` ouvre désormais un **sélecteur d'espaces** (au lieu de la saisie directe) —
+  ↑↓ choisir, Entrée ouvrir, `[a]` saisir un chemin, `[x]` ne plus suivre. Ouverture centralisée
+  (`open_space`) côté saisie et sélecteur.
+- **Desktop** : composant `SpaceBar` — saisie de chemin + **puces** des espaces connus (clic pour
+  rouvrir, × pour retirer). Fini de retaper les chemins de mémoire.
+- Parité respectée : même registre cœur, même comportement des deux côtés.
+- **Navigateur de dossiers** (module cœur `browser`, testé) pour **découvrir un espace sans
+  taper de chemin** : `browse(dir)` liste les sous-dossiers et marque ceux qui sont des espaces
+  (`.orchestra/config.json`), `parent()`, `home_dir()`. TUI : sélecteur `[3]` → `[b]` ouvre un
+  navigateur (↑↓ · Entrée ouvrir/entrer · `[u]`/← remonter). Desktop : bouton « 📂 Parcourir »
+  dans `SpaceBar` (navigation par dossiers, ouverture des espaces repérés). La **saisie manuelle
+  de chemin a disparu** côté desktop au profit des récents + du navigateur.
 
 ## Registre de skills exécutables (post-Phase 5) ✅
 

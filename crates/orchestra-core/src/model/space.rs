@@ -34,6 +34,12 @@ pub fn load_document(path: &Path) -> Result<String, OrchestraError> {
     Ok(fs::read_to_string(path)?)
 }
 
+/// Écrit le contenu texte d'un document (édition depuis l'UI : persona, memory, ADR, .md du
+/// workspace). Centralise l'écriture disque dans le cœur, comme [`load_document`].
+pub fn save_document(path: &Path, content: &str) -> Result<(), OrchestraError> {
+    Ok(fs::write(path, content)?)
+}
+
 const SCAN_MAX_DEPTH: usize = 4;
 const SCAN_MAX_FILES: usize = 200;
 /// Dossiers ignorés lors du balayage des Markdown du workspace.
