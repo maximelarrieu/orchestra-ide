@@ -121,7 +121,7 @@ fn app() -> Element {
                     }
                 },
                 View::Documents => components::documents_view(space, doc_content),
-                View::Agents => components::agents_view(space, selected_agent),
+                View::Agents => rsx! { components::AgentsView { space, selected: selected_agent } },
             }
         }
     }

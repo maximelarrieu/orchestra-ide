@@ -58,6 +58,7 @@ crates/
 │  ├─ runtime.rs        # spawn() : lance les agents (boucle LLM ou simulée)
 │  ├─ llm.rs            # LlmClient : Claude/Gemini au choix, en HTTP (Phase 4a) + prompt caching
 │  ├─ skills.rs         # primitives exécutables via tool use — registre (Phase 4a, +Web_Fetch)
+│  ├─ catalog.rs        # catalogue agents/skills + édition (brancher, suggérer) — partagé TUI/GUI
 │  ├─ markdown_skill.rs # skills « fiches » SKILL.md + Load_Skill (divulgation progressive)
 │  ├─ memory.rs         # mémoire partagée d'espace : Remember / Recall (.orchestra/memory.md)
 │  ├─ orchestration.rs  # modèle de plan (Task/Plan, tri topo, validation, repli)

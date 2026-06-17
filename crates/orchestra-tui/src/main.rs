@@ -201,6 +201,7 @@ async fn event_loop(
                                     app.close_skill_picker();
                                     app.start_new_skill();
                                 }
+                                KeyCode::Char('b') => app.picker_wire_fiche(),
                                 KeyCode::Char('e') => app.picker_edit_fiche(),
                                 KeyCode::Esc => app.close_skill_picker(),
                                 _ => {}
@@ -223,6 +224,8 @@ async fn event_loop(
                                 KeyCode::Char('o') => app.start_agent_role(),
                                 KeyCode::Char('s') => app.open_skill_picker(),
                                 KeyCode::Char('a') => app.start_agent_add(),
+                                KeyCode::Char('g') => app.add_suggested_agent(),
+                                KeyCode::Char('t') => app.toggle_documentalist(),
                                 KeyCode::Char('n') => app.start_new_skill(),
                                 KeyCode::Char('d') => app.delete_selected_agent(),
                                 KeyCode::Esc | KeyCode::Char('6') => app.toggle_agents(),

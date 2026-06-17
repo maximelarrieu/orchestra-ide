@@ -278,6 +278,28 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - Deux couches assumées : **primitives = code** (registre `skills`), **skills = fichiers**
   (`markdown_skill`) qui orchestrent les primitives.
 
+## Règle de parité TUI ⇄ GUI + gestion complète Agents & skills (post-Phase 5) ✅
+
+- **Règle permanente** (cf. `CLAUDE.md`) : toute feature/amélioration est livrée **dans les deux
+  interfaces** (`orchestra-tui` *et* `orchestra-desktop`), comportement identique. Tenable grâce au
+  découplage : la logique vit dans le cœur, les UIs ne font qu'appeler.
+- **Nouveau module cœur `catalog`** (partagé) : `SkillEntry`/`SkillKind` (Primitive/Fiche/Unwired),
+  `skill_entries`, `agent_templates`/`inactive_agent_templates`, `wire_skill` (crée la fiche d'un
+  skill non branché). Testé. Le TUI **et** le desktop consomment ces mêmes fonctions (fini la
+  duplication ; parité par construction).
+- **Documentaliste activable après coup** : c'était un drapeau `documentalist_enabled` fixé
+  seulement à l'init → il « disparaissait » (ex. mode Langue). Désormais un **bouton/touche le
+  bascule** dans les deux UIs (TUI `[t]`, desktop bouton du bandeau), persisté.
+- **Brancher un skill « non branché »** : dans les deux UIs, un skill assigné sans implémentation
+  ni fiche peut être **branché** (création de sa fiche `SKILL.md`, puis édition). TUI `[b]` dans le
+  sélecteur ; desktop bouton « brancher ».
+- **Agents suggérés** : ajout en un geste des rôles du catalogue du type de projet pas encore
+  présents (`inactive_agent_templates`). TUI `[g]`, desktop « + Agent suggéré ».
+- **Desktop — vue Agents reconstruite** en menu complet : toggle Documentaliste, liste d'agents +
+  ajout suggéré/personnalisé, renommer / éditer le rôle / supprimer, sélecteur de skills à cocher,
+  brancher, créer/éditer les fiches (éditeur intégré). Parité atteinte avec le menu `[6]` du TUI,
+  enrichi des nouveautés ci-dessus des deux côtés.
+
 ## Registre de skills exécutables (post-Phase 5) ✅
 
 - Les skills sont **activés systématiquement** via un registre : id → définition

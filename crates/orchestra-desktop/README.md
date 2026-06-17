@@ -4,10 +4,12 @@ Port **bureau** d'Orchestra IDE, en **Rust pur** (Dioxus). L'UI consomme directe
 `orchestra-core` (aucune frontière IPC, aucun toolchain Node) : elle appelle `runtime`,
 `ContextSpace`, etc. et fait un `match` natif sur les `AgentEvent` — la même couture que le TUI.
 
-> État : montée en parité avec le TUI. Présent : **navigation par vues**, **sélecteur d'espace**
+> État : parité avancée avec le TUI. Présent : **navigation par vues**, **sélecteur d'espace**
 > (chemin), **saisie d'objectif** + orchestration (radar + panneau Plan + approbation),
 > **Chat coordinateur** (conversation, délégation, approbation de plan inline), **Documents**
-> (liste + visualiseur), **Agents & skills** (catalogue à cocher, persisté).
+> (liste + visualiseur), et un **menu Agents & skills complet** : activer le Documentaliste,
+> ajouter (suggéré/personnalisé) / renommer / éditer le rôle / supprimer des agents, cocher /
+> brancher les skills, créer et éditer les fiches.
 > À venir : **édition du persona**.
 
 ## Prérequis de build (webview système)

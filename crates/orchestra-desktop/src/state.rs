@@ -1,11 +1,17 @@
 //! État de l'app + **ponts vers le cœur** : isole la logique « parler à `orchestra-core` »
 //! du rendu. Les composants ([`crate::components`]) se contentent d'afficher / déclencher.
 
+use std::path::{Path, PathBuf};
+
 use dioxus::prelude::*;
 use orchestra_core::events::AgentEvent;
-use orchestra_core::model::ContextSpace;
+use orchestra_core::model::{AgentDef, ContextSpace};
 use orchestra_core::runtime;
 use tokio::sync::mpsc::UnboundedSender;
+
+// Types et catalogue de skills : **partagés avec le TUI** via `orchestra-core::catalog`, pour
+// garantir un comportement identique (cf. CLAUDE.md, règle de parité TUI ⇄ GUI).
+pub use orchestra_core::catalog::{skill_entries, SkillEntry, SkillKind};
 
 /// Objectif par défaut proposé dans la zone de saisie.
 pub const DEFAULT_GOAL: &str = "Avance concrètement sur l'objectif de cet espace.";
@@ -169,37 +175,11 @@ pub fn start_chat(
     });
 }
 
-/// Catalogue des skills pour un agent : primitives (code) + fiches (`SKILL.md`) + skills
-/// assignés mais non branchés (`Label`), chacun marqué assigné ou non.
-pub fn skill_entries(space: &ContextSpace, agent_idx: usize) -> Vec<SkillEntry> {
-    let assigned = space
-        .config
-        .agents
-        .get(agent_idx)
-        .map(|a| a.skills.clone())
-        .unwrap_or_default();
+// --- Gestion des agents et skills (toutes les opérations persistent via le cœur) -----------
+// La logique « catalogue / branchement » vit dans `orchestra-core::catalog` (partagée avec le
+// TUI) ; ici on ne fait qu'appeler le cœur depuis des signaux Dioxus.
 
-    let mut out: Vec<SkillEntry> = Vec::new();
-    for m in orchestra_core::skills::catalog() {
-        let selected = assigned.iter().any(|s| s == m.id);
-        out.push(SkillEntry { id: m.id.to_string(), kind: SkillKind::Primitive, description: m.description, selected });
-    }
-    for f in orchestra_core::markdown_skill::load_all(&space.root) {
-        if out.iter().any(|e| e.id == f.id) {
-            continue;
-        }
-        let selected = assigned.iter().any(|s| s == &f.id || s == &f.name);
-        out.push(SkillEntry { id: f.id, kind: SkillKind::Fiche, description: f.description, selected });
-    }
-    for s in &assigned {
-        if !out.iter().any(|e| &e.id == s) {
-            out.push(SkillEntry { id: s.clone(), kind: SkillKind::Label, description: "(non branché)".into(), selected: true });
-        }
-    }
-    out
-}
-
-/// (Dé)coche un skill pour un agent et **persiste** la config via le cœur.
+/// (Dé)coche un skill pour un agent et **persiste** la config.
 pub fn toggle_skill(mut space: Signal<Option<ContextSpace>>, agent_idx: usize, skill_id: &str) {
     let mut guard = space.write();
     let Some(sp) = guard.as_mut() else { return };
@@ -210,5 +190,109 @@ pub fn toggle_skill(mut space: Signal<Option<ContextSpace>>, agent_idx: usize, s
             agent.skills.push(skill_id.to_string());
         }
     }
-    let _ = sp.save_config(); // écriture disque centralisée dans le cœur
+    let _ = sp.save_config();
+}
+
+/// Renomme l'agent `idx` (ignoré si vide) et persiste.
+pub fn set_agent_name(mut space: Signal<Option<ContextSpace>>, idx: usize, name: &str) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    let mut g = space.write();
+    if let Some(sp) = g.as_mut() {
+        if let Some(a) = sp.config.agents.get_mut(idx) {
+            a.name = name.to_string();
+        }
+        let _ = sp.save_config();
+    }
+}
+
+/// Change le rôle de l'agent `idx` et persiste.
+pub fn set_agent_role(mut space: Signal<Option<ContextSpace>>, idx: usize, role: &str) {
+    let mut g = space.write();
+    if let Some(sp) = g.as_mut() {
+        if let Some(a) = sp.config.agents.get_mut(idx) {
+            a.role = role.trim().to_string();
+        }
+        let _ = sp.save_config();
+    }
+}
+
+/// Ajoute un agent personnalisé (nom seul) et persiste.
+pub fn add_agent(mut space: Signal<Option<ContextSpace>>, name: &str) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    let mut g = space.write();
+    if let Some(sp) = g.as_mut() {
+        sp.config.agents.push(AgentDef::new(name));
+        let _ = sp.save_config();
+    }
+}
+
+/// Ajoute le prochain agent **suggéré** (catalogue du type de projet) non encore présent.
+pub fn add_suggested_agent(mut space: Signal<Option<ContextSpace>>) {
+    let mut g = space.write();
+    if let Some(sp) = g.as_mut() {
+        let mut suggestions = orchestra_core::catalog::inactive_agent_templates(sp);
+        if !suggestions.is_empty() {
+            sp.config.agents.push(suggestions.remove(0));
+            let _ = sp.save_config();
+        }
+    }
+}
+
+/// Supprime l'agent `idx` et persiste.
+pub fn delete_agent(mut space: Signal<Option<ContextSpace>>, idx: usize) {
+    let mut g = space.write();
+    if let Some(sp) = g.as_mut() {
+        if idx < sp.config.agents.len() {
+            sp.config.agents.remove(idx);
+            let _ = sp.save_config();
+        }
+    }
+}
+
+/// Active/désactive l'Agent Documentaliste pour l'espace et persiste.
+pub fn toggle_documentalist(mut space: Signal<Option<ContextSpace>>) {
+    let mut g = space.write();
+    if let Some(sp) = g.as_mut() {
+        sp.config.documentalist_enabled = !sp.config.documentalist_enabled;
+        let _ = sp.save_config();
+    }
+}
+
+/// Vrai si le Documentaliste est activé.
+pub fn documentalist_enabled(space: Signal<Option<ContextSpace>>) -> bool {
+    space.read().as_ref().is_some_and(|sp| sp.config.documentalist_enabled)
+}
+
+/// **Branche** un skill non branché : crée sa fiche `SKILL.md` (via le cœur) et renvoie son chemin.
+pub fn wire_skill(space: Signal<Option<ContextSpace>>, id: &str) -> Option<PathBuf> {
+    let g = space.read();
+    let sp = g.as_ref()?;
+    orchestra_core::catalog::wire_skill(sp, id).ok()
+}
+
+/// Crée une nouvelle fiche de skill `<name>` et renvoie son chemin `SKILL.md`.
+pub fn create_fiche(space: Signal<Option<ContextSpace>>, name: &str) -> Option<PathBuf> {
+    let g = space.read();
+    let sp = g.as_ref()?;
+    orchestra_core::markdown_skill::create(&sp.root, name, "").ok()
+}
+
+/// Charge le contenu de la fiche `id` (chemin + texte) pour l'éditeur.
+pub fn load_fiche(space: Signal<Option<ContextSpace>>, id: &str) -> Option<(PathBuf, String)> {
+    let g = space.read();
+    let sp = g.as_ref()?;
+    let path = orchestra_core::markdown_skill::skills_dir(&sp.root).join(id).join("SKILL.md");
+    let text = orchestra_core::model::load_document(&path).ok()?;
+    Some((path, text))
+}
+
+/// Enregistre le contenu d'une fiche `SKILL.md` (via le cœur).
+pub fn save_fiche(path: &Path, content: &str) -> bool {
+    orchestra_core::markdown_skill::save(path, content).is_ok()
 }

@@ -60,4 +60,18 @@ pub const CSS: &str = r#"
     .planbox { border: 1px solid #2c3a55; border-radius: 8px; padding: .5rem .7rem; }
     .composer { display: flex; gap: .5rem; align-items: flex-end; }
     .chatinput { flex: 1; resize: none; min-height: 2.4rem; max-height: 7rem; line-height: 1.3; }
+
+    /* Menu Agents & skills */
+    .agentsmenu .toolbar { display: flex; gap: .5rem; margin-bottom: .3rem; }
+    .hint { color: #788; font-size: .82rem; margin: .1rem 0 .6rem; }
+    .muted { color: #9aa; }
+    .rolerow { margin: .2rem 0; }
+    .linklike { background: none; border: none; color: #8ab4ff; cursor: pointer; padding: 0 .3rem; font-size: .82rem; }
+    .linklike:hover { color: #fff; background: none; }
+    .danger { background: #4a1f1f; border-color: #7d2e2e; margin: .4rem 0; }
+    .danger:hover { background: #5d2626; }
+    .skillrow { display: flex; align-items: center; gap: .2rem; }
+    .ficheeditor { margin-top: .6rem; border-top: 1px solid #2c3a55; padding-top: .5rem; }
+    .fichearea { width: 100%; min-height: 220px; box-sizing: border-box; resize: vertical; }
+    h4 { margin: .6rem 0 .3rem; }
 "#;

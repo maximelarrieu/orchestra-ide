@@ -163,25 +163,9 @@ pub struct PlanRow {
     pub status: PlanStatus,
 }
 
-/// Nature d'un skill dans le sélecteur.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkillKind {
-    /// Primitive exécutable (code).
-    Primitive,
-    /// Fiche d'instructions (`SKILL.md`).
-    Fiche,
-    /// Assigné mais non branché (étiquette inactive).
-    Label,
-}
-
-/// Une entrée du sélecteur de skills : id, nature, description, et si l'agent l'a assigné.
-#[derive(Debug, Clone)]
-pub struct SkillEntry {
-    pub id: String,
-    pub kind: SkillKind,
-    pub description: String,
-    pub selected: bool,
-}
+// Types du sélecteur de skills : **partagés avec la GUI** via `orchestra-core::catalog` pour
+// garantir un comportement identique (cf. CLAUDE.md, règle de parité TUI ⇄ GUI).
+pub use orchestra_core::catalog::{SkillEntry, SkillKind};
 
 /// Sélecteur de skills pour un agent : catalogue navigable + cases à cocher.
 pub struct SkillPicker {
@@ -652,31 +636,11 @@ impl App {
     /// fiches) avec descriptions, où l'on coche/décoche au lieu de taper des noms à l'aveugle.
     pub fn open_skill_picker(&mut self) {
         let Some(space) = self.space.as_ref() else { return };
-        let Some(agent) = space.config.agents.get(self.agent_sel) else { return };
-        let assigned = agent.skills.clone();
-        let root = space.root.clone();
-
-        let mut entries: Vec<SkillEntry> = Vec::new();
-        // Primitives (code) — depuis le registre du cœur.
-        for m in orchestra_core::skills::catalog() {
-            let selected = assigned.iter().any(|s| s == m.id);
-            entries.push(SkillEntry { id: m.id.to_string(), kind: SkillKind::Primitive, description: m.description, selected });
+        if space.config.agents.get(self.agent_sel).is_none() {
+            return;
         }
-        // Fiches Markdown — depuis `.orchestra/skills/`.
-        for f in orchestra_core::markdown_skill::load_all(&root) {
-            if entries.iter().any(|e| e.id == f.id) {
-                continue;
-            }
-            let selected = assigned.iter().any(|s| s == &f.id || s == &f.name);
-            entries.push(SkillEntry { id: f.id, kind: SkillKind::Fiche, description: f.description, selected });
-        }
-        // Skills assignés mais non branchés → on les garde (cochés) pour pouvoir les retirer.
-        for s in &assigned {
-            if !entries.iter().any(|e| &e.id == s) {
-                entries.push(SkillEntry { id: s.clone(), kind: SkillKind::Label, description: "(non branché)".into(), selected: true });
-            }
-        }
-
+        // Construction du catalogue **déléguée au cœur** (même logique que la GUI).
+        let entries = orchestra_core::catalog::skill_entries(space, self.agent_sel);
         self.skill_picker = Some(SkillPicker { agent: self.agent_sel, entries, cursor: 0 });
         self.notice = None;
     }
@@ -729,6 +693,29 @@ impl App {
         self.editor_title = format!(" ✏ SKILL ({label})");
         self.skill_picker = None;
     }
+
+    /// `[b]` (sélecteur de skills) — **branche** le skill non branché sélectionné : crée sa
+    /// fiche (via le cœur), rafraîchit le catalogue et rouvre le sélecteur (le skill devient
+    /// une « fiche » éditable via `[e]`).
+    pub fn picker_wire_fiche(&mut self) {
+        let Some(p) = self.skill_picker.as_ref() else { return };
+        let Some(e) = p.entries.get(p.cursor) else { return };
+        if e.kind != SkillKind::Unwired {
+            self.notice = Some("Ce skill est déjà branché (primitive ou fiche).".into());
+            return;
+        }
+        let id = e.id.clone();
+        let Some(space) = self.space.as_ref() else { return };
+        match orchestra_core::catalog::wire_skill(space, &id) {
+            Ok(_) => {
+                self.refresh_md_skills();
+                self.open_skill_picker(); // recharge : le skill apparaît désormais comme « fiche »
+                self.notice = Some(format!("Skill « {id} » branché — [e] pour rédiger sa fiche."));
+            }
+            Err(err) => self.notice = Some(format!("Échec du branchement : {err}")),
+        }
+    }
+
     pub fn start_agent_add(&mut self) {
         if self.space.is_some() {
             self.agent_prompt = Some((AgentField::Add, String::new()));
@@ -797,6 +784,46 @@ impl App {
                 self.notice = Some(format!("Agent « {} » supprimé.", removed.name));
             }
         }
+    }
+
+    /// `[t]` (menu Agents) — active/désactive l'**Agent Documentaliste** (prise de notes :
+    /// cours, exercices, corrections, fiches de révision…). Disponible quel que soit le type de
+    /// projet. Persisté.
+    pub fn toggle_documentalist(&mut self) {
+        let Some(space) = self.space.as_mut() else {
+            self.notice = Some("Aucun espace chargé.".into());
+            return;
+        };
+        space.config.documentalist_enabled = !space.config.documentalist_enabled;
+        let on = space.config.documentalist_enabled;
+        self.persist_config();
+        self.notice = Some(if on {
+            "Agent Documentaliste activé.".into()
+        } else {
+            "Agent Documentaliste désactivé.".into()
+        });
+    }
+
+    /// `[g]` (menu Agents) — ajoute le prochain agent **suggéré** (catalogue du type de projet)
+    /// pas encore présent, avec son rôle et ses skills par défaut. Persisté.
+    pub fn add_suggested_agent(&mut self) {
+        let Some(space) = self.space.as_ref() else {
+            self.notice = Some("Aucun espace chargé.".into());
+            return;
+        };
+        let mut suggestions = orchestra_core::catalog::inactive_agent_templates(space);
+        if suggestions.is_empty() {
+            self.notice = Some("Tous les agents suggérés sont déjà présents.".into());
+            return;
+        }
+        let agent = suggestions.remove(0);
+        let name = agent.name.clone();
+        if let Some(space) = self.space.as_mut() {
+            space.config.agents.push(agent);
+            self.agent_sel = space.config.agents.len() - 1;
+        }
+        self.persist_config();
+        self.notice = Some(format!("Agent suggéré « {name} » ajouté."));
     }
 
     fn persist_config(&mut self) {
