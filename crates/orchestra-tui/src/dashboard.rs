@@ -207,13 +207,45 @@ fn render_agents(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// Navigateur de dossiers : parcourt l'arborescence et repère les espaces (sans saisie).
+fn render_browse(frame: &mut Frame, area: Rect, b: &crate::app::BrowseState) {
+    let block = Block::bordered().title(" 📂 PARCOURIR — choisir un espace ");
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(format!(" {}", b.dir.display()), Style::new().yellow())),
+        Line::raw(""),
+    ];
+    if b.entries.is_empty() {
+        lines.push(Line::from(Span::styled("  (dossier vide)", Style::new().dark_gray())));
+    }
+    for (i, e) in b.entries.iter().enumerate() {
+        let selected = i == b.sel;
+        let (icon, style) = if e.is_space {
+            ("🧩", Style::new().green().bold())
+        } else {
+            ("📁", Style::new().cyan())
+        };
+        let name_style = if selected { style.reversed() } else { style };
+        lines.push(Line::from(vec![
+            Span::raw(if selected { "▶ " } else { "  " }),
+            Span::raw(format!("{icon} ")),
+            Span::styled(e.name.clone(), name_style),
+            Span::styled(if e.is_space { "  (espace)" } else { "" }, Style::new().dark_gray()),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 /// Sélecteur d'espaces connus (récents), pour rouvrir sans retaper le chemin.
 fn render_spaces(frame: &mut Frame, area: Rect, app: &App) {
+    if let Some(b) = &app.browse {
+        render_browse(frame, area, b);
+        return;
+    }
     let block = Block::bordered().title(" 🗂  ESPACES CONNUS ");
     let mut lines: Vec<Line> = Vec::new();
     if app.spaces.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  Aucun espace mémorisé. [a] pour saisir un chemin.",
+            "  Aucun espace mémorisé. [b] parcourir · [a] saisir un chemin.",
             Style::new().dark_gray(),
         )));
     } else {
@@ -622,9 +654,14 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             "📚 Documents — ↑↓ choisir · Entrée ouvrir · Échap retour",
             Style::new().cyan(),
         ))]
+    } else if app.view == View::Spaces && app.browse.is_some() {
+        vec![Line::from(Span::styled(
+            "📂 Parcourir — ↑↓ choisir · Entrée ouvrir/entrer · [u]/← remonter · Échap retour",
+            Style::new().cyan(),
+        ))]
     } else if app.view == View::Spaces && app.input.is_none() {
         vec![Line::from(Span::styled(
-            "🗂  Espaces — ↑↓ choisir · Entrée ouvrir · [a] saisir un chemin · [x] ne plus suivre · Échap",
+            "🗂  Espaces — ↑↓ · Entrée ouvrir · [b] parcourir · [a] chemin · [x] ne plus suivre · Échap",
             Style::new().cyan(),
         ))]
     } else if let Some((field, buf)) = &app.agent_prompt {

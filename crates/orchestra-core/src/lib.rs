@@ -5,6 +5,7 @@
 //! que l'UI (ratatui aujourd'hui, Tauri demain) consomme. C'est la garantie du
 //! découplage strict logique métier / affichage exigé par la spec.
 
+pub mod browser;
 pub mod catalog;
 pub mod error;
 pub mod events;

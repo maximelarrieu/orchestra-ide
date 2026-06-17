@@ -327,6 +327,12 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - **Desktop** : composant `SpaceBar` — saisie de chemin + **puces** des espaces connus (clic pour
   rouvrir, × pour retirer). Fini de retaper les chemins de mémoire.
 - Parité respectée : même registre cœur, même comportement des deux côtés.
+- **Navigateur de dossiers** (module cœur `browser`, testé) pour **découvrir un espace sans
+  taper de chemin** : `browse(dir)` liste les sous-dossiers et marque ceux qui sont des espaces
+  (`.orchestra/config.json`), `parent()`, `home_dir()`. TUI : sélecteur `[3]` → `[b]` ouvre un
+  navigateur (↑↓ · Entrée ouvrir/entrer · `[u]`/← remonter). Desktop : bouton « 📂 Parcourir »
+  dans `SpaceBar` (navigation par dossiers, ouverture des espaces repérés). La **saisie manuelle
+  de chemin a disparu** côté desktop au profit des récents + du navigateur.
 
 ## Registre de skills exécutables (post-Phase 5) ✅
 

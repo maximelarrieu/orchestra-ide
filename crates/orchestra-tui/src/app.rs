@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use orchestra_core::browser::DirEntry;
 use orchestra_core::events::{AgentEvent, PlannedTask};
 use orchestra_core::model::{AgentDef, ContextSpace, DocKind, ProjectType, SpaceDoc};
 use orchestra_core::registry::KnownSpace;
@@ -85,6 +86,13 @@ pub enum View {
     Spaces,
 }
 
+/// État du navigateur de dossiers (sélecteur d'espaces `[3]` → `[b]`).
+pub struct BrowseState {
+    pub dir: std::path::PathBuf,
+    pub entries: Vec<DirEntry>,
+    pub sel: usize,
+}
+
 /// Visualiseur Markdown ouvert sur un document.
 pub struct Viewer {
     pub title: String,
@@ -152,6 +160,8 @@ pub struct App {
     pub spaces: Vec<KnownSpace>,
     /// Index de l'espace sélectionné dans le sélecteur.
     pub space_sel: usize,
+    /// Navigateur de dossiers ouvert (`Some`) dans le sélecteur d'espaces, ou fermé.
+    pub browse: Option<BrowseState>,
 }
 
 /// État d'une tâche du plan d'orchestration, côté affichage.
@@ -233,6 +243,7 @@ impl App {
             notice: None,
             spaces: orchestra_core::registry::known_spaces(),
             space_sel: 0,
+            browse: None,
         }
     }
 
@@ -417,6 +428,7 @@ impl App {
     /// `[3]` — ouvre/ferme le **sélecteur d'espaces connus** (récents), rafraîchi depuis le
     /// registre global. Plus besoin de retaper un chemin de mémoire.
     pub fn toggle_spaces(&mut self) {
+        self.browse = None;
         if self.view == View::Spaces {
             self.view = View::Radar;
             return;
@@ -450,6 +462,54 @@ impl App {
                 self.space_sel = self.spaces.len().saturating_sub(1);
             }
             self.notice = Some(format!("Espace « {name} » retiré du suivi."));
+        }
+    }
+
+    /// `[b]` (sélecteur) — ouvre le **navigateur de dossiers** pour découvrir un espace sans
+    /// taper son chemin (départ : répertoire personnel).
+    pub fn start_browse(&mut self) {
+        self.reload_browse(orchestra_core::browser::home_dir());
+        self.notice = None;
+    }
+
+    fn reload_browse(&mut self, dir: std::path::PathBuf) {
+        let entries = orchestra_core::browser::browse(&dir);
+        self.browse = Some(BrowseState { dir, entries, sel: 0 });
+    }
+
+    pub fn cancel_browse(&mut self) {
+        self.browse = None;
+    }
+
+    pub fn browse_move(&mut self, delta: isize) {
+        if let Some(b) = self.browse.as_mut() {
+            if b.entries.is_empty() {
+                return;
+            }
+            let last = b.entries.len() as isize - 1;
+            b.sel = (b.sel as isize + delta).clamp(0, last) as usize;
+        }
+    }
+
+    /// Remonte au dossier parent.
+    pub fn browse_up(&mut self) {
+        if let Some(parent) = self.browse.as_ref().and_then(|b| orchestra_core::browser::parent(&b.dir)) {
+            self.reload_browse(parent);
+        }
+    }
+
+    /// Entrée sélectionnée : si c'est un espace, **renvoie son chemin** à ouvrir ; sinon entre
+    /// dans le dossier et renvoie `None`.
+    pub fn browse_enter(&mut self) -> Option<String> {
+        let entry = {
+            let b = self.browse.as_ref()?;
+            b.entries.get(b.sel)?.clone()
+        };
+        if entry.is_space {
+            Some(entry.path.to_string_lossy().to_string())
+        } else {
+            self.reload_browse(entry.path);
+            None
         }
     }
 

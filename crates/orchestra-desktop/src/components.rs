@@ -56,31 +56,93 @@ pub fn radar(lines: &[String]) -> Element {
 #[component]
 pub fn SpaceBar(
     space: Signal<Option<ContextSpace>>,
-    mut space_path: Signal<String>,
+    space_path: Signal<String>,
     known: Signal<Vec<KnownSpace>>,
 ) -> Element {
+    let mut browsing = use_signal(|| false);
+    let mut browse_dir = use_signal(orchestra_core::browser::home_dir);
     let active = space().map(|s| s.config.project_name.clone());
+
     rsx! {
         div { class: "spaces",
             div { class: "spacebar",
-                input {
-                    class: "chatinput",
-                    value: "{space_path}",
-                    placeholder: "Chemin d'un espace…",
-                    oninput: move |e| space_path.set(e.value()),
-                }
-                button { onclick: move |_| { state::open_space(space, space_path, known, &space_path()); },
-                    "Charger" }
                 if let Some(name) = active {
-                    span { class: "spacename", "  ● {name}" }
+                    span { class: "spacename", "● {name}" }
+                }
+                button { onclick: move |_| browsing.set(!browsing()),
+                    if browsing() { "Fermer le navigateur" } else { "📂 Parcourir un dossier…" }
                 }
             }
+
+            // Espaces connus (récents) : rouvrir d'un clic.
             if !known().is_empty() {
                 div { class: "chips",
+                    span { class: "muted", "Récents :" }
                     for k in known() {
                         { space_chip(k, space, space_path, known) }
                     }
                 }
+            }
+
+            // Navigateur de dossiers : explorer et ouvrir un espace repéré, sans saisie.
+            if browsing() {
+                {
+                    let dir = browse_dir();
+                    let dir_label = dir.to_string_lossy().to_string();
+                    let entries = orchestra_core::browser::browse(&dir);
+                    rsx! {
+                        div { class: "browser",
+                            div { class: "browsebar",
+                                button { class: "row",
+                                    onclick: move |_| {
+                                        if let Some(p) = orchestra_core::browser::parent(&browse_dir()) { browse_dir.set(p); }
+                                    },
+                                    "⬆ .." }
+                                span { class: "muted", "{dir_label}" }
+                            }
+                            ul { class: "list",
+                                if entries.is_empty() {
+                                    li { span { class: "muted", "(dossier vide)" } }
+                                }
+                                for e in entries {
+                                    { browse_row(e, space, space_path, known, browse_dir, browsing) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn browse_row(
+    e: orchestra_core::browser::DirEntry,
+    space: Signal<Option<ContextSpace>>,
+    space_path: Signal<String>,
+    known: Signal<Vec<KnownSpace>>,
+    mut browse_dir: Signal<std::path::PathBuf>,
+    mut browsing: Signal<bool>,
+) -> Element {
+    let nav = e.path.clone();
+    let open = e.path.clone();
+    if e.is_space {
+        rsx! {
+            li { class: "skillrow",
+                span { class: "row", "🧩 {e.name}" }
+                button { class: "linklike",
+                    onclick: move |_| {
+                        if state::open_space(space, space_path, known, &open.to_string_lossy()) {
+                            browsing.set(false);
+                        }
+                    },
+                    "ouvrir" }
+            }
+        }
+    } else {
+        rsx! {
+            li {
+                button { class: "row", onclick: move |_| browse_dir.set(nav.clone()), "📁 {e.name}" }
             }
         }
     }

@@ -21,6 +21,9 @@ pub const CSS: &str = r#"
     .chiplabel:hover { color: #fff; background: #263150; }
     .chipx { background: none; border: none; color: #8895a7; cursor: pointer; padding: .25rem .5rem; }
     .chipx:hover { color: #ff8a8a; }
+    .browser { margin-top: .5rem; border: 1px solid #2c3a55; border-radius: 8px; padding: .5rem; }
+    .browsebar { display: flex; gap: .6rem; align-items: center; margin-bottom: .4rem; }
+    .browser .list { max-height: 320px; overflow: auto; }
 
     .nav { display: flex; gap: .4rem; margin: .5rem 0 .8rem; border-bottom: 1px solid #1c2535; padding-bottom: .5rem; }
     .tab { background: #1d2535; color: #cdd6e0; border: 1px solid #2c3a55; border-radius: 6px;

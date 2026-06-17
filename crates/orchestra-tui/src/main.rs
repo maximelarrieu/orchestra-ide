@@ -259,6 +259,26 @@ async fn event_loop(
                                 KeyCode::Esc | KeyCode::Char('2') => app.toggle_docs(),
                                 _ => {}
                             }
+                        } else if app.view == View::Spaces && app.browse.is_some() {
+                            // Navigateur de dossiers : explorer et ouvrir un espace repéré.
+                            match key.code {
+                                KeyCode::Up => app.browse_move(-1),
+                                KeyCode::Down => app.browse_move(1),
+                                KeyCode::Enter => {
+                                    if let Some(path) = app.browse_enter() {
+                                        match open_space(&path) {
+                                            Ok(new_app) => {
+                                                *app = new_app;
+                                                rx = None;
+                                            }
+                                            Err(msg) => app.notice = Some(msg),
+                                        }
+                                    }
+                                }
+                                KeyCode::Left | KeyCode::Char('u') => app.browse_up(),
+                                KeyCode::Esc => app.cancel_browse(),
+                                _ => {}
+                            }
                         } else if app.view == View::Spaces && app.input.is_none() {
                             // Sélecteur d'espaces connus : navigation + ouverture + suivi.
                             match key.code {
@@ -275,6 +295,7 @@ async fn event_loop(
                                         }
                                     }
                                 }
+                                KeyCode::Char('b') => app.start_browse(),
                                 KeyCode::Char('a') => app.start_space_input(),
                                 KeyCode::Char('x') => app.forget_selected_space(),
                                 KeyCode::Esc | KeyCode::Char('3') => app.toggle_spaces(),
