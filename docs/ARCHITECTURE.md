@@ -28,16 +28,24 @@ graph TD
     tui -->|rendu| ratatui
     core -->|sérialisation| serde
     core -->|tâches + canal mpsc| tokio
-    future["UI Tauri + React<br/>(prévu)"] -.->|consommera le MÊME core| core
+    desktop["orchestra-desktop<br/>(GUI Dioxus — tout-Rust)"] -->|appelle / consomme AgentEvent| core
 
     style core fill:#0b7,stroke:#064,color:#fff
-    style future stroke-dasharray: 5 5
+    style desktop stroke-dasharray: 5 5
 ```
 
 | Crate | Rôle | Dépendances clés |
 |---|---|---|
 | `orchestra-core` | Modèle, scaffolding, runtime d'agents, contrat d'événements | `serde`, `serde_json`, `thiserror`, `tokio` |
 | `orchestra-tui` | CLI (`init`) + tableau de bord temps réel | `orchestra-core`, `ratatui`, `tokio`, `futures`, `crossterm` |
+| `orchestra-desktop` | GUI bureau (Dioxus), **tout-Rust, sans IPC** — consomme le même `orchestra-core` | `orchestra-core`, `dioxus` (desktop), `tokio` |
+
+> **Deux UIs, un seul cœur.** `orchestra-tui` (ratatui) et `orchestra-desktop` (Dioxus) sont
+> deux *consommateurs* du même `orchestra-core` : c'est le bénéfice direct du découplage strict
+> (le cœur ne dépend d'aucune lib d'affichage). Dioxus a été préféré à Tauri+React pour rester
+> **tout-Rust** — l'UI appelle le cœur directement (pas de frontière IPC ni de toolchain Node) et
+> fait un `match` natif sur `AgentEvent`. Build : webview système (WebView2 sur Windows,
+> `webkit2gtk` sur Linux).
 
 ### Arborescence des modules
 

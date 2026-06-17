@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/orchestra-core", "crates/orchestra-tui"]
+members = ["crates/orchestra-core", "crates/orchestra-tui", "crates/orchestra-desktop"]
 
 [workspace.package]
 version = "0.1.0"

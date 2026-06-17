@@ -230,6 +230,19 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - Correctif au passage : nom d'outil de délégation slugifié (agents accentués → API valide).
 - Hors périmètre (à suivre) : support MCP, parallélisme inter-manches plus fin.
 
+## GUI bureau Dioxus — tranche verticale (post-Phase 5) 🚧
+
+- Nouveau crate `orchestra-desktop` : interface graphique **tout-Rust** (Dioxus) qui consomme
+  directement `orchestra-core` — **aucune frontière IPC, aucun Node**. Bénéfice direct du
+  découplage : 2e consommateur du même cœur, à côté du TUI.
+- Tranche verticale : charge l'espace exemple, liste les agents, lance `runtime::orchestrate`
+  et streame les `AgentEvent` (radar + panneau Plan + bouton d'approbation) — `match` natif sur
+  le contrat d'événements.
+- Choix : **Dioxus** plutôt que Tauri+React (rester mono-langage, appel direct du cœur).
+- Limite : Dioxus desktop exige une webview système (WebView2 Windows / `webkit2gtk` Linux) —
+  non compilable dans le conteneur cloud (libs GUI absentes) ; build/run sur poste (Windows).
+  Premier jet, à affiner au premier build.
+
 ## Bascule automatique de fournisseur LLM (Claude ↔ Gemini) (post-Phase 5) ✅
 
 - `LlmClient` gère une liste ordonnée de `Backend` (Claude préféré, Gemini en repli, selon les
