@@ -1,0 +1,9 @@
+{
+  "project_name": "Apprentissage_Espagnol",
+  "project_type": "langue",
+  "workspace_path": null,
+  "documentalist_enabled": true,
+  "agents": ["Agent_Tuteur", "Agent_Correcteur"],
+  "skills": ["Quiz", "Translate_Text", "Text_To_Speech"],
+  "integrations": {}
+}
