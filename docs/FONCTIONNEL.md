@@ -125,23 +125,27 @@ Les agents appellent réellement un LLM dès qu'une clé API est exposée :
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."   # Claude (défaut claude-opus-4-8)
 # ou
-export GEMINI_API_KEY="..."             # Gemini (défaut gemini-2.0-flash)
+export GEMINI_API_KEY="..."             # Gemini (défaut gemini-2.5-flash)
 
 # Optionnel : forcer le fournisseur / le modèle
 export ORCHESTRA_PROVIDER=gemini        # anthropic | gemini
-export ORCHESTRA_MODEL=gemini-2.0-flash
+export ORCHESTRA_MODEL=gemini-2.5-flash
 
 cargo run -p orchestra-tui -- examples/recherche-immo-aix
 ```
 
-Le fournisseur est choisi automatiquement selon la clé présente (`ANTHROPIC_API_KEY` puis
-`GEMINI_API_KEY`) ; `ORCHESTRA_PROVIDER` a priorité. Les clés sont lues depuis
-l'environnement, jamais en dur.
+Le fournisseur est choisi automatiquement selon les clés présentes ; `ORCHESTRA_PROVIDER` a
+priorité (force un fournisseur unique). Les clés sont lues depuis l'environnement, jamais en dur.
 
-L'en-tête du dashboard affiche le mode : `🤖 <modèle>` quand un LLM est actif, sinon
-`simulé · clé API absente`. **Sans clé (ou si l'API est injoignable), l'appli bascule
-automatiquement en mode simulé** — elle reste pleinement utilisable hors-ligne, et le radar
-rappelle quelles variables définir.
+**Bascule automatique Claude ↔ Gemini** : si les deux clés sont définies, Claude est préféré et
+**Gemini sert de repli**. Si Claude devient indisponible — réseau, surcharge, quota ou **crédit
+épuisé** — l'appli **passe sur Gemini toute seule**, sans couper l'orchestre ; un fournisseur
+définitivement KO (clé invalide / plus de crédit) est écarté pour la suite. L'en-tête affiche le
+fournisseur actif et le repli (ex. `Claude · claude-opus-4-8 (repli : Gemini)`).
+
+Si **aucun** fournisseur n'est disponible (aucune clé, ou tous en échec), l'appli bascule en
+**mode simulé** — pleinement utilisable hors-ligne ; l'en-tête indique `simulé · clé API absente`
+et le radar rappelle quelles variables définir.
 
 > ⚠️ Le Skill `Execute_Terminal_Command` exécute de vraies commandes shell dans le
 > workspace. C'est une capacité assumée pour un IDE de développement, encadrée (workspace

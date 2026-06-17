@@ -73,7 +73,7 @@ Plan global en 5 phases (+ évolutions post-Phase 5 ci-dessous) :
 
 **Livré**
 - `orchestra-core::llm` : client **multi-fournisseurs** en HTTP brut (`reqwest`, rustls) —
-  **Claude** (`claude-opus-4-8`) ou **Gemini** (`gemini-2.0-flash`) au choix, via une
+  **Claude** (`claude-opus-4-8`) ou **Gemini** (`gemini-2.5-flash`) au choix, via une
   représentation neutre (`Msg`/`Block`/`ToolSpec`). Sélection par `ORCHESTRA_PROVIDER` ou
   auto-détection de la clé (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) ; modèle surchargé par
   `ORCHESTRA_MODEL`.
@@ -229,6 +229,17 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   (`run_orchestration`) entre `[1]` et `[5]`.
 - Correctif au passage : nom d'outil de délégation slugifié (agents accentués → API valide).
 - Hors périmètre (à suivre) : support MCP, parallélisme inter-manches plus fin.
+
+## Bascule automatique de fournisseur LLM (Claude ↔ Gemini) (post-Phase 5) ✅
+
+- `LlmClient` gère une liste ordonnée de `Backend` (Claude préféré, Gemini en repli, selon les
+  clés). `complete()` bascule sur le fournisseur suivant si l'actuel est indisponible (réseau,
+  surcharge, 429, auth, ou **crédit épuisé** → 400 « credit balance too low »).
+- Échec **permanent** (clé invalide / plus de crédit) → le backend est écarté pour la suite
+  (`active: AtomicUsize`). Une requête malformée (400 hors facturation) remonte sans bascule.
+- `ORCHESTRA_PROVIDER` force un fournisseur unique ; `describe()` affiche l'actif + le repli
+  dans l'en-tête (ex. `Claude · claude-opus-4-8 (repli : Gemini)`).
+- Tests : classification crédit-épuisé / auth / rate-limit / requête-malformée.
 
 ## Sélecteur de skills (catalogue à cocher) (post-Phase 5) ✅
 
