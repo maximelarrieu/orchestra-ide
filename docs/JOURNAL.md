@@ -73,7 +73,7 @@ Plan global en 5 phases (+ évolutions post-Phase 5 ci-dessous) :
 
 **Livré**
 - `orchestra-core::llm` : client **multi-fournisseurs** en HTTP brut (`reqwest`, rustls) —
-  **Claude** (`claude-opus-4-8`) ou **Gemini** (`gemini-2.0-flash`) au choix, via une
+  **Claude** (`claude-opus-4-8`) ou **Gemini** (`gemini-2.5-flash`) au choix, via une
   représentation neutre (`Msg`/`Block`/`ToolSpec`). Sélection par `ORCHESTRA_PROVIDER` ou
   auto-détection de la clé (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) ; modèle surchargé par
   `ORCHESTRA_MODEL`.

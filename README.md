@@ -87,11 +87,11 @@ le résultat. Les trois Skills Dev sont branchés sur le système (`orchestra-co
 ```bash
 # Claude (défaut claude-opus-4-8) :
 export ANTHROPIC_API_KEY="sk-ant-..."
-# …ou Gemini (défaut gemini-2.0-flash) :
+# …ou Gemini (défaut gemini-2.5-flash) :
 export GEMINI_API_KEY="..."
 # Forcer le fournisseur / le modèle si besoin :
 export ORCHESTRA_PROVIDER=gemini      # anthropic | gemini
-export ORCHESTRA_MODEL=gemini-2.0-flash
+export ORCHESTRA_MODEL=gemini-2.5-flash
 
 cargo run -p orchestra-tui -- examples/recherche-immo-aix
 # [1] lance l'orchestre — le radar affiche les actions réelles des agents.

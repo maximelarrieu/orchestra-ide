@@ -178,7 +178,7 @@ SDK officiel), l'un des deux fournisseurs **au choix** :
 | Provider | Endpoint | Modèle par défaut | Clé |
 |---|---|---|---|
 | `Anthropic` (Claude) | `POST /v1/messages` | `claude-opus-4-8` | `ANTHROPIC_API_KEY` |
-| `Gemini` | `…/{model}:generateContent` | `gemini-2.0-flash` | `GEMINI_API_KEY` |
+| `Gemini` | `…/{model}:generateContent` | `gemini-2.5-flash` | `GEMINI_API_KEY` |
 
 Une représentation **neutre** (`Msg` / `Block` / `ToolSpec` / `ToolResult`) découple la
 boucle agentique du format de chaque fournisseur : chaque provider *rend* cette

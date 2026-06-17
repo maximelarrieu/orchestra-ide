@@ -125,11 +125,11 @@ Les agents appellent réellement un LLM dès qu'une clé API est exposée :
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."   # Claude (défaut claude-opus-4-8)
 # ou
-export GEMINI_API_KEY="..."             # Gemini (défaut gemini-2.0-flash)
+export GEMINI_API_KEY="..."             # Gemini (défaut gemini-2.5-flash)
 
 # Optionnel : forcer le fournisseur / le modèle
 export ORCHESTRA_PROVIDER=gemini        # anthropic | gemini
-export ORCHESTRA_MODEL=gemini-2.0-flash
+export ORCHESTRA_MODEL=gemini-2.5-flash
 
 cargo run -p orchestra-tui -- examples/recherche-immo-aix
 ```

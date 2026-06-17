@@ -16,7 +16,7 @@ use thiserror::Error;
 
 /// Modèles par défaut (surchargés par `ORCHESTRA_MODEL`).
 pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
-pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
