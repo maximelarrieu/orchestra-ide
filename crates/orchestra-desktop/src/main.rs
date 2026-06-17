@@ -1,14 +1,14 @@
-//! Interface graphique de bureau (Dioxus) — **première tranche verticale**.
+//! Interface graphique de bureau (Dioxus) — port GUI d'Orchestra IDE.
 //!
-//! Démontre le port GUI sans réécrire le moteur : l'UI **consomme directement
-//! `orchestra-core`** (aucune frontière IPC, aucun Node). Elle charge un Espace, liste ses
-//! agents, lance l'orchestration et **streame les `AgentEvent`** dans la fenêtre (radar +
-//! panneau Plan + bouton d'approbation) — le même contrat que consomme déjà le TUI.
+//! L'UI **consomme directement `orchestra-core`** (aucune frontière IPC, aucun Node) : elle
+//! charge/édite un Espace, liste agents et skills, lance l'orchestration et **streame les
+//! `AgentEvent`** — le même contrat que le TUI. Objectif : retrouver dans la fenêtre les
+//! fonctions du terminal (orchestrer, documents, agents & skills ; chat et édition persona à venir).
 //!
-//! Découpage : [`state`] (état + pont vers le cœur), [`components`] (rendu), [`styles`] (CSS).
+//! Découpage : [`state`] (état + ponts vers le cœur), [`components`] (rendu), [`styles`] (CSS).
 //!
-//! ⚠️ Premier jet : à compiler sur une machine avec webview (WebView2 sur Windows). On
-//! itérera sur d'éventuels ajustements d'API Dioxus au premier build.
+//! ⚠️ À compiler sur une machine avec webview (WebView2 sur Windows). On itère sur d'éventuels
+//! ajustements d'API Dioxus au premier build.
 
 mod components;
 mod state;
@@ -19,9 +19,9 @@ use orchestra_core::model::ContextSpace;
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
-use state::{drive_orchestration, PlanRow};
+use state::{drive_orchestration, PlanRow, View};
 
-/// Espace ouvert au démarrage (un sélecteur de dossier viendra ensuite).
+/// Espace ouvert au démarrage.
 const DEFAULT_SPACE: &str = "examples/recherche-immo-aix";
 
 fn main() {
@@ -29,20 +29,29 @@ fn main() {
 }
 
 fn app() -> Element {
-    // Chargement de l'Espace une seule fois (accès disque synchrone côté cœur — hors rendu).
-    let space = use_signal(|| ContextSpace::load(&PathBuf::from(DEFAULT_SPACE)).ok());
+    let mut space = use_signal(|| ContextSpace::load(&PathBuf::from(DEFAULT_SPACE)).ok());
+    let mut space_path = use_signal(|| DEFAULT_SPACE.to_string());
+    let mut objective = use_signal(|| state::DEFAULT_GOAL.to_string());
+    let mut view = use_signal(|| View::Orchestrate);
+
+    // État d'orchestration.
     let log = use_signal(Vec::<String>::new);
     let plan = use_signal(Vec::<PlanRow>::new);
     let mut pending = use_signal(|| false);
     let approve_tx = use_signal(|| None::<UnboundedSender<bool>>);
 
-    // Lance l'orchestration (le pont vers le cœur vit dans `state`).
+    // État des vues Documents / Agents.
+    let selected_agent = use_signal(|| 0usize);
+    let doc_content = use_signal(String::new);
+
+    let load_space = move |_| {
+        space.set(ContextSpace::load(&PathBuf::from(space_path())).ok());
+    };
     let launch = move |_| {
         if let Some(sp) = space() {
-            drive_orchestration(sp, log, plan, pending, approve_tx);
+            drive_orchestration(sp, objective(), log, plan, pending, approve_tx);
         }
     };
-    // Approuve le plan proposé → l'orchestration s'exécute.
     let approve = move |_| {
         if let Some(tx) = approve_tx() {
             let _ = tx.send(true);
@@ -54,26 +63,40 @@ fn app() -> Element {
         style { {styles::CSS} }
         div { class: "app",
             h1 { "🎻 Orchestra IDE" }
-            match space() {
-                Some(sp) => rsx! {
-                    {components::header(
-                        &sp.config.project_name,
-                        &sp.config.agents.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", "),
-                    )}
-                    div { class: "actions",
-                        button { onclick: launch, "▶ Lancer l'orchestre" }
-                        if pending() {
-                            button { class: "go", onclick: approve, "✓ Exécuter le plan" }
+
+            // Barre d'espace : chemin + chargement (équivalent [3]).
+            div { class: "spacebar",
+                input { value: "{space_path}", oninput: move |e| space_path.set(e.value()) }
+                button { onclick: load_space, "Charger l'espace" }
+                if let Some(sp) = space() {
+                    span { class: "spacename", "  {sp.config.project_name}" }
+                }
+            }
+
+            {components::nav(view)}
+
+            match view() {
+                View::Orchestrate => rsx! {
+                    div { class: "orchestrate",
+                        textarea {
+                            class: "goal",
+                            value: "{objective}",
+                            oninput: move |e| objective.set(e.value()),
                         }
+                        div { class: "actions",
+                            button { onclick: launch, "▶ Lancer l'orchestre" }
+                            if pending() {
+                                button { class: "go", onclick: approve, "✓ Exécuter le plan" }
+                            }
+                        }
+                        if !plan().is_empty() {
+                            {components::plan_panel(&plan())}
+                        }
+                        {components::radar(&log())}
                     }
-                    if !plan().is_empty() {
-                        {components::plan_panel(&plan())}
-                    }
-                    {components::radar(&log())}
                 },
-                None => rsx! {
-                    p { class: "error", "Impossible de charger l'espace « {DEFAULT_SPACE} »." }
-                },
+                View::Documents => components::documents_view(space, doc_content),
+                View::Agents => components::agents_view(space, selected_agent),
             }
         }
     }

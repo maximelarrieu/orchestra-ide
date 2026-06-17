@@ -4,8 +4,10 @@ Port **bureau** d'Orchestra IDE, en **Rust pur** (Dioxus). L'UI consomme directe
 `orchestra-core` (aucune frontière IPC, aucun toolchain Node) : elle appelle `runtime`,
 `ContextSpace`, etc. et fait un `match` natif sur les `AgentEvent` — la même couture que le TUI.
 
-> État : **première tranche verticale** — charge l'espace exemple, liste les agents, lance
-> l'orchestration et affiche en direct le radar + le panneau Plan + l'approbation du plan.
+> État : montée en parité avec le TUI. Présent : **navigation par vues**, **sélecteur d'espace**
+> (chemin), **saisie d'objectif** + orchestration (radar + panneau Plan + approbation),
+> **Documents** (liste + visualiseur), **Agents & skills** (catalogue à cocher, persisté).
+> À venir : **chat coordinateur** et **édition du persona**.
 
 ## Prérequis de build (webview système)
 
@@ -40,6 +42,8 @@ quand ils grossiront (Dioxus, c'est du Rust normal — on découpe librement).
 
 ## Prochaines étapes
 
-- Sélecteur de dossier d'espace (au lieu du chemin codé en dur).
-- Saisie de l'objectif + chat coordinateur (`[5]`).
-- Sélecteur de skills et éditeur de persona (reprise des écrans du TUI).
+- **Chat coordinateur** (`[5]`) : conversation persistante + orchestration inline.
+- **Édition du persona** (`[4]`) : zone de texte + sauvegarde via le cœur.
+- Création/édition de fiches de skill depuis la vue Agents (`[n]`/`[e]`).
+- Sélecteur de dossier natif (au lieu de la saisie de chemin).
+- Sidebar « orchestre live » + bandeau d'état (fournisseur LLM actif).
