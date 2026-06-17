@@ -44,7 +44,7 @@ pub const CSS: &str = r#"
 
     /* Chat */
     .chat { display: flex; flex-direction: column; gap: .6rem; }
-    .messages { display: flex; flex-direction: column; gap: .5rem; max-height: 420px;
+    .messages { display: flex; flex-direction: column; gap: .5rem; height: 65vh; min-height: 320px;
                 overflow: auto; padding: .4rem; background: #05070c; border-radius: 8px; }
     .bubble { max-width: 78%; padding: .5rem .7rem; border-radius: 10px; }
     .bubble .who { display: block; font-size: .72rem; color: #8ab4ff; margin-bottom: .15rem; }
@@ -58,6 +58,6 @@ pub const CSS: &str = r#"
                   padding: 0; font-size: .8rem; }
     .disclosure:hover { color: #fff; background: none; }
     .planbox { border: 1px solid #2c3a55; border-radius: 8px; padding: .5rem .7rem; }
-    .composer { display: flex; gap: .5rem; }
-    .chatinput { flex: 1; }
+    .composer { display: flex; gap: .5rem; align-items: flex-end; }
+    .chatinput { flex: 1; resize: none; min-height: 2.4rem; max-height: 7rem; line-height: 1.3; }
 "#;

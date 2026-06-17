@@ -134,11 +134,14 @@ pub fn chat_view(
         }
         draft.set(String::new());
     };
-    // …et via la touche Entrée (logique dupliquée : un même closure ne peut être déplacé 2×).
+    // …et via la touche Entrée (Maj+Entrée = saut de ligne). Logique dupliquée : un même
+    // closure ne peut être déplacé 2×.
     let send_key = move |e: KeyboardEvent| {
-        if e.key() != Key::Enter {
+        // Maj+Entrée (ou autre touche) → comportement par défaut du textarea (saut de ligne).
+        if e.key() != Key::Enter || e.modifiers().contains(Modifiers::SHIFT) {
             return;
         }
+        e.prevent_default(); // Entrée seule = envoi : pas d'insertion de saut de ligne
         let text = draft();
         if text.trim().is_empty() {
             return;
@@ -172,10 +175,11 @@ pub fn chat_view(
                 }
             }
             div { class: "composer",
-                input {
+                textarea {
                     class: "chatinput",
+                    rows: "2",
                     value: "{draft}",
-                    placeholder: "Écris au chef d'orchestre…  (Entrée pour envoyer)",
+                    placeholder: "Écris au chef d'orchestre…  (Entrée pour envoyer · Maj+Entrée pour un saut de ligne)",
                     oninput: move |e| draft.set(e.value()),
                     onkeydown: send_key,
                 }
