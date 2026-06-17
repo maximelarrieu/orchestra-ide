@@ -51,9 +51,41 @@ pub fn radar(lines: &[String]) -> Element {
     }
 }
 
-/// Vue Documents : liste des documents de l'espace + visualiseur (lecture seule).
-pub fn documents_view(space: Signal<Option<ContextSpace>>, content: Signal<String>) -> Element {
+/// Charge mermaid.js (une fois, depuis le CDN) puis **rend** les blocs `.mermaid` présents. Si
+/// mermaid n'est pas (encore) disponible, le bloc affiche son code source — dégradé propre.
+const MERMAID_BOOT: &str = r#"
+(function(){
+  function render(){ try {
+    window.mermaid.initialize({ startOnLoad:false, theme:'dark', securityLevel:'loose' });
+    window.mermaid.run({ querySelector: '.mermaid:not([data-processed])' });
+  } catch(e){} }
+  if (window.mermaid) { render(); return; }
+  var ex = document.getElementById('mermaid-cdn');
+  if (!ex) {
+    var s = document.createElement('script');
+    s.id = 'mermaid-cdn';
+    s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+    s.onload = render;
+    document.head.appendChild(s);
+  } else { setTimeout(render, 300); }
+})();
+"#;
+
+/// Vue Documents : liste des documents + visualiseur **Markdown rendu** (titres, listes, code,
+/// tableaux) et **diagrammes Mermaid** affichés visuellement.
+#[component]
+pub fn DocumentsView(space: Signal<Option<ContextSpace>>, content: Signal<String>) -> Element {
     let docs = space().map(|s| s.documents()).unwrap_or_default();
+    let html = state::render_markdown_html(&content());
+
+    // Après chaque changement de document, (re)rend les diagrammes Mermaid dans la webview.
+    use_effect(move || {
+        let _ = content(); // dépendance réactive : re-déclenche au changement de contenu
+        spawn(async move {
+            let _ = dioxus::document::eval(MERMAID_BOOT).await;
+        });
+    });
+
     rsx! {
         div { class: "cols",
             ul { class: "list",
@@ -61,7 +93,11 @@ pub fn documents_view(space: Signal<Option<ContextSpace>>, content: Signal<Strin
                     { doc_item(d.label.clone(), d.path.clone(), content) }
                 }
             }
-            pre { class: "viewer", {content()} }
+            if content().is_empty() {
+                div { class: "viewer markdown", p { class: "muted", "Sélectionne un document à gauche." } }
+            } else {
+                div { class: "viewer markdown", dangerous_inner_html: html }
+            }
         }
     }
 }

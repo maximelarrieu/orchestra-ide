@@ -37,10 +37,31 @@ pub const CSS: &str = r#"
 
     .plan { list-style: none; padding-left: 0; }
     .plan li { padding: .2rem .4rem; border-left: 3px solid #2c3a55; margin: .2rem 0; }
-    .radar, .viewer { background: #05070c; color: #cdd6e0; padding: .6rem; border-radius: 6px;
-                      max-height: 360px; overflow: auto; white-space: pre-wrap; font-size: .85rem; }
-    .viewer { flex: 1; }
+    .radar { background: #05070c; color: #cdd6e0; padding: .6rem; border-radius: 6px;
+             max-height: 360px; overflow: auto; white-space: pre-wrap; font-size: .85rem; }
+    .viewer { flex: 1; background: #05070c; color: #cdd6e0; padding: .6rem 1rem; border-radius: 6px;
+              max-height: 70vh; overflow: auto; }
     .error { color: #ff8a8a; }
+
+    /* Rendu Markdown du visualiseur de documents */
+    .markdown { line-height: 1.55; }
+    .markdown h1, .markdown h2, .markdown h3, .markdown h4 { color: #cfe0ff; line-height: 1.25; margin: 1rem 0 .5rem; }
+    .markdown h1 { font-size: 1.5rem; border-bottom: 1px solid #1c2535; padding-bottom: .3rem; }
+    .markdown h2 { font-size: 1.25rem; border-bottom: 1px solid #1c2535; padding-bottom: .25rem; }
+    .markdown h3 { font-size: 1.08rem; }
+    .markdown p { margin: .5rem 0; }
+    .markdown ul, .markdown ol { padding-left: 1.4rem; margin: .4rem 0; }
+    .markdown li { margin: .15rem 0; }
+    .markdown a { color: #8ab4ff; }
+    .markdown code { background: #11161f; padding: .1rem .35rem; border-radius: 4px; font-size: .88em; }
+    .markdown pre { background: #11161f; padding: .7rem; border-radius: 8px; overflow: auto; }
+    .markdown pre code { background: none; padding: 0; }
+    .markdown blockquote { border-left: 3px solid #2c3a55; margin: .5rem 0; padding: .1rem .8rem; color: #9fb0c3; }
+    .markdown table { border-collapse: collapse; margin: .6rem 0; }
+    .markdown th, .markdown td { border: 1px solid #2c3a55; padding: .3rem .6rem; }
+    .markdown th { background: #11161f; }
+    .markdown hr { border: none; border-top: 1px solid #1c2535; margin: 1rem 0; }
+    .markdown .mermaid { background: #0f1420; padding: .8rem; border-radius: 8px; text-align: center; }
 
     /* Chat */
     .chat { display: flex; flex-direction: column; gap: .6rem; }

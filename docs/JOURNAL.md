@@ -300,6 +300,21 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   brancher, créer/éditer les fiches (éditeur intégré). Parité atteinte avec le menu `[6]` du TUI,
   enrichi des nouveautés ci-dessus des deux côtés.
 
+## Desktop — visualiseur Markdown rendu + Mermaid (post-Phase 5) ✅
+
+- La vue **Documents** du desktop n'affiche plus le Markdown brut : rendu **HTML** via
+  `pulldown-cmark` (`state::render_markdown_html`) — titres (`#`/`##`/`###`), listes, code,
+  tableaux, citations — injecté avec `dangerous_inner_html` + CSS dédié `.markdown`.
+- **Diagrammes Mermaid affichés visuellement** : les blocs ` ```mermaid ` deviennent des
+  `<pre class="mermaid">`, rendus par **mermaid.js** (chargé une fois depuis le CDN, exécuté
+  via `document::eval` à chaque changement de document). Dégradé propre si indisponible
+  (affiche le code source). *Skill produit par l'Agent Documentaliste enfin lisible comme un
+  vrai schéma.*
+- Parité : le **TUI rend déjà le Markdown** (`markdown.rs` → lignes ratatui) ; le rendu
+  graphique d'un diagramme Mermaid est propre au médium graphique (le terminal montre le code,
+  ce qu'il faisait déjà). La capacité « voir ses documents mis en forme » est donc des deux côtés.
+- Prérequis runtime : accès réseau de la webview pour le CDN mermaid (build/poste).
+
 ## Registre de skills exécutables (post-Phase 5) ✅
 
 - Les skills sont **activés systématiquement** via un registre : id → définition

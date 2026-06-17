@@ -279,3 +279,38 @@ pub fn load_fiche(space: Signal<Option<ContextSpace>>, id: &str) -> Option<(Path
 pub fn save_fiche(path: &Path, content: &str) -> bool {
     orchestra_core::markdown_skill::save(path, content).is_ok()
 }
+
+/// Convertit du Markdown en **HTML** pour le visualiseur de documents (titres, listes, code,
+/// tableaux…). Les blocs ` ```mermaid ` sont transformés en `<pre class="mermaid">` afin d'être
+/// rendus visuellement par mermaid.js dans la webview (cf. `DocumentsView`).
+pub fn render_markdown_html(md: &str) -> String {
+    use pulldown_cmark::{html, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+
+    let mut events: Vec<Event> = Vec::new();
+    let mut in_mermaid = false;
+    let mut buf = String::new();
+    for ev in Parser::new_ext(md, options) {
+        match ev {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) if lang.as_ref() == "mermaid" => {
+                in_mermaid = true;
+                buf.clear();
+            }
+            Event::Text(t) if in_mermaid => buf.push_str(&t),
+            Event::End(TagEnd::CodeBlock) if in_mermaid => {
+                in_mermaid = false;
+                let escaped = buf.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                events.push(Event::Html(format!("<pre class=\"mermaid\">{escaped}</pre>").into()));
+            }
+            other => events.push(other),
+        }
+    }
+
+    let mut out = String::new();
+    html::push_html(&mut out, events.into_iter());
+    out
+}

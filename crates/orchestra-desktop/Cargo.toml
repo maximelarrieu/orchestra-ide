@@ -11,3 +11,5 @@ orchestra-core = { path = "../orchestra-core" }
 # webkit2gtk sur Linux). Voir README pour les prérequis de build.
 dioxus = { version = "0.6", features = ["desktop"] }
 tokio = { workspace = true, features = ["sync"] }
+# Rendu Markdown → HTML pour le visualiseur de documents (titres, listes, code, tableaux…).
+pulldown-cmark = "0.12"

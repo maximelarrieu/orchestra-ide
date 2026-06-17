@@ -7,7 +7,8 @@ Port **bureau** d'Orchestra IDE, en **Rust pur** (Dioxus). L'UI consomme directe
 > État : parité avancée avec le TUI. Présent : **navigation par vues**, **sélecteur d'espace**
 > (chemin), **saisie d'objectif** + orchestration (radar + panneau Plan + approbation),
 > **Chat coordinateur** (conversation, délégation, approbation de plan inline), **Documents**
-> (liste + visualiseur), et un **menu Agents & skills complet** : activer le Documentaliste,
+> (liste + **visualiseur Markdown rendu** : titres, listes, code, tableaux, **diagrammes
+> Mermaid** affichés visuellement), et un **menu Agents & skills complet** : activer le Documentaliste,
 > ajouter (suggéré/personnalisé) / renommer / éditer le rôle / supprimer des agents, cocher /
 > brancher les skills, créer et éditer les fiches.
 > À venir : **édition du persona**.
