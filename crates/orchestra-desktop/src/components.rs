@@ -8,7 +8,7 @@ use orchestra_core::model::ContextSpace;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::state::{self, ChatMsg, MsgKind, PlanRow, SkillEntry, SkillKind, View};
+use crate::state::{self, ChatMsg, KnownSpace, MsgKind, PlanRow, SkillEntry, SkillKind, View};
 
 /// Barre de navigation entre les vues.
 pub fn nav(mut view: Signal<View>) -> Element {
@@ -48,6 +48,60 @@ pub fn radar(lines: &[String]) -> Element {
     rsx! {
         h3 { "Radar" }
         pre { class: "radar", {lines.join("\n")} }
+    }
+}
+
+/// Barre d'espaces : saisie d'un chemin + **liste des espaces connus** (récents) à rouvrir d'un
+/// clic, sans retaper le chemin. Chaque entrée peut être retirée du suivi (×).
+#[component]
+pub fn SpaceBar(
+    space: Signal<Option<ContextSpace>>,
+    mut space_path: Signal<String>,
+    known: Signal<Vec<KnownSpace>>,
+) -> Element {
+    let active = space().map(|s| s.config.project_name.clone());
+    rsx! {
+        div { class: "spaces",
+            div { class: "spacebar",
+                input {
+                    class: "chatinput",
+                    value: "{space_path}",
+                    placeholder: "Chemin d'un espace…",
+                    oninput: move |e| space_path.set(e.value()),
+                }
+                button { onclick: move |_| { state::open_space(space, space_path, known, &space_path()); },
+                    "Charger" }
+                if let Some(name) = active {
+                    span { class: "spacename", "  ● {name}" }
+                }
+            }
+            if !known().is_empty() {
+                div { class: "chips",
+                    for k in known() {
+                        { space_chip(k, space, space_path, known) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn space_chip(
+    k: KnownSpace,
+    space: Signal<Option<ContextSpace>>,
+    space_path: Signal<String>,
+    known: Signal<Vec<KnownSpace>>,
+) -> Element {
+    let path_open = k.path.clone();
+    let path_forget = k.path.clone();
+    rsx! {
+        span { class: "chip",
+            button { class: "chiplabel",
+                onclick: move |_| { state::open_space(space, space_path, known, &path_open.to_string_lossy()); },
+                "{k.name}"
+            }
+            button { class: "chipx", onclick: move |_| state::forget_space_entry(known, &path_forget), "×" }
+        }
     }
 }
 

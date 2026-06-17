@@ -14,6 +14,7 @@ pub mod markdown_skill;
 pub mod memory;
 pub mod model;
 pub mod orchestration;
+pub mod registry;
 pub mod runtime;
 pub mod scaffold;
 pub mod skills;

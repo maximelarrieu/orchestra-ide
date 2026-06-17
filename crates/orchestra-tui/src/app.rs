@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use orchestra_core::events::{AgentEvent, PlannedTask};
 use orchestra_core::model::{AgentDef, ContextSpace, DocKind, ProjectType, SpaceDoc};
+use orchestra_core::registry::KnownSpace;
 
 use crate::editor::Editor;
 
@@ -80,6 +81,8 @@ pub enum View {
     Docs,
     /// Gestionnaire d'agents (rôle, skills, stats, édition).
     Agents,
+    /// Sélecteur d'espaces connus (récents) — ouvrir sans retaper le chemin.
+    Spaces,
 }
 
 /// Visualiseur Markdown ouvert sur un document.
@@ -145,6 +148,10 @@ pub struct App {
     pub pending_plan: bool,
     /// Sélecteur de skills ouvert (`Some`) ou fermé (`None`).
     pub skill_picker: Option<SkillPicker>,
+    /// Espaces connus (récents d'abord), pour le sélecteur `[3]`.
+    pub spaces: Vec<KnownSpace>,
+    /// Index de l'espace sélectionné dans le sélecteur.
+    pub space_sel: usize,
 }
 
 /// État d'une tâche du plan d'orchestration, côté affichage.
@@ -224,6 +231,8 @@ impl App {
             skill_picker: None,
             spinner: 0,
             notice: None,
+            spaces: orchestra_core::registry::known_spaces(),
+            space_sel: 0,
         }
     }
 
@@ -405,7 +414,46 @@ impl App {
         self.viewer.as_ref().is_some_and(|v| v.is_persona)
     }
 
-    /// `[3]` — entre en saisie d'un chemin d'espace.
+    /// `[3]` — ouvre/ferme le **sélecteur d'espaces connus** (récents), rafraîchi depuis le
+    /// registre global. Plus besoin de retaper un chemin de mémoire.
+    pub fn toggle_spaces(&mut self) {
+        if self.view == View::Spaces {
+            self.view = View::Radar;
+            return;
+        }
+        self.spaces = orchestra_core::registry::known_spaces();
+        self.space_sel = 0;
+        self.notice = None;
+        self.view = View::Spaces;
+    }
+
+    pub fn spaces_move(&mut self, delta: isize) {
+        if self.spaces.is_empty() {
+            return;
+        }
+        let last = self.spaces.len() as isize - 1;
+        self.space_sel = (self.space_sel as isize + delta).clamp(0, last) as usize;
+    }
+
+    /// Chemin de l'espace sélectionné dans le sélecteur (pour l'ouvrir).
+    pub fn selected_space_path(&self) -> Option<String> {
+        self.spaces.get(self.space_sel).map(|k| k.path.to_string_lossy().to_string())
+    }
+
+    /// `[x]` (sélecteur) — retire l'espace sélectionné du registre (« ne plus suivre »).
+    pub fn forget_selected_space(&mut self) {
+        if let Some(k) = self.spaces.get(self.space_sel) {
+            let name = k.name.clone();
+            orchestra_core::registry::forget_space(&k.path);
+            self.spaces = orchestra_core::registry::known_spaces();
+            if self.space_sel >= self.spaces.len() {
+                self.space_sel = self.spaces.len().saturating_sub(1);
+            }
+            self.notice = Some(format!("Espace « {name} » retiré du suivi."));
+        }
+    }
+
+    /// `[3]`/`[a]` — entre en saisie d'un chemin d'espace (ajouter un espace non listé).
     pub fn start_space_input(&mut self) {
         self.input = Some(String::new());
         self.notice = None;

@@ -315,6 +315,19 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   ce qu'il faisait déjà). La capacité « voir ses documents mis en forme » est donc des deux côtés.
 - Prérequis runtime : accès réseau de la webview pour le CDN mermaid (build/poste).
 
+## Registre des espaces connus (récents) (post-Phase 5) ✅
+
+- Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts
+  (`<config>/orchestra/spaces.json` — `%APPDATA%`/`$XDG_CONFIG_HOME`/`$HOME/.config`).
+  `known_spaces()`, `remember_space()` (valide l'espace + lit son nom, récents d'abord, dédup),
+  `forget_space()`. Mémorisation automatique à chaque ouverture réussie.
+- **TUI** : `[3]` ouvre désormais un **sélecteur d'espaces** (au lieu de la saisie directe) —
+  ↑↓ choisir, Entrée ouvrir, `[a]` saisir un chemin, `[x]` ne plus suivre. Ouverture centralisée
+  (`open_space`) côté saisie et sélecteur.
+- **Desktop** : composant `SpaceBar` — saisie de chemin + **puces** des espaces connus (clic pour
+  rouvrir, × pour retirer). Fini de retaper les chemins de mémoire.
+- Parité respectée : même registre cœur, même comportement des deux côtés.
+
 ## Registre de skills exécutables (post-Phase 5) ✅
 
 - Les skills sont **activés systématiquement** via un registre : id → définition

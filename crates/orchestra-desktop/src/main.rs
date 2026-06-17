@@ -29,8 +29,13 @@ fn main() {
 }
 
 fn app() -> Element {
-    let mut space = use_signal(|| ContextSpace::load(&PathBuf::from(DEFAULT_SPACE)).ok());
-    let mut space_path = use_signal(|| DEFAULT_SPACE.to_string());
+    let space = use_signal(|| ContextSpace::load(&PathBuf::from(DEFAULT_SPACE)).ok());
+    let space_path = use_signal(|| DEFAULT_SPACE.to_string());
+    // Espaces connus (récents) : mémorise l'espace d'ouverture puis liste le registre.
+    let known = use_signal(|| {
+        let _ = orchestra_core::registry::remember_space(&PathBuf::from(DEFAULT_SPACE));
+        state::known_spaces()
+    });
     let mut objective = use_signal(|| state::DEFAULT_GOAL.to_string());
     let view = use_signal(|| View::Orchestrate);
 
@@ -50,9 +55,6 @@ fn app() -> Element {
     let draft = use_signal(String::new);
     let user_tx = use_signal(|| None::<UnboundedSender<String>>);
 
-    let load_space = move |_| {
-        space.set(ContextSpace::load(&PathBuf::from(space_path())).ok());
-    };
     let launch = move |_| {
         if let Some(sp) = space() {
             drive_orchestration(sp, objective(), log, plan, pending, approve_tx);
@@ -75,14 +77,8 @@ fn app() -> Element {
         div { class: "app",
             h1 { "🎻 Orchestra IDE" }
 
-            // Barre d'espace : chemin + chargement (équivalent [3]).
-            div { class: "spacebar",
-                input { value: "{space_path}", oninput: move |e| space_path.set(e.value()) }
-                button { onclick: load_space, "Charger l'espace" }
-                if let Some(sp) = space() {
-                    span { class: "spacename", "  {sp.config.project_name}" }
-                }
-            }
+            // Sélecteur d'espaces : chemin + espaces connus (récents) — équivalent [3] du TUI.
+            components::SpaceBar { space, space_path, known }
 
             {components::nav(view)}
 

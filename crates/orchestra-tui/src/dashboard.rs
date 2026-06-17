@@ -63,6 +63,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             View::Radar => render_radar(frame, center, app),
             View::Docs => render_docs_list(frame, center, app),
             View::Agents => render_agents(frame, center, app),
+            View::Spaces => render_spaces(frame, center, app),
         }
     }
     render_menu(frame, menu, app);
@@ -202,6 +203,34 @@ fn render_agents(frame: &mut Frame, area: Rect, app: &App) {
             "  Aucun espace chargé.",
             Style::new().dark_gray(),
         ))),
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Sélecteur d'espaces connus (récents), pour rouvrir sans retaper le chemin.
+fn render_spaces(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 🗂  ESPACES CONNUS ");
+    let mut lines: Vec<Line> = Vec::new();
+    if app.spaces.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Aucun espace mémorisé. [a] pour saisir un chemin.",
+            Style::new().dark_gray(),
+        )));
+    } else {
+        for (i, k) in app.spaces.iter().enumerate() {
+            let selected = i == app.space_sel;
+            lines.push(Line::from(vec![
+                Span::raw(if selected { "▶ " } else { "  " }),
+                Span::styled(
+                    k.name.clone(),
+                    if selected { Style::new().cyan().bold() } else { Style::new().cyan() },
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("    {}", k.path.display()),
+                Style::new().dark_gray(),
+            )));
+        }
     }
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -591,6 +620,11 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     } else if app.view == View::Docs {
         vec![Line::from(Span::styled(
             "📚 Documents — ↑↓ choisir · Entrée ouvrir · Échap retour",
+            Style::new().cyan(),
+        ))]
+    } else if app.view == View::Spaces && app.input.is_none() {
+        vec![Line::from(Span::styled(
+            "🗂  Espaces — ↑↓ choisir · Entrée ouvrir · [a] saisir un chemin · [x] ne plus suivre · Échap",
             Style::new().cyan(),
         ))]
     } else if let Some((field, buf)) = &app.agent_prompt {

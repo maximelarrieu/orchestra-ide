@@ -63,6 +63,7 @@ crates/
 │  ├─ memory.rs         # mémoire partagée d'espace : Remember / Recall (.orchestra/memory.md)
 │  ├─ orchestration.rs  # modèle de plan (Task/Plan, tri topo, validation, repli)
 │  ├─ integrations.rs   # Skills Git (local) + GitHub (REST) (Phase 4b)
+│  ├─ registry.rs       # registre global des espaces connus (récents) — partagé TUI/GUI
 │  ├─ scaffold.rs       # scaffold_space() : crée un Espace (Phase 2)
 │  └─ model/
 │     ├─ project_type.rs  # enum ProjectType

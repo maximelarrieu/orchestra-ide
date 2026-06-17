@@ -32,6 +32,21 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::app::{App, View};
 
+/// Charge un espace depuis un chemin, le **mémorise** dans le registre (récents) et renvoie un
+/// `App` neuf prêt à l'afficher. Centralise l'ouverture (saisie de chemin **et** sélecteur).
+fn open_space(path: &str) -> Result<App, String> {
+    match ContextSpace::load(Path::new(path)) {
+        Ok(space) => {
+            let _ = orchestra_core::registry::remember_space(Path::new(path));
+            let name = space.config.project_name.clone();
+            let mut app = App::new(Some(space));
+            app.notice = Some(format!("Espace chargé : {name}"));
+            Ok(app)
+        }
+        Err(e) => Err(format!("Échec du chargement : {e}")),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -69,7 +84,11 @@ fn print_usage() {
 
 async fn run_dashboard(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // On tolère l'absence d'espace : le dashboard s'affiche quand même (état « vide »).
-    let mut app = App::new(ContextSpace::load(root).ok());
+    let loaded = ContextSpace::load(root).ok();
+    if loaded.is_some() {
+        let _ = orchestra_core::registry::remember_space(root); // mémorise l'espace d'ouverture
+    }
+    let mut app = App::new(loaded);
 
     let mut terminal = ratatui::init();
     // Best-effort : permet de distinguer Maj/Alt+Entrée (terminaux compatibles kitty).
@@ -240,6 +259,27 @@ async fn event_loop(
                                 KeyCode::Esc | KeyCode::Char('2') => app.toggle_docs(),
                                 _ => {}
                             }
+                        } else if app.view == View::Spaces && app.input.is_none() {
+                            // Sélecteur d'espaces connus : navigation + ouverture + suivi.
+                            match key.code {
+                                KeyCode::Up => app.spaces_move(-1),
+                                KeyCode::Down => app.spaces_move(1),
+                                KeyCode::Enter => {
+                                    if let Some(path) = app.selected_space_path() {
+                                        match open_space(&path) {
+                                            Ok(new_app) => {
+                                                *app = new_app;
+                                                rx = None; // stoppe l'orchestre précédent
+                                            }
+                                            Err(msg) => app.notice = Some(msg),
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('a') => app.start_space_input(),
+                                KeyCode::Char('x') => app.forget_selected_space(),
+                                KeyCode::Esc | KeyCode::Char('3') => app.toggle_spaces(),
+                                _ => {}
+                            }
                         } else if app.chat.is_some() {
                             // Conversation : saisie d'un message + envoi au coordinateur.
                             match key.code {
@@ -295,14 +335,12 @@ async fn event_loop(
                                 KeyCode::Backspace => app.input_backspace(),
                                 KeyCode::Enter => {
                                     if let Some(path) = app.take_input() {
-                                        match ContextSpace::load(Path::new(&path)) {
-                                            Ok(space) => {
-                                                let name = space.config.project_name.clone();
-                                                *app = App::new(Some(space));
-                                                app.notice = Some(format!("Espace chargé : {name}"));
+                                        match open_space(&path) {
+                                            Ok(new_app) => {
+                                                *app = new_app;
                                                 rx = None; // stoppe l'orchestre précédent
                                             }
-                                            Err(e) => app.notice = Some(format!("Échec du chargement : {e}")),
+                                            Err(msg) => app.notice = Some(msg),
                                         }
                                     }
                                 }
@@ -339,7 +377,7 @@ async fn event_loop(
                                     }
                                 }
                                 KeyCode::Char('2') => app.toggle_docs(),
-                                KeyCode::Char('3') => app.start_space_input(),
+                                KeyCode::Char('3') => app.toggle_spaces(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
                                 KeyCode::Char('6') if app.space.is_some() => app.toggle_agents(),
                                 KeyCode::PageUp => app.radar_scroll_by(10),

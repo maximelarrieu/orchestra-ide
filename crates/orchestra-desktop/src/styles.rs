@@ -10,9 +10,17 @@ pub const CSS: &str = r#"
 
     input, textarea { background: #0f1420; color: #e6e6e6; border: 1px solid #2c3a55;
                       border-radius: 6px; padding: .4rem; font: inherit; }
-    .spacebar { display: flex; gap: .5rem; align-items: center; margin-bottom: .5rem; }
+    .spaces { margin-bottom: .6rem; }
+    .spacebar { display: flex; gap: .5rem; align-items: center; }
     .spacebar input { flex: 1; }
-    .spacename { color: #8ab4ff; }
+    .spacename { color: #8ab4ff; white-space: nowrap; }
+    .chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .4rem; }
+    .chip { display: inline-flex; align-items: center; background: #1d2535; border: 1px solid #2c3a55;
+            border-radius: 14px; overflow: hidden; }
+    .chiplabel { background: none; border: none; color: #cdd6e0; cursor: pointer; padding: .25rem .6rem; }
+    .chiplabel:hover { color: #fff; background: #263150; }
+    .chipx { background: none; border: none; color: #8895a7; cursor: pointer; padding: .25rem .5rem; }
+    .chipx:hover { color: #ff8a8a; }
 
     .nav { display: flex; gap: .4rem; margin: .5rem 0 .8rem; border-bottom: 1px solid #1c2535; padding-bottom: .5rem; }
     .tab { background: #1d2535; color: #cdd6e0; border: 1px solid #2c3a55; border-radius: 6px;

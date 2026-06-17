@@ -12,6 +12,8 @@ use tokio::sync::mpsc::UnboundedSender;
 // Types et catalogue de skills : **partagés avec le TUI** via `orchestra-core::catalog`, pour
 // garantir un comportement identique (cf. CLAUDE.md, règle de parité TUI ⇄ GUI).
 pub use orchestra_core::catalog::{skill_entries, SkillEntry, SkillKind};
+// Registre des espaces connus (récents) — partagé avec le TUI.
+pub use orchestra_core::registry::KnownSpace;
 
 /// Objectif par défaut proposé dans la zone de saisie.
 pub const DEFAULT_GOAL: &str = "Avance concrètement sur l'objectif de cet espace.";
@@ -278,6 +280,40 @@ pub fn load_fiche(space: Signal<Option<ContextSpace>>, id: &str) -> Option<(Path
 /// Enregistre le contenu d'une fiche `SKILL.md` (via le cœur).
 pub fn save_fiche(path: &Path, content: &str) -> bool {
     orchestra_core::markdown_skill::save(path, content).is_ok()
+}
+
+// --- Espaces : registre des espaces connus (récents) ---------------------------------------
+
+/// Espaces connus (récents d'abord), depuis le registre global.
+pub fn known_spaces() -> Vec<KnownSpace> {
+    orchestra_core::registry::known_spaces()
+}
+
+/// Ouvre un espace depuis un chemin : charge, met à jour les signaux, **mémorise** dans le
+/// registre et rafraîchit la liste des espaces connus. Renvoie `true` si chargé.
+pub fn open_space(
+    mut space: Signal<Option<ContextSpace>>,
+    mut space_path: Signal<String>,
+    mut known: Signal<Vec<KnownSpace>>,
+    path: &str,
+) -> bool {
+    let pb = PathBuf::from(path);
+    match ContextSpace::load(&pb) {
+        Ok(sp) => {
+            space.set(Some(sp));
+            space_path.set(path.to_string());
+            let _ = orchestra_core::registry::remember_space(&pb);
+            known.set(orchestra_core::registry::known_spaces());
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Retire un espace du registre (« ne plus suivre ») et rafraîchit la liste.
+pub fn forget_space_entry(mut known: Signal<Vec<KnownSpace>>, path: &Path) {
+    orchestra_core::registry::forget_space(path);
+    known.set(orchestra_core::registry::known_spaces());
 }
 
 /// Convertit du Markdown en **HTML** pour le visualiseur de documents (titres, listes, code,
