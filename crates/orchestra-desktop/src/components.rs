@@ -159,10 +159,10 @@ pub fn chat_view(
         div { class: "chat",
             div { class: "messages",
                 for (i, m) in messages().into_iter().enumerate() {
-                    { chat_bubble(i, m) }
+                    ChatBubble { key: "{i}", msg: m }
                 }
                 if thinking() {
-                    div { class: "bubble agent", "…" }
+                    div { class: "bubble coord", "…" }
                 }
             }
             if pending() {
@@ -185,19 +185,35 @@ pub fn chat_view(
     }
 }
 
-fn chat_bubble(index: usize, m: ChatMsg) -> Element {
-    let cls = match m.kind {
-        MsgKind::User => "bubble user",
-        MsgKind::Agent => "bubble agent",
-        MsgKind::System => "bubble system",
-    };
-    rsx! {
-        div { key: "{index}", class: "{cls}",
-            if m.kind != MsgKind::User {
-                span { class: "who", "{m.who}" }
+/// Une bulle de chat. Les messages d'**agent** sont **repliés par défaut** (le coordinateur
+/// les résume) : une flèche ▶/▼ déroule/cache leur texte. Chaque bulle a son propre état
+/// d'ouverture, d'où un vrai composant.
+#[component]
+fn ChatBubble(msg: ChatMsg) -> Element {
+    let mut expanded = use_signal(|| false);
+    match msg.kind {
+        MsgKind::User => rsx! {
+            div { class: "bubble user", div { class: "text", "{msg.text}" } }
+        },
+        MsgKind::Coordinator => rsx! {
+            div { class: "bubble coord",
+                span { class: "who", "{msg.who}" }
+                div { class: "text", "{msg.text}" }
             }
-            div { class: "text", "{m.text}" }
-        }
+        },
+        MsgKind::System => rsx! {
+            div { class: "bubble system", "{msg.who} {msg.text}" }
+        },
+        MsgKind::Agent => rsx! {
+            div { class: "bubble agent",
+                button { class: "disclosure", onclick: move |_| expanded.set(!expanded()),
+                    if expanded() { "▼ {msg.who}" } else { "▶ {msg.who}" }
+                }
+                if expanded() {
+                    div { class: "text", "{msg.text}" }
+                }
+            }
+        },
     }
 }
 

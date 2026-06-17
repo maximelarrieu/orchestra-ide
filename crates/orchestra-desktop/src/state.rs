@@ -23,6 +23,7 @@ pub enum View {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MsgKind {
     User,
+    Coordinator,
     Agent,
     System,
 }
@@ -138,7 +139,13 @@ pub fn start_chat(
                 AgentEvent::Thinking { .. } => thinking.set(true),
                 AgentEvent::Log { agent, msg } => {
                     thinking.set(false);
-                    let kind = if agent == "Vous" { MsgKind::User } else { MsgKind::Agent };
+                    let kind = if agent == "Vous" {
+                        MsgKind::User
+                    } else if agent == runtime::COORDINATOR {
+                        MsgKind::Coordinator
+                    } else {
+                        MsgKind::Agent
+                    };
                     messages.write().push(ChatMsg { who: agent, text: msg, kind });
                 }
                 AgentEvent::Started { agent } => messages

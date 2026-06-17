@@ -50,8 +50,13 @@ pub const CSS: &str = r#"
     .bubble .who { display: block; font-size: .72rem; color: #8ab4ff; margin-bottom: .15rem; }
     .bubble .text { white-space: pre-wrap; }
     .bubble.user { align-self: flex-end; background: #1f5132; }
-    .bubble.agent { align-self: flex-start; background: #1d2535; }
+    .bubble.coord { align-self: flex-start; background: #1d2535; border-left: 3px solid #8ab4ff; }
+    .bubble.agent { align-self: flex-start; background: #11161f; max-width: 88%; }
+    .bubble.agent .text { margin-top: .35rem; color: #aab4c0; border-top: 1px dashed #2c3a55; padding-top: .35rem; }
     .bubble.system { align-self: center; background: transparent; color: #788; font-size: .8rem; }
+    .disclosure { background: none; border: none; color: #8ab4ff; cursor: pointer;
+                  padding: 0; font-size: .8rem; }
+    .disclosure:hover { color: #fff; background: none; }
     .planbox { border: 1px solid #2c3a55; border-radius: 8px; padding: .5rem .7rem; }
     .composer { display: flex; gap: .5rem; }
     .chatinput { flex: 1; }
