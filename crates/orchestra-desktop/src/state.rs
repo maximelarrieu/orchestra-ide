@@ -50,23 +50,6 @@ pub struct PlanRow {
     pub status: String,
 }
 
-/// Nature d'un skill dans le sélecteur.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SkillKind {
-    Primitive,
-    Fiche,
-    Label,
-}
-
-/// Une entrée du sélecteur de skills (catalogue à cocher).
-#[derive(Clone, PartialEq)]
-pub struct SkillEntry {
-    pub id: String,
-    pub kind: SkillKind,
-    pub description: String,
-    pub selected: bool,
-}
-
 /// Lance l'orchestration et **streame les [`AgentEvent`]** dans les signaux fournis. Appelé
 /// depuis un gestionnaire d'événement (le `spawn` Dioxus tourne dans le scope réactif courant).
 pub fn drive_orchestration(
