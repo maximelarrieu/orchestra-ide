@@ -68,13 +68,18 @@ crates/
 │     ├─ config.rs        # ProjectConfig + Integrations
 │     ├─ space.rs         # ContextSpace (+ Adr)
 │     └─ skill_id.rs      # default_skills() / default_agents()
-└─ orchestra-tui/src/
-   ├─ main.rs           # dispatch CLI + boucle async tokio::select!
-   ├─ app.rs            # App : état agrégé du dashboard (sans ratatui)
-   ├─ dashboard.rs      # rendu des zones (en-tête / radar / docs / agents / menu)
-   ├─ editor.rs         # mini-éditeur texte (persona & fiches de skill)
-   ├─ markdown.rs       # rendu Markdown → lignes ratatui (visualiseur)
-   └─ wizard.rs         # assistant interactif `orchestra init`
+├─ orchestra-tui/src/
+│  ├─ main.rs           # dispatch CLI + boucle async tokio::select!
+│  ├─ app.rs            # App : état agrégé du dashboard (sans ratatui)
+│  ├─ dashboard.rs      # rendu des zones (en-tête / radar / docs / agents / menu)
+│  ├─ editor.rs         # mini-éditeur texte (persona & fiches de skill)
+│  ├─ markdown.rs       # rendu Markdown → lignes ratatui (visualiseur)
+│  └─ wizard.rs         # assistant interactif `orchestra init`
+└─ orchestra-desktop/src/   # GUI bureau Dioxus (tout-Rust)
+   ├─ main.rs           # launch + composant racine (composition + signaux)
+   ├─ state.rs          # état + pont vers le cœur (drive_orchestration, PlanRow)
+   ├─ components.rs     # composants de rendu (header / plan_panel / radar)
+   └─ styles.rs         # CSS de la fenêtre
 ```
 
 ## 3. Modèle de données — l'« Espace de Contexte »

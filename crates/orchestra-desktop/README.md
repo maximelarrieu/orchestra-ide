@@ -26,6 +26,18 @@ cargo run -p orchestra-desktop
 (La fenêtre charge `examples/recherche-immo-aix`. Définis `GEMINI_API_KEY` ou
 `ANTHROPIC_API_KEY` pour une orchestration réelle, sinon le mode simulé s'affiche.)
 
+## Structure (`src/`)
+
+| Fichier | Rôle |
+|---|---|
+| `main.rs` | Point d'entrée (`launch`) + composant racine (composition + signaux). |
+| `state.rs` | État + **pont vers le cœur** (`drive_orchestration`, `PlanRow`) — isole « parler à `orchestra-core` » du rendu. |
+| `components.rs` | Composants de présentation (`header`, `plan_panel`, `radar`). |
+| `styles.rs` | CSS de la fenêtre. |
+
+Les composants sont de simples `fn -> Element` ; ils deviendront des `#[component]` avec props
+quand ils grossiront (Dioxus, c'est du Rust normal — on découpe librement).
+
 ## Prochaines étapes
 
 - Sélecteur de dossier d'espace (au lieu du chemin codé en dur).
