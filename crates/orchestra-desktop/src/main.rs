@@ -54,6 +54,9 @@ fn app() -> Element {
     let thinking = use_signal(|| false);
     let draft = use_signal(String::new);
     let user_tx = use_signal(|| None::<UnboundedSender<String>>);
+    // Racine de l'espace auquel appartient la conversation en cours (pour la redémarrer quand
+    // l'utilisateur change d'espace — sinon le coordinateur reste sur l'ancienne squad).
+    let mut chat_root = use_signal(|| None::<PathBuf>);
 
     let launch = move |_| {
         if let Some(sp) = space() {
@@ -68,16 +71,21 @@ fn app() -> Element {
     };
     let start_chat = move |_| {
         if let Some(sp) = space() {
+            let root = sp.root.clone();
             state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx);
+            chat_root.set(Some(root));
         }
     };
 
     // Auto-démarrage : à l'entrée de l'onglet Chat, la conversation s'ouvre directement (pas de
-    // bouton intermédiaire). Une conversation déjà en cours est conservée.
+    // bouton intermédiaire) ; elle **redémarre si l'espace actif a changé** (squad à jour).
     use_effect(move || {
-        if view() == View::Chat && user_tx().is_none() {
+        let current_root = space().map(|s| s.root.clone());
+        if view() == View::Chat && (user_tx().is_none() || chat_root() != current_root) {
             if let Some(sp) = space() {
+                let root = sp.root.clone();
                 state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx);
+                chat_root.set(Some(root));
             }
         }
     });
