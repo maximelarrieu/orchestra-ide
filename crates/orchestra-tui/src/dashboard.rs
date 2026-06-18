@@ -235,8 +235,57 @@ fn render_browse(frame: &mut Frame, area: Rect, b: &crate::app::BrowseState) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// Formulaire de création d'un nouvel espace.
+fn render_new_space(frame: &mut Frame, area: Rect, f: &crate::app::NewSpaceForm) {
+    use crate::app::NewField;
+    let block = Block::bordered().title(" ➕ NOUVEL ESPACE ");
+    let row = |label: &str, value: String, focused: bool| -> Line {
+        let mut spans = vec![
+            Span::raw(if focused { "▶ " } else { "  " }),
+            Span::styled(format!("{label} : "), Style::new().bold()),
+            Span::raw(value),
+        ];
+        if focused {
+            spans.push(Span::styled("▏", Style::new().cyan()));
+        }
+        Line::from(spans)
+    };
+    let cur = f.field;
+    let mut lines = vec![
+        row("Dossier parent", f.path.clone(), cur == NewField::Path),
+        row("Nom du projet", f.name.clone(), cur == NewField::Name),
+        row("Type (←/→)", f.kind.label().to_string(), cur == NewField::Kind),
+    ];
+    if f.kind == orchestra_core::model::ProjectType::Dev {
+        lines.push(row("Workspace (code)", f.workspace.clone(), cur == NewField::Workspace));
+    }
+    lines.push(row("Objectifs", f.objectives.clone(), cur == NewField::Objectives));
+    lines.push(row(
+        "Documentaliste (Espace)",
+        if f.documentalist { "oui".into() } else { "non".into() },
+        cur == NewField::Documentalist,
+    ));
+    lines.push(Line::raw(""));
+    let create_style = if cur == NewField::Create {
+        Style::new().green().bold().reversed()
+    } else {
+        Style::new().green()
+    };
+    lines.push(Line::from(Span::styled("  [ Créer l'espace ]", create_style)));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Tab/↑↓ champ · saisie · ←/→ type · Espace documentaliste · Entrée créer · Échap annuler",
+        Style::new().dark_gray(),
+    )));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 /// Sélecteur d'espaces connus (récents), pour rouvrir sans retaper le chemin.
 fn render_spaces(frame: &mut Frame, area: Rect, app: &App) {
+    if let Some(f) = &app.new_space {
+        render_new_space(frame, area, f);
+        return;
+    }
     if let Some(b) = &app.browse {
         render_browse(frame, area, b);
         return;
@@ -653,6 +702,11 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             "📚 Documents — ↑↓ choisir · Entrée ouvrir · Échap retour",
             Style::new().cyan(),
         ))]
+    } else if app.view == View::Spaces && app.new_space.is_some() {
+        vec![Line::from(Span::styled(
+            "➕ Nouvel espace — Tab/↑↓ champ · ←/→ type · Espace documentaliste · Entrée créer · Échap",
+            Style::new().cyan(),
+        ))]
     } else if app.view == View::Spaces && app.browse.is_some() {
         vec![Line::from(Span::styled(
             "📂 Parcourir — ↑↓ choisir · Entrée ouvrir/entrer · [u]/← remonter · Échap retour",
@@ -660,7 +714,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         ))]
     } else if app.view == View::Spaces && app.input.is_none() {
         vec![Line::from(Span::styled(
-            "🗂  Espaces — ↑↓ · Entrée ouvrir · [b] parcourir · [a] chemin · [x] ne plus suivre · Échap",
+            "🗂  Espaces — ↑↓ · Entrée ouvrir · [n] nouveau · [b] parcourir · [a] chemin · [x] retirer · Échap",
             Style::new().cyan(),
         ))]
     } else if let Some((field, buf)) = &app.agent_prompt {

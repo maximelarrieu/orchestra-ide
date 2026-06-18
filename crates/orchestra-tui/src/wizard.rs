@@ -38,6 +38,8 @@ pub fn run(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
         workspace_path,
         documentalist_enabled,
         integrations,
+        objectives: String::new(),
+        agents: Vec::new(),
     };
 
     let space = scaffold_space(target, opts)?;

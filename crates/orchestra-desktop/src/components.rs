@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use dioxus::prelude::*;
-use orchestra_core::model::ContextSpace;
+use orchestra_core::model::{ContextSpace, ProjectType};
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -61,6 +61,7 @@ pub fn SpaceBar(
 ) -> Element {
     let mut browsing = use_signal(|| false);
     let mut browse_dir = use_signal(orchestra_core::browser::home_dir);
+    let mut creating = use_signal(|| false);
     let active = space().map(|s| s.config.project_name.clone());
 
     rsx! {
@@ -69,9 +70,17 @@ pub fn SpaceBar(
                 if let Some(name) = active {
                     span { class: "spacename", "● {name}" }
                 }
+                button { onclick: move |_| creating.set(!creating()),
+                    if creating() { "Fermer" } else { "➕ Nouveau space" }
+                }
                 button { onclick: move |_| browsing.set(!browsing()),
                     if browsing() { "Fermer le navigateur" } else { "📂 Parcourir un dossier…" }
                 }
+            }
+
+            // Formulaire de création d'un nouvel espace.
+            if creating() {
+                NewSpaceForm { space, space_path, known, creating }
             }
 
             // Espaces connus (récents) : rouvrir d'un clic.
@@ -145,6 +154,72 @@ fn browse_row(
                 button { class: "row", onclick: move |_| browse_dir.set(nav.clone()), "📁 {e.name}" }
             }
         }
+    }
+}
+
+/// Formulaire de création d'un nouvel espace (état local). Les agents/skills se règlent ensuite
+/// dans l'onglet « Agents & skills » (catalogue complet selon le type de projet).
+#[component]
+fn NewSpaceForm(
+    space: Signal<Option<ContextSpace>>,
+    space_path: Signal<String>,
+    known: Signal<Vec<KnownSpace>>,
+    mut creating: Signal<bool>,
+) -> Element {
+    let mut parent = use_signal(|| orchestra_core::browser::home_dir().to_string_lossy().to_string());
+    let mut name = use_signal(String::new);
+    let mut kind = use_signal(|| ProjectType::Dev);
+    let mut workspace = use_signal(String::new);
+    let mut objectives = use_signal(String::new);
+    let mut documentalist = use_signal(|| false);
+    let mut err = use_signal(String::new);
+    let doc_cls = if documentalist() { "tab on" } else { "tab" };
+
+    rsx! {
+        div { class: "newspace",
+            input { class: "chatinput", value: "{parent}", placeholder: "Dossier parent",
+                oninput: move |e| parent.set(e.value()) }
+            input { class: "chatinput", value: "{name}", placeholder: "Nom du projet",
+                oninput: move |e| name.set(e.value()) }
+            div { class: "types",
+                { type_btn(ProjectType::Dev, kind) }
+                { type_btn(ProjectType::Nutrition, kind) }
+                { type_btn(ProjectType::Langue, kind) }
+                { type_btn(ProjectType::Immobilier, kind) }
+            }
+            if kind() == ProjectType::Dev {
+                input { class: "chatinput", value: "{workspace}", placeholder: "Workspace (chemin du code)",
+                    oninput: move |e| workspace.set(e.value()) }
+            }
+            textarea { class: "fichearea", value: "{objectives}",
+                placeholder: "Objectifs / description du projet…",
+                oninput: move |e| objectives.set(e.value()) }
+            button { class: "{doc_cls}", onclick: move |_| documentalist.set(!documentalist()),
+                if documentalist() { "📝 Documentaliste : activé" } else { "📝 Documentaliste : désactivé" }
+            }
+            div { class: "actions",
+                button { class: "go",
+                    onclick: move |_| {
+                        match state::create_space(space, space_path, known, &parent(), &name(), kind(), &workspace(), &objectives(), documentalist()) {
+                            Ok(()) => creating.set(false),
+                            Err(e) => err.set(e),
+                        }
+                    },
+                    "Créer l'espace" }
+                button { onclick: move |_| creating.set(false), "Annuler" }
+            }
+            if !err().is_empty() {
+                p { class: "error", "{err}" }
+            }
+        }
+    }
+}
+
+fn type_btn(k: ProjectType, mut kind: Signal<ProjectType>) -> Element {
+    let cls = if kind() == k { "tab on" } else { "tab" };
+    let label = k.label();
+    rsx! {
+        button { class: "{cls}", onclick: move |_| kind.set(k), "{label}" }
     }
 }
 

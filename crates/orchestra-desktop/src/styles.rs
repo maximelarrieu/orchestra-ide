@@ -21,6 +21,10 @@ pub const CSS: &str = r#"
     .chiplabel:hover { color: #fff; background: #263150; }
     .chipx { background: none; border: none; color: #8895a7; cursor: pointer; padding: .25rem .5rem; }
     .chipx:hover { color: #ff8a8a; }
+    .newspace { display: flex; flex-direction: column; gap: .5rem; border: 1px solid #2c3a55;
+                border-radius: 8px; padding: .7rem; margin-top: .4rem; }
+    .newspace .fichearea { min-height: 90px; }
+    .types { display: flex; gap: .4rem; flex-wrap: wrap; }
     .browser { margin-top: .5rem; border: 1px solid #2c3a55; border-radius: 8px; padding: .5rem; }
     .browsebar { display: flex; gap: .6rem; align-items: center; margin-bottom: .4rem; }
     .browser .list { max-height: 320px; overflow: auto; }

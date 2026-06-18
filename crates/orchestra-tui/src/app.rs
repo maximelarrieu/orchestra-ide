@@ -95,6 +95,44 @@ pub struct BrowseState {
     pub sel: usize,
 }
 
+/// Champ focalisé du formulaire de création d'espace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewField {
+    Path,
+    Name,
+    Kind,
+    Workspace,
+    Objectives,
+    Documentalist,
+    Create,
+}
+
+/// Formulaire de création d'un nouvel Espace (`[3]` → `[n]`). Les agents/skills se règlent
+/// ensuite dans le menu Agents (catalogue complet selon le type).
+pub struct NewSpaceForm {
+    /// Dossier parent où créer l'espace (l'espace est créé dans `path/<slug(nom)>`).
+    pub path: String,
+    pub name: String,
+    pub kind: ProjectType,
+    /// Workspace de code (projets Dev).
+    pub workspace: String,
+    pub objectives: String,
+    pub documentalist: bool,
+    pub field: NewField,
+}
+
+impl NewSpaceForm {
+    /// Champs actifs dans l'ordre (Workspace n'apparaît que pour les projets Dev).
+    pub fn fields(&self) -> Vec<NewField> {
+        let mut v = vec![NewField::Path, NewField::Name, NewField::Kind];
+        if self.kind == ProjectType::Dev {
+            v.push(NewField::Workspace);
+        }
+        v.extend([NewField::Objectives, NewField::Documentalist, NewField::Create]);
+        v
+    }
+}
+
 /// Visualiseur Markdown ouvert sur un document.
 pub struct Viewer {
     pub title: String,
@@ -166,6 +204,8 @@ pub struct App {
     pub space_sel: usize,
     /// Navigateur de dossiers ouvert (`Some`) dans le sélecteur d'espaces, ou fermé.
     pub browse: Option<BrowseState>,
+    /// Formulaire de création d'espace ouvert (`Some`), ou fermé.
+    pub new_space: Option<NewSpaceForm>,
 }
 
 /// État d'une tâche du plan d'orchestration, côté affichage.
@@ -209,6 +249,22 @@ fn default_intention(kind: ProjectType) -> &'static str {
     }
 }
 
+/// Slug de dossier sûr à partir d'un nom (minuscules ; tout caractère non alphanumérique → `-`).
+fn slug(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let s = s.trim_matches('-').to_string();
+    if s.is_empty() {
+        "espace".to_string()
+    } else {
+        s
+    }
+}
+
 impl App {
     pub fn new(space: Option<ContextSpace>) -> Self {
         let md_skills = space
@@ -248,6 +304,7 @@ impl App {
             spaces: orchestra_core::registry::known_spaces(),
             space_sel: 0,
             browse: None,
+            new_space: None,
         }
     }
 
@@ -534,6 +591,104 @@ impl App {
     pub fn start_space_input(&mut self) {
         self.input = Some(String::new());
         self.notice = None;
+    }
+
+    /// `[3]` → `[n]` — ouvre le **formulaire de création** d'un nouvel espace.
+    pub fn start_new_space(&mut self) {
+        self.new_space = Some(NewSpaceForm {
+            path: orchestra_core::browser::home_dir().to_string_lossy().to_string(),
+            name: String::new(),
+            kind: ProjectType::Dev,
+            workspace: String::new(),
+            objectives: String::new(),
+            documentalist: false,
+            field: NewField::Path,
+        });
+        self.notice = None;
+    }
+
+    pub fn cancel_new_space(&mut self) {
+        self.new_space = None;
+    }
+
+    /// Déplace le focus entre les champs du formulaire (borné).
+    pub fn new_space_focus(&mut self, delta: isize) {
+        if let Some(f) = self.new_space.as_mut() {
+            let fields = f.fields();
+            let cur = fields.iter().position(|x| *x == f.field).unwrap_or(0) as isize;
+            let next = (cur + delta).clamp(0, fields.len() as isize - 1) as usize;
+            f.field = fields[next];
+        }
+    }
+
+    /// Sur le champ Type : fait défiler les types de projet ; sur Documentaliste : bascule.
+    pub fn new_space_adjust(&mut self, delta: isize) {
+        let Some(f) = self.new_space.as_mut() else { return };
+        match f.field {
+            NewField::Kind => {
+                const KINDS: [ProjectType; 4] = [
+                    ProjectType::Dev,
+                    ProjectType::Nutrition,
+                    ProjectType::Langue,
+                    ProjectType::Immobilier,
+                ];
+                let cur = KINDS.iter().position(|k| *k == f.kind).unwrap_or(0) as isize;
+                let n = ((cur + delta).rem_euclid(KINDS.len() as isize)) as usize;
+                f.kind = KINDS[n];
+            }
+            NewField::Documentalist => f.documentalist = !f.documentalist,
+            _ => {}
+        }
+    }
+
+    pub fn new_space_push(&mut self, c: char) {
+        if let Some(f) = self.new_space.as_mut() {
+            match f.field {
+                NewField::Path => f.path.push(c),
+                NewField::Name => f.name.push(c),
+                NewField::Workspace => f.workspace.push(c),
+                NewField::Objectives => f.objectives.push(c),
+                _ => {}
+            }
+        }
+    }
+
+    pub fn new_space_backspace(&mut self) {
+        if let Some(f) = self.new_space.as_mut() {
+            match f.field {
+                NewField::Path => { f.path.pop(); }
+                NewField::Name => { f.name.pop(); }
+                NewField::Workspace => { f.workspace.pop(); }
+                NewField::Objectives => { f.objectives.pop(); }
+                _ => {}
+            }
+        }
+    }
+
+    /// Construit la cible (`path/<slug(nom)>`) et l'[`InitOptions`] depuis le formulaire.
+    /// `None` si le nom est vide.
+    pub fn new_space_build(&self) -> Option<(std::path::PathBuf, orchestra_core::InitOptions)> {
+        let f = self.new_space.as_ref()?;
+        let name = f.name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        let root = std::path::PathBuf::from(f.path.trim()).join(slug(name));
+        let workspace_path = if f.kind == ProjectType::Dev && !f.workspace.trim().is_empty() {
+            Some(std::path::PathBuf::from(f.workspace.trim()))
+        } else {
+            None
+        };
+        let opts = orchestra_core::InitOptions {
+            project_name: name.to_string(),
+            project_type: f.kind,
+            workspace_path,
+            documentalist_enabled: f.documentalist,
+            integrations: Default::default(),
+            objectives: f.objectives.clone(),
+            agents: Vec::new(),
+        };
+        Some((root, opts))
     }
 
     pub fn input_push(&mut self, c: char) {
@@ -1051,6 +1206,8 @@ mod tests {
                 workspace_path: None,
                 documentalist_enabled: false,
                 integrations: Default::default(),
+                objectives: String::new(),
+                agents: Vec::new(),
             },
         )
         .unwrap();
@@ -1086,6 +1243,8 @@ mod tests {
                 workspace_path: None,
                 documentalist_enabled: false,
                 integrations: Default::default(),
+                objectives: String::new(),
+                agents: Vec::new(),
             },
         )
         .unwrap();
@@ -1148,6 +1307,8 @@ mod tests {
                 workspace_path: None,
                 documentalist_enabled: false,
                 integrations: Default::default(),
+                objectives: String::new(),
+                agents: Vec::new(),
             },
         )
         .unwrap();

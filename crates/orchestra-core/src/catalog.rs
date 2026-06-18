@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use crate::error::OrchestraError;
 use crate::markdown_skill;
-use crate::model::{default_agents, AgentDef, ContextSpace, ProjectType};
+use crate::model::{default_agents, default_skills, AgentDef, ContextSpace, ProjectType};
 use crate::skills;
 
 /// Nature d'un skill dans le sélecteur d'un agent.
@@ -82,10 +82,36 @@ pub fn agent_templates(kind: ProjectType) -> Vec<AgentDef> {
     default_agents(kind)
 }
 
-/// Modèles d'agents suggérés **pas encore présents** dans l'espace (comparaison par nom), pour
+/// **Catalogue complet** des agents proposés pour un type de projet — la « squad » dans laquelle
+/// l'utilisateur pioche (active/désactive). Pour **Dev**, couvre tout le cycle de vie (du local
+/// à la mise en production) ; [`default_agents`] reste le sous-ensemble *de départ* d'un nouvel
+/// espace.
+pub fn agent_catalog(kind: ProjectType) -> Vec<AgentDef> {
+    if kind != ProjectType::Dev {
+        return default_agents(kind);
+    }
+    const DEV: &[(&str, &str)] = &[
+        ("Agent_Architecte", "Analyse les besoins et conçoit l'architecture (ADRs, choix techniques, découpage)."),
+        ("Agent_Codeur", "Implémente les fonctionnalités selon le plan et les conventions du projet."),
+        ("Agent_Testeur", "Écrit et exécute les tests ; vérifie la couverture et la non-régression."),
+        ("Agent_Reviewer", "Relit le code : bugs, lisibilité, style, dette technique."),
+        ("Agent_Debuggeur", "Diagnostique et corrige les bugs et erreurs signalés."),
+        ("Agent_Refactoreur", "Améliore la structure du code sans changer son comportement."),
+        ("Agent_DevOps", "CI/CD, conteneurs, scripts de build et de déploiement."),
+        ("Agent_Securite", "Audite la sécurité : dépendances, secrets, vulnérabilités."),
+        ("Agent_DBA", "Schéma de base de données, migrations, requêtes et performance."),
+        ("Agent_Release", "Versioning, changelog, préparation et mise en production."),
+    ];
+    let skills = default_skills(kind);
+    DEV.iter()
+        .map(|(name, role)| AgentDef { name: name.to_string(), role: role.to_string(), skills: skills.clone() })
+        .collect()
+}
+
+/// Agents du **catalogue** pas encore présents dans l'espace (comparaison par nom), pour
 /// proposer ce qu'il reste à activer.
 pub fn inactive_agent_templates(space: &ContextSpace) -> Vec<AgentDef> {
-    agent_templates(space.config.project_type)
+    agent_catalog(space.config.project_type)
         .into_iter()
         .filter(|t| !space.config.agents.iter().any(|a| a.name == t.name))
         .collect()
@@ -168,6 +194,15 @@ mod tests {
         assert_eq!(quiz.kind, SkillKind::Fiche); // désormais branché (fiche créée)
 
         let _ = fs::remove_dir_all(&space.root);
+    }
+
+    #[test]
+    fn dev_catalog_covers_lifecycle() {
+        let names: Vec<String> = agent_catalog(ProjectType::Dev).into_iter().map(|a| a.name).collect();
+        assert!(names.len() >= 10);
+        for expected in ["Agent_Architecte", "Agent_DevOps", "Agent_Securite", "Agent_Release"] {
+            assert!(names.iter().any(|n| n == expected), "catalogue Dev manque {expected}");
+        }
     }
 
     #[test]

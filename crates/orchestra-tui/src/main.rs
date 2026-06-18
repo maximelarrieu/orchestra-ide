@@ -47,6 +47,20 @@ fn open_space(path: &str) -> Result<App, String> {
     }
 }
 
+/// Crée un nouvel espace (scaffolding via le cœur), le **mémorise** et renvoie un `App` neuf.
+fn create_space(root: &Path, opts: orchestra_core::InitOptions) -> Result<App, String> {
+    match orchestra_core::scaffold_space(root, opts) {
+        Ok(space) => {
+            let _ = orchestra_core::registry::remember_space(root);
+            let name = space.config.project_name.clone();
+            let mut app = App::new(Some(space));
+            app.notice = Some(format!("Espace « {name} » créé."));
+            Ok(app)
+        }
+        Err(e) => Err(format!("Échec de la création : {e}")),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -260,6 +274,39 @@ async fn event_loop(
                                 KeyCode::Esc | KeyCode::Char('2') => app.toggle_docs(),
                                 _ => {}
                             }
+                        } else if app.view == View::Spaces && app.new_space.is_some() {
+                            // Formulaire de création d'un nouvel espace.
+                            use app::NewField;
+                            let field = app.new_space.as_ref().map(|f| f.field);
+                            match key.code {
+                                KeyCode::Esc => app.cancel_new_space(),
+                                KeyCode::Up => app.new_space_focus(-1),
+                                KeyCode::Down | KeyCode::Tab => app.new_space_focus(1),
+                                KeyCode::Left => app.new_space_adjust(-1),
+                                KeyCode::Right => app.new_space_adjust(1),
+                                KeyCode::Enter => {
+                                    if field == Some(NewField::Create) {
+                                        match app.new_space_build() {
+                                            Some((root, opts)) => match create_space(&root, opts) {
+                                                Ok(new_app) => {
+                                                    *app = new_app;
+                                                    rx = None;
+                                                }
+                                                Err(msg) => app.notice = Some(msg),
+                                            },
+                                            None => app.notice = Some("Le nom du projet est obligatoire.".into()),
+                                        }
+                                    } else {
+                                        app.new_space_focus(1);
+                                    }
+                                }
+                                KeyCode::Backspace => app.new_space_backspace(),
+                                KeyCode::Char(' ') if field == Some(NewField::Documentalist) => {
+                                    app.new_space_adjust(1)
+                                }
+                                KeyCode::Char(c) => app.new_space_push(c),
+                                _ => {}
+                            }
                         } else if app.view == View::Spaces && app.browse.is_some() {
                             // Navigateur de dossiers : explorer et ouvrir un espace repéré.
                             match key.code {
@@ -296,6 +343,7 @@ async fn event_loop(
                                         }
                                     }
                                 }
+                                KeyCode::Char('n') => app.start_new_space(),
                                 KeyCode::Char('b') => app.start_browse(),
                                 KeyCode::Char('a') => app.start_space_input(),
                                 KeyCode::Char('x') => app.forget_selected_space(),

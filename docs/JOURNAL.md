@@ -319,6 +319,22 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   visualiseur édite **n'importe quel** document (plus seulement le persona) — `EditTarget::Document`,
   Ctrl+S enregistre. Desktop : bouton « ✏ Éditer » dans `DocumentsView` (textarea + 💾 Enregistrer).
 
+## Création d'espaces dans l'app + catalogue d'agents DEV (post-Phase 5) ✅
+
+- **Création d'un nouvel espace depuis les deux apps** (plus seulement via `orchestra init`) :
+  formulaire **nom · type (Dev/Nutrition/Langue/Immobilier) · workspace (Dev) · objectifs ·
+  documentaliste**. TUI : sélecteur `[3]` → `[n]` (formulaire navigable Tab/↑↓, `←/→` type,
+  Entrée crée) ; Desktop : bouton « ➕ Nouveau space » dans `SpaceBar`. À la création, l'espace
+  est ouvert et mémorisé (registre). L'espace est créé dans `dossier_parent/<slug(nom)>`.
+- **Cœur** : `InitOptions` gagne `objectives` (injecté dans le persona, section « ## Objectifs du
+  projet ») et `agents` (squad choisie ; vide → squad de départ). `scaffold_space` inchangé côté
+  signature d'usage.
+- **Catalogue d'agents DEV (cycle de vie complet)** : `catalog::agent_catalog(kind)` — pour Dev :
+  Architecte · Codeur · Testeur · Reviewer · Debuggeur · Refactoreur · DevOps · Sécurité · DBA ·
+  Release (du local à la mise en prod). `default_agents` reste la squad *de départ* (Architecte,
+  Codeur, Testeur) ; le reste s'active via le menu Agents (« + Agent suggéré » puise désormais dans
+  ce catalogue). L'utilisateur compose sa squad comme il veut, puis avance via le chat.
+
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
 - Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts

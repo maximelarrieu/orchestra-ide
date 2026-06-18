@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use dioxus::prelude::*;
 use orchestra_core::events::AgentEvent;
-use orchestra_core::model::{AgentDef, ContextSpace};
+use orchestra_core::model::{AgentDef, ContextSpace, ProjectType};
 use orchestra_core::runtime;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -319,6 +319,62 @@ pub fn open_space(
 pub fn forget_space_entry(mut known: Signal<Vec<KnownSpace>>, path: &Path) {
     orchestra_core::registry::forget_space(path);
     known.set(orchestra_core::registry::known_spaces());
+}
+
+/// Slug de dossier sûr (minuscules ; non-alphanumérique → `-`).
+fn slug(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let s = s.trim_matches('-').to_string();
+    if s.is_empty() { "espace".to_string() } else { s }
+}
+
+/// Crée un nouvel espace (`parent/<slug(nom)>`) via le cœur, l'ouvre et le mémorise.
+#[allow(clippy::too_many_arguments)]
+pub fn create_space(
+    mut space: Signal<Option<ContextSpace>>,
+    mut space_path: Signal<String>,
+    mut known: Signal<Vec<KnownSpace>>,
+    parent: &str,
+    name: &str,
+    kind: ProjectType,
+    workspace: &str,
+    objectives: &str,
+    documentalist: bool,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Le nom du projet est obligatoire.".into());
+    }
+    let root = PathBuf::from(parent.trim()).join(slug(name));
+    let workspace_path = if kind == ProjectType::Dev && !workspace.trim().is_empty() {
+        Some(PathBuf::from(workspace.trim()))
+    } else {
+        None
+    };
+    let opts = orchestra_core::InitOptions {
+        project_name: name.to_string(),
+        project_type: kind,
+        workspace_path,
+        documentalist_enabled: documentalist,
+        integrations: Default::default(),
+        objectives: objectives.to_string(),
+        agents: Vec::new(),
+    };
+    match orchestra_core::scaffold_space(&root, opts) {
+        Ok(sp) => {
+            let _ = orchestra_core::registry::remember_space(&root);
+            space.set(Some(sp));
+            space_path.set(root.to_string_lossy().to_string());
+            known.set(orchestra_core::registry::known_spaces());
+            Ok(())
+        }
+        Err(e) => Err(format!("Échec de la création : {e}")),
+    }
 }
 
 /// Convertit du Markdown en **HTML** pour le visualiseur de documents (titres, listes, code,

@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::OrchestraError;
-use crate::model::config::ProjectConfig;
+use crate::model::config::{AgentDef, ProjectConfig};
 use crate::model::project_type::ProjectType;
 use crate::model::skill_id::{default_agents, default_skills};
 use crate::model::space::ContextSpace;
@@ -27,19 +27,29 @@ pub struct InitOptions {
     pub documentalist_enabled: bool,
     /// Intégrations écosystème (Git/GitHub/Jira) choisies à l'init.
     pub integrations: crate::model::config::Integrations,
+    /// Objectifs / description du projet saisis à la création — injectés dans le persona.
+    /// Vide → gabarit seul.
+    pub objectives: String,
+    /// Squad d'agents choisie. Vide → squad de départ ([`default_agents`]).
+    pub agents: Vec<AgentDef>,
 }
 
 impl InitOptions {
     /// Traduit l'intention en configuration complète, en pré-remplissant la matrice
-    /// de Skills et d'agents par défaut associée au type de projet.
+    /// de Skills et la squad d'agents (celle choisie, sinon les agents par défaut du type).
     pub fn into_config(self) -> ProjectConfig {
+        let agents = if self.agents.is_empty() {
+            default_agents(self.project_type)
+        } else {
+            self.agents
+        };
         ProjectConfig {
             project_name: self.project_name,
             project_type: self.project_type,
             workspace_path: self.workspace_path,
             documentalist_enabled: self.documentalist_enabled,
             skills: default_skills(self.project_type),
-            agents: default_agents(self.project_type),
+            agents,
             integrations: self.integrations,
         }
     }
@@ -63,6 +73,7 @@ pub fn scaffold_space(root: &Path, opts: InitOptions) -> Result<ContextSpace, Or
     }
 
     let project_type = opts.project_type;
+    let objectives = opts.objectives.clone();
     let config = opts.into_config();
 
     fs::create_dir_all(orchestra_dir.join("adr"))?;
@@ -72,7 +83,7 @@ pub fn scaffold_space(root: &Path, opts: InitOptions) -> Result<ContextSpace, Or
 
     fs::write(
         orchestra_dir.join("persona.md"),
-        persona_template(project_type, &config.project_name),
+        persona_template(project_type, &config.project_name, &objectives),
     )?;
 
     ContextSpace::load(root)
@@ -80,7 +91,13 @@ pub fn scaffold_space(root: &Path, opts: InitOptions) -> Result<ContextSpace, Or
 
 /// Gabarit de persona propre au type de projet — point de départ que l'utilisateur
 /// complète. Chaque famille de projet a des « critères » naturellement différents.
-fn persona_template(kind: ProjectType, name: &str) -> String {
+fn persona_template(kind: ProjectType, name: &str, objectives: &str) -> String {
+    // Objectifs saisis à la création (le cas échéant), placés en tête.
+    let objectives_section = if objectives.trim().is_empty() {
+        String::new()
+    } else {
+        format!("## Objectifs du projet\n{}\n\n", objectives.trim())
+    };
     let body = match kind {
         ProjectType::Dev => {
             "## Contexte technique\n\
@@ -118,7 +135,7 @@ fn persona_template(kind: ProjectType, name: &str) -> String {
         }
     };
 
-    format!("# Persona — {name}\n\n{body}")
+    format!("# Persona — {name}\n\n{objectives_section}{body}")
 }
 
 #[cfg(test)]
@@ -154,9 +171,13 @@ mod tests {
             workspace_path: Some(PathBuf::from("/code/mon-app")),
             documentalist_enabled: true,
             integrations: Default::default(),
+            objectives: "Construire l'API de paiement.".to_string(),
+            agents: Vec::new(),
         };
 
         let space = scaffold_space(&tmp.0, opts).expect("scaffolding réussi");
+        // Les objectifs saisis se retrouvent dans le persona.
+        assert!(space.persona.as_deref().unwrap().contains("API de paiement"));
 
         // La config est rechargeable et reflète les choix + les défauts injectés.
         assert_eq!(space.config.project_name, "Mon_App");
@@ -177,6 +198,8 @@ mod tests {
             workspace_path: None,
             documentalist_enabled: false,
             integrations: Default::default(),
+            objectives: String::new(),
+            agents: Vec::new(),
         };
         let mut space = scaffold_space(&tmp.0, opts).expect("scaffolding réussi");
 
@@ -197,6 +220,8 @@ mod tests {
             workspace_path: None,
             documentalist_enabled: false,
             integrations: Default::default(),
+            objectives: String::new(),
+            agents: Vec::new(),
         };
 
         scaffold_space(&tmp.0, opts()).expect("1er init OK");
