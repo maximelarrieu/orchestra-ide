@@ -334,6 +334,10 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   Release (du local à la mise en prod). `default_agents` reste la squad *de départ* (Architecte,
   Codeur, Testeur) ; le reste s'active via le menu Agents (« + Agent suggéré » puise désormais dans
   ce catalogue). L'utilisateur compose sa squad comme il veut, puis avance via le chat.
+- **Correctif Windows** : `Execute_Terminal_Command` lançait toujours `sh -c …` → `npm`/`npx`
+  (scripts `.cmd`) « introuvables » côté agent sur Windows. Désormais shell **selon la plateforme** :
+  `cmd /C` sur Windows (résout `.cmd` via PATHEXT + PATH système), `sh -c` ailleurs. La commande
+  hérite de l'environnement du process.
 
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 

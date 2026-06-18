@@ -278,8 +278,21 @@ async fn exec_command(input: &Value, workspace: &Path) -> SkillOutcome {
         return SkillOutcome::err("paramètre `command` manquant.");
     };
 
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(command).current_dir(workspace);
+    // Shell selon la plateforme : `cmd /C` sur Windows (résout npm.cmd/npx.cmd via PATHEXT et
+    // le PATH système), `sh -c` ailleurs. La commande hérite de l'environnement du process.
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(command);
+        c
+    };
+    cmd.current_dir(workspace);
 
     let run = async {
         let out = cmd.output().await?;
