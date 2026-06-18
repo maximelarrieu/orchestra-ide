@@ -54,13 +54,15 @@ fn app() -> Element {
     let thinking = use_signal(|| false);
     let draft = use_signal(String::new);
     let user_tx = use_signal(|| None::<UnboundedSender<String>>);
+    // Statut live des agents (encart « squad »), partagé orchestration + chat.
+    let agents_status = use_signal(std::collections::HashMap::<String, state::AgStatus>::new);
     // Racine de l'espace auquel appartient la conversation en cours (pour la redémarrer quand
     // l'utilisateur change d'espace — sinon le coordinateur reste sur l'ancienne squad).
     let mut chat_root = use_signal(|| None::<PathBuf>);
 
     let launch = move |_| {
         if let Some(sp) = space() {
-            drive_orchestration(sp, objective(), log, plan, pending, approve_tx);
+            drive_orchestration(sp, objective(), log, plan, pending, approve_tx, agents_status);
         }
     };
     let approve = move |_| {
@@ -72,7 +74,7 @@ fn app() -> Element {
     let start_chat = move |_| {
         if let Some(sp) = space() {
             let root = sp.root.clone();
-            state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx);
+            state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx, agents_status);
             chat_root.set(Some(root));
         }
     };
@@ -84,7 +86,7 @@ fn app() -> Element {
         if view() == View::Chat && (user_tx().is_none() || chat_root() != current_root) {
             if let Some(sp) = space() {
                 let root = sp.root.clone();
-                state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx);
+                state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx, agents_status);
                 chat_root.set(Some(root));
             }
         }
@@ -114,6 +116,7 @@ fn app() -> Element {
                                 button { class: "go", onclick: approve, "✓ Exécuter le plan" }
                             }
                         }
+                        components::SquadPanel { space, status: agents_status }
                         if !plan().is_empty() {
                             {components::plan_panel(&plan())}
                         }
@@ -125,6 +128,7 @@ fn app() -> Element {
                         div { class: "actions",
                             button { onclick: start_chat, "↻ Nouvelle conversation" }
                         }
+                        components::SquadPanel { space, status: agents_status }
                         if user_tx().is_some() {
                             {components::chat_view(messages, thinking, draft, user_tx, plan, pending, approve_tx)}
                         }

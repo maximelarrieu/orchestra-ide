@@ -1,6 +1,7 @@
 //! Composants de présentation — fonctions renvoyant un `Element`. Pas de logique métier :
 //! elles lisent des signaux et déclenchent les ponts de [`crate::state`].
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use dioxus::prelude::*;
@@ -8,7 +9,7 @@ use orchestra_core::model::{ContextSpace, ProjectType};
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::state::{self, ChatMsg, KnownSpace, MsgKind, PlanRow, SkillEntry, SkillKind, View};
+use crate::state::{self, AgStatus, ChatMsg, KnownSpace, MsgKind, PlanRow, SkillEntry, SkillKind, View};
 
 /// Barre de navigation entre les vues.
 pub fn nav(mut view: Signal<View>) -> Element {
@@ -28,6 +29,40 @@ fn tab(cur: View, this: View) -> &'static str {
         "tab on"
     } else {
         "tab"
+    }
+}
+
+/// Encart « squad » : statut live de chaque agent de l'espace (coordinateur + agents +
+/// documentaliste), pour **voir qui travaille** pendant l'orchestration / le chat.
+#[component]
+pub fn SquadPanel(space: Signal<Option<ContextSpace>>, status: Signal<HashMap<String, AgStatus>>) -> Element {
+    let Some(sp) = space() else {
+        return rsx! {};
+    };
+    let mut roster: Vec<String> = vec![orchestra_core::runtime::COORDINATOR.to_string()];
+    roster.extend(sp.config.agents.iter().map(|a| a.name.clone()));
+    if sp.config.documentalist_enabled {
+        roster.push("Agent_Documentaliste".to_string());
+    }
+    let map = status();
+    rsx! {
+        div { class: "squad",
+            span { class: "muted", "Squad :" }
+            for name in roster {
+                {
+                    let st = map.get(&name).copied().unwrap_or(AgStatus::Idle);
+                    let icon = st.icon();
+                    let label = st.label();
+                    let cls = match st {
+                        AgStatus::Idle => "agentchip",
+                        AgStatus::Thinking => "agentchip thinking",
+                        AgStatus::Working => "agentchip working",
+                        AgStatus::Done => "agentchip done",
+                    };
+                    rsx! { span { class: "{cls}", "{icon} {name} · {label}" } }
+                }
+            }
+        }
     }
 }
 

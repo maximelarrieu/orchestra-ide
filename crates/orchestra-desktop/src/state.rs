@@ -1,6 +1,7 @@
 //! État de l'app + **ponts vers le cœur** : isole la logique « parler à `orchestra-core` »
 //! du rendu. Les composants ([`crate::components`]) se contentent d'afficher / déclencher.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use dioxus::prelude::*;
@@ -52,8 +53,45 @@ pub struct PlanRow {
     pub status: String,
 }
 
+/// Statut live d'un agent (pour l'encart « squad »).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AgStatus {
+    Idle,
+    Thinking,
+    Working,
+    Done,
+}
+
+impl AgStatus {
+    pub fn icon(self) -> &'static str {
+        match self {
+            AgStatus::Idle => "○",
+            AgStatus::Thinking => "⏳",
+            AgStatus::Working => "▸",
+            AgStatus::Done => "✔",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            AgStatus::Idle => "en attente",
+            AgStatus::Thinking => "réfléchit…",
+            AgStatus::Working => "actif",
+            AgStatus::Done => "terminé",
+        }
+    }
+}
+
+/// Met à jour le statut live d'un agent (ignore l'écho utilisateur « Vous »).
+fn mark(status: &mut Signal<HashMap<String, AgStatus>>, name: &str, st: AgStatus) {
+    if name == "Vous" {
+        return;
+    }
+    status.write().insert(name.to_string(), st);
+}
+
 /// Lance l'orchestration et **streame les [`AgentEvent`]** dans les signaux fournis. Appelé
 /// depuis un gestionnaire d'événement (le `spawn` Dioxus tourne dans le scope réactif courant).
+#[allow(clippy::too_many_arguments)]
 pub fn drive_orchestration(
     space: ContextSpace,
     objective: String,
@@ -61,10 +99,12 @@ pub fn drive_orchestration(
     mut plan: Signal<Vec<PlanRow>>,
     mut pending: Signal<bool>,
     mut approve_tx: Signal<Option<UnboundedSender<bool>>>,
+    mut status: Signal<HashMap<String, AgStatus>>,
 ) {
     log.set(Vec::new());
     plan.set(Vec::new());
     pending.set(false);
+    status.set(HashMap::new());
 
     spawn(async move {
         let handle = runtime::orchestrate(&space, &objective);
@@ -81,13 +121,25 @@ pub fn drive_orchestration(
                     );
                     pending.set(true);
                 }
-                AgentEvent::TaskStarted { id, .. } => set_status(&mut plan, &id, "en cours"),
+                AgentEvent::TaskStarted { id, agent } => {
+                    set_status(&mut plan, &id, "en cours");
+                    mark(&mut status, &agent, AgStatus::Working);
+                }
                 AgentEvent::TaskDone { id } => set_status(&mut plan, &id, "fait ✓"),
                 AgentEvent::TaskFailed { id, .. } => set_status(&mut plan, &id, "échec ✗"),
-                AgentEvent::Started { agent } => log.write().push(format!("▶ {agent}")),
-                AgentEvent::Done { agent } => log.write().push(format!("✔ {agent}")),
-                AgentEvent::Log { agent, msg } => log.write().push(format!("{agent} : {msg}")),
-                AgentEvent::Thinking { .. } => {}
+                AgentEvent::Started { agent } => {
+                    mark(&mut status, &agent, AgStatus::Working);
+                    log.write().push(format!("▶ {agent}"));
+                }
+                AgentEvent::Done { agent } => {
+                    mark(&mut status, &agent, AgStatus::Done);
+                    log.write().push(format!("✔ {agent}"));
+                }
+                AgentEvent::Log { agent, msg } => {
+                    mark(&mut status, &agent, AgStatus::Working);
+                    log.write().push(format!("{agent} : {msg}"));
+                }
+                AgentEvent::Thinking { agent } => mark(&mut status, &agent, AgStatus::Thinking),
             }
         }
     });
@@ -113,11 +165,13 @@ pub fn start_chat(
     mut plan: Signal<Vec<PlanRow>>,
     mut pending: Signal<bool>,
     mut approve_tx: Signal<Option<UnboundedSender<bool>>>,
+    mut status: Signal<HashMap<String, AgStatus>>,
 ) {
     messages.set(Vec::new());
     plan.set(Vec::new());
     pending.set(false);
     thinking.set(false);
+    status.set(HashMap::new());
 
     let handle = runtime::start_conversation(&space);
     user_tx.set(Some(handle.user));
@@ -127,9 +181,13 @@ pub fn start_chat(
     spawn(async move {
         while let Some(ev) = events.recv().await {
             match ev {
-                AgentEvent::Thinking { .. } => thinking.set(true),
+                AgentEvent::Thinking { agent } => {
+                    thinking.set(true);
+                    mark(&mut status, &agent, AgStatus::Thinking);
+                }
                 AgentEvent::Log { agent, msg } => {
                     thinking.set(false);
+                    mark(&mut status, &agent, AgStatus::Working);
                     let kind = if agent == "Vous" {
                         MsgKind::User
                     } else if agent == runtime::COORDINATOR {
@@ -139,10 +197,16 @@ pub fn start_chat(
                     };
                     messages.write().push(ChatMsg { who: agent, text: msg, kind });
                 }
-                AgentEvent::Started { agent } => messages
-                    .write()
-                    .push(ChatMsg { who: agent, text: "rejoint la conversation".into(), kind: MsgKind::System }),
-                AgentEvent::Done { .. } => thinking.set(false),
+                AgentEvent::Started { agent } => {
+                    mark(&mut status, &agent, AgStatus::Working);
+                    messages
+                        .write()
+                        .push(ChatMsg { who: agent, text: "rejoint la conversation".into(), kind: MsgKind::System });
+                }
+                AgentEvent::Done { agent } => {
+                    thinking.set(false);
+                    mark(&mut status, &agent, AgStatus::Done);
+                }
                 AgentEvent::PlanReady { tasks } => {
                     plan.set(
                         tasks
@@ -152,7 +216,10 @@ pub fn start_chat(
                     );
                     pending.set(true);
                 }
-                AgentEvent::TaskStarted { id, .. } => set_status(&mut plan, &id, "en cours"),
+                AgentEvent::TaskStarted { id, agent } => {
+                    set_status(&mut plan, &id, "en cours");
+                    mark(&mut status, &agent, AgStatus::Working);
+                }
                 AgentEvent::TaskDone { id } => set_status(&mut plan, &id, "fait ✓"),
                 AgentEvent::TaskFailed { id, .. } => set_status(&mut plan, &id, "échec ✗"),
             }

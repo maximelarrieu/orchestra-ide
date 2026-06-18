@@ -50,6 +50,13 @@ pub const CSS: &str = r#"
     .row:hover { color: #fff; }
     .row.on { color: #8ab4ff; font-weight: 600; }
 
+    .squad { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin: .5rem 0; }
+    .agentchip { background: #11161f; border: 1px solid #2c3a55; border-radius: 14px;
+                 padding: .2rem .6rem; font-size: .82rem; color: #9aa; }
+    .agentchip.thinking { color: #d9b3ff; border-color: #6a4a8a; }
+    .agentchip.working { color: #9ff0b5; border-color: #2e7d4a; }
+    .agentchip.done { color: #8895a7; }
+
     .plan { list-style: none; padding-left: 0; }
     .plan li { padding: .2rem .4rem; border-left: 3px solid #2c3a55; margin: .2rem 0; }
     .radar { background: #05070c; color: #cdd6e0; padding: .6rem; border-radius: 6px;

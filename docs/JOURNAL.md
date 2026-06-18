@@ -343,6 +343,10 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   (surchargeable par `ORCHESTRA_COMMAND_TIMEOUT_SECS`), **stdin neutralisé** (une invite reçoit EOF
   au lieu de bloquer), et **env non-interactif** (`CI=1`, `npm_config_yes`, `npm_config_progress=false`,
   `NO_UPDATE_NOTIFIER`…). La description de l'outil guide le modèle vers des commandes non interactives.
+- **Encart de statut des agents (desktop)** : le TUI a déjà sa sidebar « 🎻 Orchestre » (statut live
+  via `on_event`) ; le desktop manquait de visibilité. Ajout d'un `SquadPanel` (coordinateur +
+  agents + documentaliste) avec statut live (en attente / réfléchit… / actif / terminé) dérivé du
+  flux `AgentEvent`, affiché dans les vues Orchestrer et Chat. Parité atteinte des deux côtés.
 
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
