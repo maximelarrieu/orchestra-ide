@@ -72,6 +72,16 @@ fn app() -> Element {
         }
     };
 
+    // Auto-démarrage : à l'entrée de l'onglet Chat, la conversation s'ouvre directement (pas de
+    // bouton intermédiaire). Une conversation déjà en cours est conservée.
+    use_effect(move || {
+        if view() == View::Chat && user_tx().is_none() {
+            if let Some(sp) = space() {
+                state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx);
+            }
+        }
+    });
+
     rsx! {
         style { {styles::CSS} }
         div { class: "app",
@@ -105,14 +115,10 @@ fn app() -> Element {
                 View::Chat => rsx! {
                     div { class: "chatwrap",
                         div { class: "actions",
-                            button { onclick: start_chat,
-                                if user_tx().is_some() { "↻ Nouvelle conversation" } else { "▶ Démarrer la conversation" }
-                            }
+                            button { onclick: start_chat, "↻ Nouvelle conversation" }
                         }
                         if user_tx().is_some() {
                             {components::chat_view(messages, thinking, draft, user_tx, plan, pending, approve_tx)}
-                        } else {
-                            p { class: "agents", "Démarre une conversation pour parler au chef d'orchestre." }
                         }
                     }
                 },
