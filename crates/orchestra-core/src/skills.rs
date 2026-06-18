@@ -11,6 +11,7 @@
 //! sont pas exécutables à ce stade.
 
 use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -60,7 +61,17 @@ const MERMAID_KINDS: &[&str] = &[
 ];
 
 const MAX_OUTPUT: usize = 12_000; // plafond de caractères renvoyés au modèle
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Délai max d'une commande. Par défaut **300 s** (installs npm/cargo longues), surchargé par
+/// `ORCHESTRA_COMMAND_TIMEOUT_SECS`.
+fn command_timeout() -> Duration {
+    std::env::var("ORCHESTRA_COMMAND_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(300))
+}
 
 /// Résultat d'un Skill renvoyé au modèle (texte + drapeau d'erreur pour `tool_result`).
 pub struct SkillOutcome {
@@ -126,7 +137,11 @@ fn tool_definition(id: &str) -> Option<ToolSpec> {
         )),
         EXEC_COMMAND => Some(spec(
             EXEC_COMMAND,
-            "Exécute une commande shell dans le workspace et renvoie stdout/stderr et le code de sortie.",
+            "Exécute une commande shell dans le workspace et renvoie stdout/stderr + code de sortie. \
+             La commande doit être NON INTERACTIVE (aucune invite) : utilise les options de \
+             confirmation automatique (ex. `npm create vite@latest mon-app -- --template react`, \
+             `npm install`, `npx --yes <pkg>`). Les installations longues sont permises (délai 300 s). \
+             stdin est fermé : une commande qui attend une saisie échouera au lieu de bloquer.",
             json!({
                 "type": "object",
                 "properties": { "command": { "type": "string", "description": "Commande shell à exécuter" } },
@@ -292,15 +307,30 @@ async fn exec_command(input: &Value, workspace: &Path) -> SkillOutcome {
         c.arg("-c").arg(command);
         c
     };
-    cmd.current_dir(workspace);
+    cmd.current_dir(workspace)
+        // stdin neutralisé : une invite interactive reçoit EOF au lieu de bloquer jusqu'au délai.
+        .stdin(Stdio::null())
+        // Mode non-interactif / silencieux : les scaffolders (Vite, CRA…) et npm ne posent plus
+        // de question et n'affichent plus de spinner — indispensable à l'autonomie des agents.
+        .env("CI", "1")
+        .env("npm_config_yes", "true")
+        .env("npm_config_fund", "false")
+        .env("npm_config_audit", "false")
+        .env("npm_config_progress", "false")
+        .env("NO_UPDATE_NOTIFIER", "1")
+        .env("ADBLOCK", "1");
 
+    let limit = command_timeout();
     let run = async {
         let out = cmd.output().await?;
         Ok::<_, std::io::Error>(out)
     };
 
-    match timeout(COMMAND_TIMEOUT, run).await {
-        Err(_) => SkillOutcome::err(format!("commande interrompue après {}s.", COMMAND_TIMEOUT.as_secs())),
+    match timeout(limit, run).await {
+        Err(_) => SkillOutcome::err(format!(
+            "commande interrompue après {}s (délai configurable via ORCHESTRA_COMMAND_TIMEOUT_SECS).",
+            limit.as_secs()
+        )),
         Ok(Err(e)) => SkillOutcome::err(format!("exécution impossible : {e}")),
         Ok(Ok(out)) => {
             let code = out.status.code().unwrap_or(-1);

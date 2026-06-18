@@ -338,6 +338,11 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   (scripts `.cmd`) « introuvables » côté agent sur Windows. Désormais shell **selon la plateforme** :
   `cmd /C` sur Windows (résout `.cmd` via PATHEXT + PATH système), `sh -c` ailleurs. La commande
   hérite de l'environnement du process.
+- **Autonomie des commandes longues/non-interactives** : `Execute_Terminal_Command` voyait ses
+  `npm create`/`npm install` échouer (délai 30 s + invites bloquantes). Désormais : délai **300 s**
+  (surchargeable par `ORCHESTRA_COMMAND_TIMEOUT_SECS`), **stdin neutralisé** (une invite reçoit EOF
+  au lieu de bloquer), et **env non-interactif** (`CI=1`, `npm_config_yes`, `npm_config_progress=false`,
+  `NO_UPDATE_NOTIFIER`…). La description de l'outil guide le modèle vers des commandes non interactives.
 
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
