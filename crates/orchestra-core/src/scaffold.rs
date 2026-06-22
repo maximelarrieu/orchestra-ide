@@ -89,6 +89,28 @@ pub fn scaffold_space(root: &Path, opts: InitOptions) -> Result<ContextSpace, Or
     ContextSpace::load(root)
 }
 
+/// **Reprend un projet existant** : initialise `.orchestra/` dans `root` (workspace = `root`),
+/// en type Dev avec Documentaliste activé. Le dossier de code devient un Espace pilotable.
+/// Refuse d'écraser une configuration déjà présente ([`OrchestraError::SpaceAlreadyExists`]).
+pub fn adopt_project(root: &Path) -> Result<ContextSpace, OrchestraError> {
+    let name = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("projet")
+        .to_string();
+    let opts = InitOptions {
+        project_name: name,
+        project_type: ProjectType::Dev,
+        workspace_path: Some(root.to_path_buf()),
+        documentalist_enabled: true,
+        integrations: Default::default(),
+        objectives: String::new(),
+        agents: Vec::new(),
+    };
+    scaffold_space(root, opts)
+}
+
 /// Gabarit de persona propre au type de projet — point de départ que l'utilisateur
 /// complète. Chaque famille de projet a des « critères » naturellement différents.
 fn persona_template(kind: ProjectType, name: &str, objectives: &str) -> String {
@@ -192,6 +214,17 @@ mod tests {
         // Rechargé depuis le disque, le persona reflète la sauvegarde.
         let reloaded = ContextSpace::load(&tmp.0).expect("rechargement OK");
         assert_eq!(reloaded.persona.as_deref(), Some("# Persona\n\nBudget : 350k€"));
+    }
+
+    #[test]
+    fn adopt_project_initializes_dev_space_in_place() {
+        let tmp = TempDir::new("adopt");
+        let space = adopt_project(&tmp.0).expect("reprise réussie");
+        assert_eq!(space.config.project_type, ProjectType::Dev);
+        // Le workspace pointe sur le dossier repris lui-même.
+        assert_eq!(space.config.workspace_path.as_deref(), Some(tmp.0.as_path()));
+        assert!(space.config.documentalist_enabled);
+        assert!(tmp.0.join(".orchestra").join("config.json").is_file());
     }
 
     #[test]

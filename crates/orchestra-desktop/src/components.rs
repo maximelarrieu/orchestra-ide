@@ -233,6 +233,7 @@ fn browse_row(
 ) -> Element {
     let nav = e.path.clone();
     let open = e.path.clone();
+    let adopt = e.path.clone();
     if e.is_space {
         rsx! {
             li { class: "skillrow",
@@ -248,8 +249,15 @@ fn browse_row(
         }
     } else {
         rsx! {
-            li {
+            li { class: "skillrow",
                 button { class: "row", onclick: move |_| browse_dir.set(nav.clone()), "📁 {e.name}" }
+                button { class: "linklike",
+                    onclick: move |_| {
+                        if state::adopt_project(space, space_path, known, &adopt) {
+                            browsing.set(false);
+                        }
+                    },
+                    "reprendre (Dev)" }
             }
         }
     }

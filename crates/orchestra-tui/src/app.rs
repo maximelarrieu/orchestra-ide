@@ -606,6 +606,14 @@ impl App {
         }
     }
 
+    /// Chemin du dossier actuellement sélectionné dans le navigateur (espace ou non).
+    pub fn selected_browse_path(&self) -> Option<String> {
+        self.browse
+            .as_ref()
+            .and_then(|b| b.entries.get(b.sel))
+            .map(|e| e.path.to_string_lossy().to_string())
+    }
+
     /// Entrée sélectionnée : si c'est un espace, **renvoie son chemin** à ouvrir ; sinon entre
     /// dans le dossier et renvoie `None`.
     pub fn browse_enter(&mut self) -> Option<String> {

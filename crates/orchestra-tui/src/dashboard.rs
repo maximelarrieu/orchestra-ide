@@ -767,7 +767,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         ))]
     } else if app.view == View::Spaces && app.browse.is_some() {
         vec![Line::from(Span::styled(
-            "📂 Parcourir — ↑↓ choisir · Entrée ouvrir/entrer · [u]/← remonter · Échap retour",
+            "📂 Parcourir — ↑↓ · Entrée ouvrir/entrer · [r] reprendre (projet Dev) · [u]/← remonter · Échap",
             Style::new().cyan(),
         ))]
     } else if app.view == View::Spaces && app.input.is_none() {
@@ -804,7 +804,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             last.spans.push(Span::styled("▏", Style::new().magenta()));
         }
         lines.push(Line::from(Span::styled(
-            "(Entrée = envoyer · Maj/Alt+Entrée = nouvelle ligne · Ctrl+G = cadrer le projet · Échap = quitter)",
+            "(Entrée envoyer · Maj/Alt+Entrée nouvelle ligne · Ctrl+G cadrer · Ctrl+R analyser l'existant · Échap quitter)",
             Style::new().dark_gray(),
         )));
         lines

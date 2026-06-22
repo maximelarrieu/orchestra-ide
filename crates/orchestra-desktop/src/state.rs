@@ -411,6 +411,26 @@ pub fn forget_space_entry(mut known: Signal<Vec<KnownSpace>>, path: &Path) {
     known.set(orchestra_core::registry::known_spaces());
 }
 
+/// **Reprend un projet existant** (`path`) : initialise `.orchestra` dedans (workspace = `path`),
+/// l'ouvre et le mémorise. `true` si réussi.
+pub fn adopt_project(
+    mut space: Signal<Option<ContextSpace>>,
+    mut space_path: Signal<String>,
+    mut known: Signal<Vec<KnownSpace>>,
+    path: &Path,
+) -> bool {
+    match orchestra_core::scaffold::adopt_project(path) {
+        Ok(sp) => {
+            let _ = orchestra_core::registry::remember_space(path);
+            space.set(Some(sp));
+            space_path.set(path.to_string_lossy().to_string());
+            known.set(orchestra_core::registry::known_spaces());
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Slug de dossier sûr (minuscules ; non-alphanumérique → `-`).
 fn slug(name: &str) -> String {
     let s: String = name

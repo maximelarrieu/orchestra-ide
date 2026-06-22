@@ -137,6 +137,13 @@ fn app() -> Element {
                                     }
                                 },
                                 "🧭 Cadrer le projet" }
+                            button {
+                                onclick: move |_| {
+                                    if let Some(tx) = user_tx() {
+                                        let _ = tx.send(orchestra_core::runtime::comprehension_message());
+                                    }
+                                },
+                                "🔎 Analyser le projet" }
                         }
                         p { class: "hint",
                             "Cadrage : décris ton idée dans la zone de saisie puis « Cadrer le projet » — le coordinateur t'interviewe et rédige un brief avant de coder."

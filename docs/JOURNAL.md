@@ -378,6 +378,16 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   avant de coder. Desktop : bouton « 🧭 Cadrer le projet » (la saisie = l'idée). TUI : **Ctrl+G**
   dans le chat. Même comportement des deux côtés.
 
+## Reprise de projet existant (point 3) (post-Phase 5) ✅
+
+- `scaffold::adopt_project(root)` (testé) : initialise `.orchestra/` **dans** un dossier de code
+  existant (type Dev, workspace = ce dossier, Documentaliste activé) → le projet devient pilotable.
+- `runtime::comprehension_message()` (partagé) : premier message qui fait **scanner** le code,
+  **rédiger `docs/comprehension.md`** et poser des questions **avant** toute évolution.
+- Desktop : bouton « reprendre (Dev) » sur un dossier non-espace du navigateur ; bouton
+  « 🔎 Analyser le projet » dans le chat. TUI : `[r]` dans le navigateur, **Ctrl+R** dans le chat.
+- S'appuie sur le suivi des modifications déjà en place (on voit ce que les agents changent).
+
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
 - Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts

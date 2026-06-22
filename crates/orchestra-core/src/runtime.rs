@@ -295,6 +295,21 @@ pub fn start_conversation(space: &ContextSpace) -> ChatHandle {
     start_conversation_inner(space, LlmClient::from_env().map(Arc::new))
 }
 
+/// Message de **compréhension** d'un projet existant : à envoyer en premier après avoir repris
+/// un projet, pour que les agents scannent le code, documentent et posent leurs questions
+/// **avant** toute évolution. Partagé TUI ⇄ GUI.
+pub fn comprehension_message() -> String {
+    "Ce projet existe déjà. Avant toute évolution, mène une PHASE DE COMPRÉHENSION, étape par étape :\n\
+     1. Explore le code avec tes outils : liste les fichiers (`ls -R` / `find`), puis lis les \
+        fichiers clés (README, manifestes de dépendances, points d'entrée, configuration).\n\
+     2. Fais rédiger une doc de compréhension dans `docs/comprehension.md` : but du projet, stack, \
+        architecture, modules principaux, conventions, points d'attention.\n\
+     3. Pose-moi les questions qui subsistent pour bien cerner le projet.\n\
+     Ensuite seulement, invite-moi à décrire les évolutions souhaitées ; tu les implémenteras en \
+     tenant la documentation et le suivi des modifications à jour."
+        .to_string()
+}
+
 /// Message de **cadrage** : transforme une idée en brief documenté **avant** de coder. À envoyer
 /// comme premier message d'une conversation — le coordinateur interviewe l'utilisateur puis fait
 /// rédiger les specs. Partagé TUI ⇄ GUI pour un comportement identique.

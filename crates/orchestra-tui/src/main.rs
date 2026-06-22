@@ -332,6 +332,21 @@ async fn event_loop(
                                     }
                                 }
                                 KeyCode::Left | KeyCode::Char('u') => app.browse_up(),
+                                // [r] : reprendre le dossier sélectionné comme projet Dev existant.
+                                KeyCode::Char('r') => {
+                                    if let Some(path) = app.selected_browse_path() {
+                                        match orchestra_core::scaffold::adopt_project(Path::new(&path)) {
+                                            Ok(_) => match open_space(&path) {
+                                                Ok(new_app) => {
+                                                    *app = new_app;
+                                                    rx = None;
+                                                }
+                                                Err(msg) => app.notice = Some(msg),
+                                            },
+                                            Err(e) => app.notice = Some(format!("Reprise impossible : {e}")),
+                                        }
+                                    }
+                                }
                                 KeyCode::Esc => app.cancel_browse(),
                                 _ => {}
                             }
@@ -384,6 +399,13 @@ async fn event_loop(
                                     let idea = app.chat_submit().unwrap_or_default();
                                     if let Some(tx) = &chat_tx {
                                         let _ = tx.send(orchestra_core::runtime::cadrage_message(&idea));
+                                    }
+                                }
+                                // Ctrl+R : analyser un projet existant (phase de compréhension).
+                                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    let _ = app.chat_submit(); // vide la saisie éventuelle
+                                    if let Some(tx) = &chat_tx {
+                                        let _ = tx.send(orchestra_core::runtime::comprehension_message());
                                     }
                                 }
                                 KeyCode::PageUp => app.radar_scroll_by(10),
