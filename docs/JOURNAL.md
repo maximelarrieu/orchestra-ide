@@ -368,6 +368,16 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - **Plan enrichi** : le panneau Plan montre objectif + dépendances par tâche (déjà le cas côté TUI ;
   ajouté côté desktop). Avec l'encart Squad, on voit *qui* fait *quoi* et *ce qui change*.
 
+## Thème VS Code + cadrage de projet (point 2) (post-Phase 5) ✅
+
+- **Thème VS Code (Dark+)** côté desktop : réécriture du CSS (variables de thème), onglets à liseré
+  actif, boutons primaire/secondaire/danger, champs à focus, listes survol/sélection, diff coloré,
+  barre de statut, scrollbars fines. (Le TUI conserve son rendu terminal — parité **fonctionnelle**.)
+- **Cadrage (point 2)** : `runtime::cadrage_message(idea)` (partagé) — premier message qui fait
+  **interviewer** l'utilisateur par le coordinateur puis **rédiger un brief** (`docs/brief.md`)
+  avant de coder. Desktop : bouton « 🧭 Cadrer le projet » (la saisie = l'idée). TUI : **Ctrl+G**
+  dans le chat. Même comportement des deux côtés.
+
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
 - Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts

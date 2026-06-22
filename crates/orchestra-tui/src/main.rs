@@ -379,6 +379,13 @@ async fn event_loop(
                                         }
                                     }
                                 }
+                                // Ctrl+G : cadrage — la saisie courante sert d'idée de projet.
+                                KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    let idea = app.chat_submit().unwrap_or_default();
+                                    if let Some(tx) = &chat_tx {
+                                        let _ = tx.send(orchestra_core::runtime::cadrage_message(&idea));
+                                    }
+                                }
                                 KeyCode::PageUp => app.radar_scroll_by(10),
                                 KeyCode::PageDown => app.radar_scroll_by(-10),
                                 KeyCode::Up => app.radar_scroll_by(3),

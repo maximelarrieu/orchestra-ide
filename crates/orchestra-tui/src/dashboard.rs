@@ -804,7 +804,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             last.spans.push(Span::styled("▏", Style::new().magenta()));
         }
         lines.push(Line::from(Span::styled(
-            "(Entrée = envoyer · Maj/Alt+Entrée = nouvelle ligne · Échap = quitter)",
+            "(Entrée = envoyer · Maj/Alt+Entrée = nouvelle ligne · Ctrl+G = cadrer le projet · Échap = quitter)",
             Style::new().dark_gray(),
         )));
         lines

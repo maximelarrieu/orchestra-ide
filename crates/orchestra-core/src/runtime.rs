@@ -295,6 +295,25 @@ pub fn start_conversation(space: &ContextSpace) -> ChatHandle {
     start_conversation_inner(space, LlmClient::from_env().map(Arc::new))
 }
 
+/// Message de **cadrage** : transforme une idée en brief documenté **avant** de coder. À envoyer
+/// comme premier message d'une conversation — le coordinateur interviewe l'utilisateur puis fait
+/// rédiger les specs. Partagé TUI ⇄ GUI pour un comportement identique.
+pub fn cadrage_message(idea: &str) -> String {
+    let idea = idea.trim();
+    let idea = if idea.is_empty() { "(idée à préciser ensemble)" } else { idea };
+    format!(
+        "Voici mon idée de projet :\n\n{idea}\n\n\
+         Avant d'écrire la moindre ligne de code, mène un CADRAGE, étape par étape :\n\
+         1. Pose-moi des questions ciblées, **une à deux à la fois** (pas un mur de questions) \
+            pour clarifier : utilisateurs visés, fonctionnalités clés, périmètre du MVP, \
+            stack/contraintes techniques, design/UX, critères de réussite.\n\
+         2. Quand tu as assez d'éléments, fais **rédiger un brief** clair dans `docs/brief.md` \
+            (objectifs, périmètre, stack retenue, découpage en étapes) via l'agent adéquat.\n\
+         3. Résume-moi le brief et **demande validation**.\n\
+         Ne propose un plan d'implémentation et ne code **qu'après** validation du brief."
+    )
+}
+
 /// Cœur testable : client LLM injecté (les tests passent `None`).
 fn start_conversation_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>) -> ChatHandle {
     let (user_tx, user_rx) = mpsc::unbounded_channel();

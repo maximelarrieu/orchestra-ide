@@ -52,7 +52,7 @@ fn app() -> Element {
     // État du chat.
     let messages = use_signal(Vec::<ChatMsg>::new);
     let thinking = use_signal(|| false);
-    let draft = use_signal(String::new);
+    let mut draft = use_signal(String::new);
     let user_tx = use_signal(|| None::<UnboundedSender<String>>);
     // Statut live des agents (encart « squad »), partagé orchestration + chat.
     let agents_status = use_signal(std::collections::HashMap::<String, state::AgStatus>::new);
@@ -129,6 +129,17 @@ fn app() -> Element {
                     div { class: "chatwrap",
                         div { class: "actions",
                             button { onclick: start_chat, "↻ Nouvelle conversation" }
+                            button { class: "go",
+                                onclick: move |_| {
+                                    if let Some(tx) = user_tx() {
+                                        let _ = tx.send(orchestra_core::runtime::cadrage_message(&draft()));
+                                        draft.set(String::new());
+                                    }
+                                },
+                                "🧭 Cadrer le projet" }
+                        }
+                        p { class: "hint",
+                            "Cadrage : décris ton idée dans la zone de saisie puis « Cadrer le projet » — le coordinateur t'interviewe et rédige un brief avant de coder."
                         }
                         components::SquadPanel { space, status: agents_status }
                         if user_tx().is_some() {
