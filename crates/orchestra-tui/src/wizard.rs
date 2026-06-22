@@ -147,13 +147,11 @@ fn prompt_line(label: &str, default: Option<&str>) -> io::Result<String> {
     }
 }
 
-/// Menu numéroté des quatre types de projet. Boucle jusqu'à un choix valide.
+/// Menu numéroté des types de projet. Boucle jusqu'à un choix valide.
 fn prompt_project_type() -> io::Result<ProjectType> {
-    const CHOICES: [(&str, ProjectType); 4] = [
+    const CHOICES: [(&str, ProjectType); 2] = [
         ("Dev", ProjectType::Dev),
-        ("Nutrition", ProjectType::Nutrition),
         ("Langue", ProjectType::Langue),
-        ("Immobilier", ProjectType::Immobilier),
     ];
 
     println!("Type de projet :");

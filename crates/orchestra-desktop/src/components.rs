@@ -218,9 +218,7 @@ fn NewSpaceForm(
                 oninput: move |e| name.set(e.value()) }
             div { class: "types",
                 { type_btn(ProjectType::Dev, kind) }
-                { type_btn(ProjectType::Nutrition, kind) }
                 { type_btn(ProjectType::Langue, kind) }
-                { type_btn(ProjectType::Immobilier, kind) }
             }
             if kind() == ProjectType::Dev {
                 input { class: "chatinput", value: "{workspace}", placeholder: "Workspace (chemin du code)",

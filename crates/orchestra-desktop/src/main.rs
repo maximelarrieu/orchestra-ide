@@ -22,7 +22,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use state::{drive_orchestration, ChatMsg, PlanRow, View};
 
 /// Espace ouvert au démarrage.
-const DEFAULT_SPACE: &str = "examples/recherche-immo-aix";
+const DEFAULT_SPACE: &str = "examples/apprentissage-espagnol";
 
 fn main() {
     dioxus::launch(app);

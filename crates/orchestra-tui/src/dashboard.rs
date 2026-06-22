@@ -789,7 +789,7 @@ mod tests {
             root: PathBuf::from("."),
             config: ProjectConfig {
                 project_name: "Demo".to_string(),
-                project_type: ProjectType::Immobilier,
+                project_type: ProjectType::Dev,
                 workspace_path: None,
                 documentalist_enabled: false,
                 skills: vec![],

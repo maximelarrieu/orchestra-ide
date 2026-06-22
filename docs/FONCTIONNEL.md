@@ -7,9 +7,9 @@
 
 Orchestra IDE est un **« IDE pour l'ère agentique »** : un poste de pilotage où l'on ne
 manipule pas du code ligne à ligne, mais un **orchestre d'agents** qui travaillent pour
-nous sur un objectif. L'outil est **agnostique du domaine** : il sert aussi bien à
-développer un logiciel qu'à organiser une recherche immobilière, un plan nutritionnel ou
-l'apprentissage d'une langue.
+nous sur un objectif. L'outil est **centré sur le développement logiciel** (création d'un
+projet *from scratch* ou reprise d'un projet existant). Le moteur reste générique — un second
+type **Langue** est conservé (mis de côté pour l'instant) — mais le produit vise le Dev.
 
 ## 2. Concept clé : l'Espace de Contexte
 
@@ -20,9 +20,9 @@ Un Espace contient :
 
 | Élément | Rôle |
 |---|---|
-| **Type de projet** | `Dev`, `Nutrition`, `Langue` ou `Immobilier` — détermine les agents et Skills par défaut |
-| **Persona** (`persona.md`) | Le contexte et les critères rédigés par l'utilisateur (budget, régime, niveau, conventions de code…) |
-| **Agents** | Les membres de l'orchestre (ex. `Agent_Scraper`, `Agent_Codeur`) |
+| **Type de projet** | `Dev` (focus) ou `Langue` — détermine les agents et Skills par défaut |
+| **Persona** (`persona.md`) | Le contexte et les critères rédigés par l'utilisateur (stack, conventions de code, objectifs…) |
+| **Agents** | Les membres de l'orchestre (ex. `Agent_Architecte`, `Agent_Codeur`) |
 | **Skills** | Les capacités : **primitives** exécutables (code : `Read_File`, `Web_Fetch`…) et **fiches** d'instructions (`skills/<id>/SKILL.md`, sans code) |
 | **Mémoire** (`memory.md`) | Notes partagées entre agents et entre sessions (faits, décisions, synthèses) |
 | **ADRs** | Les décisions structurantes consignées (`adr/*.md`) |
@@ -30,12 +30,10 @@ Un Espace contient :
 
 ### Matrice des types de projet
 
-| Type | Agents par défaut | Skills par défaut |
+| Type | Agents *de départ* | Skills par défaut |
 |---|---|---|
-| **Dev** | Agent_Architecte, Agent_Codeur, Agent_Testeur | Read_File, Write_File_Validated, Execute_Terminal_Command |
-| **Nutrition** | Agent_Planificateur, Agent_Nutritionniste | Web_Search, Calorie_Calculator, File_Append |
+| **Dev** | Agent_Architecte, Agent_Codeur, Agent_Testeur (+ catalogue lifecycle : Reviewer, Debuggeur, Refactoreur, DevOps, Sécurité, DBA, Release) | Read_File, Write_File_Validated, Execute_Terminal_Command |
 | **Langue** | Agent_Tuteur, Agent_Correcteur | Generate_Quiz, Translate_Text, Text_To_Speech |
-| **Immobilier** | Agent_Scraper, Agent_Filtrage | Scrape_Web_Page, Extract_JSON_From_HTML, Geocoding_Calcul |
 
 ## 3. Parcours utilisateur
 
@@ -50,7 +48,7 @@ Un assistant interactif pose quelques questions :
 ```mermaid
 flowchart TD
     A([orchestra init chemin]) --> B[Nom du projet ?]
-    B --> C[Type ? 1.Dev 2.Nutrition 3.Langue 4.Immobilier]
+    B --> C[Type ? 1.Dev 2.Langue]
     C --> D{Type = Dev ?}
     D -->|oui| E[Chemin du code à piloter ?]
     D -->|non| F[Agent Documentaliste ? o/N]
@@ -71,7 +69,7 @@ cargo run -p orchestra-tui -- ./ma-recherche
 Le tableau de bord (TUI) s'ouvre en 3 zones :
 
 ```
-┌─ ORCHESTRA IDE v0.1.0 | [Recherche_Immo_Aix] (Immobilier) | ● au repos ──┐
+┌─ ORCHESTRA IDE v0.1.0 | [Mon_App] (Dev) | ● au repos ────────────────────┐
 ├─ 🛰  ÉCRAN RADAR (FLUX D'ACTIVITÉ DES AGENTS) ───────────────────────────┤
 │   Prêt. Appuie sur [1] pour lancer l'orchestre.                          │
 ├─ 📋 OPTIONS & MENUS ─────────────────────────────────────────────────────┤
@@ -131,7 +129,7 @@ export GEMINI_API_KEY="..."             # Gemini (défaut gemini-2.5-flash)
 export ORCHESTRA_PROVIDER=gemini        # anthropic | gemini
 export ORCHESTRA_MODEL=gemini-2.5-flash
 
-cargo run -p orchestra-tui -- examples/recherche-immo-aix
+cargo run -p orchestra-tui -- examples/apprentissage-espagnol
 ```
 
 Le fournisseur est choisi automatiquement selon les clés présentes ; `ORCHESTRA_PROVIDER` a
@@ -228,5 +226,5 @@ la synthèse au lieu de relire le fichier.
 
 ## 5. Exemple fourni
 
-`examples/recherche-immo-aix/` est un Espace Immobilier prêt à ouvrir pour découvrir le
+`examples/apprentissage-espagnol/` est un Espace prêt à ouvrir pour découvrir le
 tableau de bord et le radar sans rien créer.

@@ -86,9 +86,9 @@ crates/
 
 ## 3. Modèle de données — l'« Espace de Contexte »
 
-Le concept central est volontairement **agnostique** : un projet Dev, Nutrition, Langue
-ou Immobilier partage la même structure ; seuls les Skills, agents et intégrations
-diffèrent.
+Le concept central est volontairement **agnostique** : un projet Dev ou Langue partage la
+même structure ; seuls les Skills, agents et intégrations diffèrent. (L'IDE est centré sur le
+**développement** ; Langue est conservé mais mis de côté.)
 
 ```mermaid
 classDiagram
@@ -116,9 +116,7 @@ classDiagram
     class ProjectType {
         <<enum>>
         Dev
-        Nutrition
         Langue
-        Immobilier
     }
     class Integrations {
         +Option~GitIntegration~ git

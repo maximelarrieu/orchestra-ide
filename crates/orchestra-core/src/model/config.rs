@@ -6,8 +6,8 @@ use super::project_type::ProjectType;
 
 /// Contenu de `.orchestra/config.json` : la définition complète d'un Espace de Contexte.
 ///
-/// Volontairement agnostique — un projet Dev, Nutrition, Langue ou Immobilier partage
-/// la même structure ; seuls les Skills/Agents et les intégrations diffèrent.
+/// Volontairement agnostique — un projet Dev ou Langue partage la même structure ;
+/// seuls les Skills/Agents et les intégrations diffèrent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project_name: String,
@@ -114,20 +114,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_immobilier_space() {
+    fn parse_dev_space() {
         let raw = r#"{
-            "project_name": "Recherche_Immo_Aix",
-            "project_type": "immobilier",
-            "agents": ["Agent_Scraper", "Agent_Filtrage"],
-            "skills": ["Scrape_Web_Page", "Extract_JSON_From_HTML", "Geocoding_Calcul"]
+            "project_name": "Mon_App",
+            "project_type": "dev",
+            "agents": ["Agent_Architecte", "Agent_Codeur"],
+            "skills": ["Read_File", "Write_File_Validated", "Execute_Terminal_Command"]
         }"#;
 
         let cfg: ProjectConfig = serde_json::from_str(raw).expect("config valide");
-        assert_eq!(cfg.project_type, ProjectType::Immobilier);
+        assert_eq!(cfg.project_type, ProjectType::Dev);
         assert_eq!(cfg.skills.len(), 3);
         // Rétro-compat : agents écrits en chaînes → AgentDef (rôle/skills vides).
         assert_eq!(cfg.agents.len(), 2);
-        assert_eq!(cfg.agents[0].name, "Agent_Scraper");
+        assert_eq!(cfg.agents[0].name, "Agent_Architecte");
         assert!(cfg.agents[0].role.is_empty());
         // Champs absents → valeurs par défaut (serde(default)).
         assert!(cfg.workspace_path.is_none());

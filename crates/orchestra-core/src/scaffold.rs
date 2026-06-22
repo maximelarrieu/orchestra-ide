@@ -107,14 +107,6 @@ fn persona_template(kind: ProjectType, name: &str, objectives: &str) -> String {
              ## Objectifs\n\
              - à compléter\n"
         }
-        ProjectType::Nutrition => {
-            "## Objectifs\n\
-             - **But** (perte/maintien/prise) : à compléter\n\
-             - **Calories cibles / jour** : à compléter\n\n\
-             ## Contraintes\n\
-             - **Allergies / intolérances** : à compléter\n\
-             - **Régime** (végé, sans gluten…) : à compléter\n"
-        }
         ProjectType::Langue => {
             "## Apprentissage\n\
              - **Langue cible** : à compléter\n\
@@ -123,15 +115,6 @@ fn persona_template(kind: ProjectType, name: &str, objectives: &str) -> String {
              ## Préférences\n\
              - **Rythme** : à compléter\n\
              - **Thèmes** : à compléter\n"
-        }
-        ProjectType::Immobilier => {
-            "## Critères stricts\n\
-             - **Budget max** : à compléter\n\
-             - **Surface min (m²)** : à compléter\n\
-             - **Quartiers cibles** : à compléter\n\
-             - **Diagnostics minimum (DPE)** : à compléter\n\n\
-             ## Sources\n\
-             - à compléter\n"
         }
     };
 
@@ -216,7 +199,7 @@ mod tests {
         let tmp = TempDir::new("dup");
         let opts = || InitOptions {
             project_name: "X".to_string(),
-            project_type: ProjectType::Nutrition,
+            project_type: ProjectType::Langue,
             workspace_path: None,
             documentalist_enabled: false,
             integrations: Default::default(),

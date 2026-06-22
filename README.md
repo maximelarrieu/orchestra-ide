@@ -35,7 +35,7 @@ en-tête / écran radar / menu). **Sans LLM, sans agent** : le radar est vide.
 
 ```bash
 # Ouvre l'espace exemple fourni
-cargo run -p orchestra-tui -- examples/recherche-immo-aix
+cargo run -p orchestra-tui -- examples/apprentissage-espagnol
 # Quitter : q ou Échap
 ```
 
@@ -45,8 +45,7 @@ s'il n'en trouve pas, le dashboard s'affiche en état « Aucun espace chargé »
 ## Phase 2 — `orchestra init` ✅
 
 Assistant interactif qui génère un Espace de Contexte selon le type de projet
-(Dev / Nutrition / Langue / Immobilier), en pré-remplissant la matrice de Skills et
-d'agents par défaut.
+(Dev / Langue), en pré-remplissant la matrice de Skills et d'agents par défaut.
 
 ```bash
 # Crée .orchestra/{config.json, persona.md, adr/} dans le dossier cible (défaut : .)
@@ -72,7 +71,7 @@ l'espace comme une tâche `tokio` qui publie des `AgentEvent` sur un canal
 `tokio::sync::mpsc` ; le TUI les consomme en direct.
 
 ```bash
-cargo run -p orchestra-tui -- examples/recherche-immo-aix
+cargo run -p orchestra-tui -- examples/apprentissage-espagnol
 # Dans le dashboard : [1] lance l'orchestre → le radar défile en temps réel.  [q] quitte.
 ```
 
@@ -98,7 +97,7 @@ export GEMINI_API_KEY="..."
 export ORCHESTRA_PROVIDER=gemini      # anthropic | gemini
 export ORCHESTRA_MODEL=gemini-2.5-flash
 
-cargo run -p orchestra-tui -- examples/recherche-immo-aix
+cargo run -p orchestra-tui -- examples/apprentissage-espagnol
 # [1] lance l'orchestre — le radar affiche les actions réelles des agents.
 ```
 

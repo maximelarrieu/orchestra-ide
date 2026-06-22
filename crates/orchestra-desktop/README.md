@@ -29,7 +29,7 @@ Dioxus desktop s'appuie sur la webview de l'OS :
 cargo run -p orchestra-desktop
 ```
 
-(La fenêtre charge `examples/recherche-immo-aix`. Définis `GEMINI_API_KEY` ou
+(La fenêtre charge `examples/apprentissage-espagnol` au démarrage. Définis `GEMINI_API_KEY` ou
 `ANTHROPIC_API_KEY` pour une orchestration réelle, sinon le mode simulé s'affiche.)
 
 ## Structure (`src/`)

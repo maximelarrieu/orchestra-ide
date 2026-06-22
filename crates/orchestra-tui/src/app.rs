@@ -243,9 +243,7 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 fn default_intention(kind: ProjectType) -> &'static str {
     match kind {
         ProjectType::Dev => "Lis le README et propose 3 améliorations prioritaires du code.",
-        ProjectType::Nutrition => "Propose un plan de repas équilibré pour aujourd'hui selon mes critères.",
         ProjectType::Langue => "Donne-moi une leçon de 15 min avec quelques exercices, puis corrige mes réponses.",
-        ProjectType::Immobilier => "Liste les annonces correspondant à mes critères et classe-les par pertinence.",
     }
 }
 
@@ -626,12 +624,7 @@ impl App {
         let Some(f) = self.new_space.as_mut() else { return };
         match f.field {
             NewField::Kind => {
-                const KINDS: [ProjectType; 4] = [
-                    ProjectType::Dev,
-                    ProjectType::Nutrition,
-                    ProjectType::Langue,
-                    ProjectType::Immobilier,
-                ];
+                const KINDS: [ProjectType; 2] = [ProjectType::Dev, ProjectType::Langue];
                 let cur = KINDS.iter().position(|k| *k == f.kind).unwrap_or(0) as isize;
                 let n = ((cur + delta).rem_euclid(KINDS.len() as isize)) as usize;
                 f.kind = KINDS[n];
@@ -1428,7 +1421,7 @@ mod tests {
                 root: std::path::PathBuf::from("."),
                 config: ProjectConfig {
                     project_name: "T".into(),
-                    project_type: ProjectType::Immobilier,
+                    project_type: ProjectType::Dev,
                     workspace_path: None,
                     documentalist_enabled: false,
                     skills: vec![],
@@ -1450,7 +1443,7 @@ mod tests {
     #[test]
     fn bundled_example_space_can_launch() {
         let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/recherche-immo-aix");
+            .join("../../examples/apprentissage-espagnol");
         let space = ContextSpace::load(&example).expect("l'exemple doit se charger");
         let app = App::new(Some(space));
         assert!(app.can_launch(), "l'exemple doit avoir des agents → [1] actif");

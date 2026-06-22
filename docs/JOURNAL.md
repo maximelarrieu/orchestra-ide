@@ -322,7 +322,7 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 ## Création d'espaces dans l'app + catalogue d'agents DEV (post-Phase 5) ✅
 
 - **Création d'un nouvel espace depuis les deux apps** (plus seulement via `orchestra init`) :
-  formulaire **nom · type (Dev/Nutrition/Langue/Immobilier) · workspace (Dev) · objectifs ·
+  formulaire **nom · type (Dev/Langue) · workspace (Dev) · objectifs ·
   documentaliste**. TUI : sélecteur `[3]` → `[n]` (formulaire navigable Tab/↑↓, `←/→` type,
   Entrée crée) ; Desktop : bouton « ➕ Nouveau space » dans `SpaceBar`. À la création, l'espace
   est ouvert et mémorisé (registre). L'espace est créé dans `dossier_parent/<slug(nom)>`.
@@ -347,6 +347,15 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   via `on_event`) ; le desktop manquait de visibilité. Ajout d'un `SquadPanel` (coordinateur +
   agents + documentaliste) avec statut live (en attente / réfléchit… / actif / terminé) dérivé du
   flux `AgentEvent`, affiché dans les vues Orchestrer et Chat. Parité atteinte des deux côtés.
+
+## Recentrage DEV (post-Phase 5) ✅
+
+- **Suppression des types Immobilier et Nutrition** : `ProjectType` ne garde que `Dev` (focus) et
+  `Langue` (conservé, mis de côté). Tous les `match` mis à jour (skills/agents par défaut, persona,
+  intention par défaut, wizards CLI/TUI/desktop). Exemple `examples/recherche-immo-aix` supprimé ;
+  l'espace de démarrage du desktop devient `examples/apprentissage-espagnol`.
+- Docs (README, FONCTIONNEL, ARCHITECTURE) alignées sur le focus développement.
+- Cap produit : un IDE de l'ère agentique **orienté création/reprise de projets de dev**.
 
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
