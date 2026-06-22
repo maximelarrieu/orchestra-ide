@@ -56,13 +56,15 @@ fn app() -> Element {
     let user_tx = use_signal(|| None::<UnboundedSender<String>>);
     // Statut live des agents (encart « squad »), partagé orchestration + chat.
     let agents_status = use_signal(std::collections::HashMap::<String, state::AgStatus>::new);
+    // Fichiers modifiés par les agents (vue Modifications).
+    let changes = use_signal(Vec::<state::FileChange>::new);
     // Racine de l'espace auquel appartient la conversation en cours (pour la redémarrer quand
     // l'utilisateur change d'espace — sinon le coordinateur reste sur l'ancienne squad).
     let mut chat_root = use_signal(|| None::<PathBuf>);
 
     let launch = move |_| {
         if let Some(sp) = space() {
-            drive_orchestration(sp, objective(), log, plan, pending, approve_tx, agents_status);
+            drive_orchestration(sp, objective(), log, plan, pending, approve_tx, agents_status, changes);
         }
     };
     let approve = move |_| {
@@ -74,7 +76,7 @@ fn app() -> Element {
     let start_chat = move |_| {
         if let Some(sp) = space() {
             let root = sp.root.clone();
-            state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx, agents_status);
+            state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx, agents_status, changes);
             chat_root.set(Some(root));
         }
     };
@@ -86,7 +88,7 @@ fn app() -> Element {
         if view() == View::Chat && (user_tx().is_none() || chat_root() != current_root) {
             if let Some(sp) = space() {
                 let root = sp.root.clone();
-                state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx, agents_status);
+                state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx, agents_status, changes);
                 chat_root.set(Some(root));
             }
         }
@@ -136,6 +138,7 @@ fn app() -> Element {
                 },
                 View::Documents => rsx! { components::DocumentsView { space, content: doc_content } },
                 View::Agents => rsx! { components::AgentsView { space, selected: selected_agent } },
+                View::Changes => rsx! { components::ChangesView { changes } },
             }
         }
     }

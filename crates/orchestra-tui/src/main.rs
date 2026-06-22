@@ -274,6 +274,14 @@ async fn event_loop(
                                 KeyCode::Esc | KeyCode::Char('2') => app.toggle_docs(),
                                 _ => {}
                             }
+                        } else if app.view == View::Changes {
+                            // Vue Modifications : naviguer entre les fichiers changés.
+                            match key.code {
+                                KeyCode::Up => app.changes_move(-1),
+                                KeyCode::Down => app.changes_move(1),
+                                KeyCode::Esc | KeyCode::Char('7') => app.toggle_changes(),
+                                _ => {}
+                            }
                         } else if app.view == View::Spaces && app.new_space.is_some() {
                             // Formulaire de création d'un nouvel espace.
                             use app::NewField;
@@ -450,6 +458,7 @@ async fn event_loop(
                                 KeyCode::Char('3') => app.toggle_spaces(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
                                 KeyCode::Char('6') if app.space.is_some() => app.toggle_agents(),
+                                KeyCode::Char('7') if app.space.is_some() => app.toggle_changes(),
                                 KeyCode::PageUp => app.radar_scroll_by(10),
                                 KeyCode::PageDown => app.radar_scroll_by(-10),
                                 KeyCode::Up => app.radar_scroll_by(3),

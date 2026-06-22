@@ -33,6 +33,9 @@ pub enum AgentEvent {
     TaskDone { id: String },
     /// Une tâche du plan a échoué.
     TaskFailed { id: String, error: String },
+    /// Un agent a **écrit/modifié un fichier** : chemin (relatif au workspace), nombre de lignes
+    /// ajoutées/retirées, et un diff lisible. Permet à l'UI de montrer les changements en direct.
+    FileChanged { path: String, added: usize, removed: usize, diff: String },
 }
 
 impl AgentEvent {
@@ -46,7 +49,8 @@ impl AgentEvent {
             | AgentEvent::TaskStarted { agent, .. } => Some(agent),
             AgentEvent::PlanReady { .. }
             | AgentEvent::TaskDone { .. }
-            | AgentEvent::TaskFailed { .. } => None,
+            | AgentEvent::TaskFailed { .. }
+            | AgentEvent::FileChanged { .. } => None,
         }
     }
 }

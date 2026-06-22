@@ -9,7 +9,9 @@ use orchestra_core::model::{ContextSpace, ProjectType};
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::state::{self, AgStatus, ChatMsg, KnownSpace, MsgKind, PlanRow, SkillEntry, SkillKind, View};
+use crate::state::{
+    self, AgStatus, ChatMsg, FileChange, KnownSpace, MsgKind, PlanRow, SkillEntry, SkillKind, View,
+};
 
 /// Barre de navigation entre les vues.
 pub fn nav(mut view: Signal<View>) -> Element {
@@ -20,6 +22,7 @@ pub fn nav(mut view: Signal<View>) -> Element {
             button { class: "{tab(cur, View::Chat)}", onclick: move |_| view.set(View::Chat), "Chat" }
             button { class: "{tab(cur, View::Documents)}", onclick: move |_| view.set(View::Documents), "Documents" }
             button { class: "{tab(cur, View::Agents)}", onclick: move |_| view.set(View::Agents), "Agents & skills" }
+            button { class: "{tab(cur, View::Changes)}", onclick: move |_| view.set(View::Changes), "Modifications" }
         }
     }
 }
@@ -66,14 +69,74 @@ pub fn SquadPanel(space: Signal<Option<ContextSpace>>, status: Signal<HashMap<St
     }
 }
 
-/// Panneau Plan : une ligne par tâche (id · agent — statut).
+/// Panneau Plan : une ligne par tâche (id · agent · statut · objectif · dépendances).
 pub fn plan_panel(rows: &[PlanRow]) -> Element {
     rsx! {
         h3 { "Plan" }
         ul { class: "plan",
             for row in rows {
-                li { key: "{row.id}", "{row.id} · {row.agent} — {row.status}" }
+                {
+                    let deps = if row.deps.is_empty() { String::new() } else { format!("⟸ {}", row.deps.join(", ")) };
+                    rsx! {
+                        li { key: "{row.id}",
+                            div { class: "planhead", "{row.id} · {row.agent} — {row.status}" }
+                            div { class: "planobj", "{row.objective}" }
+                            if !deps.is_empty() {
+                                div { class: "plandeps", "{deps}" }
+                            }
+                        }
+                    }
+                }
             }
+        }
+    }
+}
+
+/// Vue Modifications : fichiers changés par les agents (liste) + diff coloré du fichier choisi.
+#[component]
+pub fn ChangesView(changes: Signal<Vec<FileChange>>) -> Element {
+    let mut sel = use_signal(|| 0usize);
+    let list = changes();
+    if list.is_empty() {
+        return rsx! {
+            p { class: "muted", "Aucune modification — les écritures des agents apparaîtront ici." }
+        };
+    }
+    let idx = sel().min(list.len() - 1);
+    let diff = list[idx].diff.clone();
+    rsx! {
+        div { class: "cols",
+            ul { class: "list",
+                for (i, c) in list.iter().enumerate() {
+                    { change_item(i, c.path.clone(), c.added, c.removed, i == idx, sel) }
+                }
+            }
+            div { class: "viewer",
+                div { class: "diff",
+                    for line in diff.lines() {
+                        {
+                            let cls = if line.starts_with("+ ") {
+                                "dl add"
+                            } else if line.starts_with("- ") {
+                                "dl del"
+                            } else {
+                                "dl ctx"
+                            };
+                            rsx! { div { class: "{cls}", "{line}" } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn change_item(index: usize, path: String, added: usize, removed: usize, active: bool, mut sel: Signal<usize>) -> Element {
+    let cls = if active { "row on" } else { "row" };
+    rsx! {
+        li {
+            button { class: "{cls}", onclick: move |_| sel.set(index),
+                "{path}  +{added} -{removed}" }
         }
     }
 }

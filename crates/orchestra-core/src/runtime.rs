@@ -255,6 +255,18 @@ async fn run_agent_turn(
                 markdown_skill::execute(&input, &ctx.root)
             } else if integrations::handles(&name) {
                 integrations::execute(&name, &input, &ctx.workspace, &ctx.integ).await
+            } else if name == skills::WRITE_FILE {
+                // Écriture de fichier : on capture le contenu avant/après pour émettre le diff.
+                let rel = input.get("path").and_then(Value::as_str).unwrap_or("").to_string();
+                let abs = ctx.workspace.join(&rel);
+                let before = std::fs::read_to_string(&abs).unwrap_or_default();
+                let outcome = skills::execute_skill(&name, &input, &ctx.workspace).await;
+                if !outcome.is_error {
+                    let after = std::fs::read_to_string(&abs).unwrap_or_default();
+                    let (added, removed, diff) = crate::diff::summarize(&before, &after);
+                    let _ = tx.send(AgentEvent::FileChanged { path: rel, added, removed, diff });
+                }
+                outcome
             } else {
                 skills::execute_skill(&name, &input, &ctx.workspace).await
             };

@@ -7,6 +7,7 @@
 
 pub mod browser;
 pub mod catalog;
+pub mod diff;
 pub mod error;
 pub mod events;
 pub mod integrations;

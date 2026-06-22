@@ -26,6 +26,7 @@ pub enum View {
     Chat,
     Documents,
     Agents,
+    Changes,
 }
 
 /// Nature d'un message de chat (pour le style de bulle).
@@ -51,6 +52,17 @@ pub struct PlanRow {
     pub id: String,
     pub agent: String,
     pub status: String,
+    pub objective: String,
+    pub deps: Vec<String>,
+}
+
+/// Un fichier modifié par un agent (pour la vue Modifications).
+#[derive(Clone, PartialEq)]
+pub struct FileChange {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    pub diff: String,
 }
 
 /// Statut live d'un agent (pour l'encart « squad »).
@@ -100,11 +112,13 @@ pub fn drive_orchestration(
     mut pending: Signal<bool>,
     mut approve_tx: Signal<Option<UnboundedSender<bool>>>,
     mut status: Signal<HashMap<String, AgStatus>>,
+    mut changes: Signal<Vec<FileChange>>,
 ) {
     log.set(Vec::new());
     plan.set(Vec::new());
     pending.set(false);
     status.set(HashMap::new());
+    changes.set(Vec::new());
 
     spawn(async move {
         let handle = runtime::orchestrate(&space, &objective);
@@ -113,12 +127,7 @@ pub fn drive_orchestration(
         while let Some(ev) = events.recv().await {
             match ev {
                 AgentEvent::PlanReady { tasks } => {
-                    plan.set(
-                        tasks
-                            .into_iter()
-                            .map(|t| PlanRow { id: t.id, agent: t.agent, status: "en attente".into() })
-                            .collect(),
-                    );
+                    plan.set(tasks.into_iter().map(plan_row).collect());
                     pending.set(true);
                 }
                 AgentEvent::TaskStarted { id, agent } => {
@@ -140,9 +149,23 @@ pub fn drive_orchestration(
                     log.write().push(format!("{agent} : {msg}"));
                 }
                 AgentEvent::Thinking { agent } => mark(&mut status, &agent, AgStatus::Thinking),
+                AgentEvent::FileChanged { path, added, removed, diff } => {
+                    changes.write().push(FileChange { path, added, removed, diff });
+                }
             }
         }
     });
+}
+
+/// Convertit une tâche planifiée (cœur) en ligne de plan affichable.
+fn plan_row(t: orchestra_core::events::PlannedTask) -> PlanRow {
+    PlanRow {
+        id: t.id,
+        agent: t.agent,
+        status: "en attente".into(),
+        objective: t.objective,
+        deps: t.depends_on,
+    }
 }
 
 fn set_status(plan: &mut Signal<Vec<PlanRow>>, id: &str, status: &str) {
@@ -166,12 +189,14 @@ pub fn start_chat(
     mut pending: Signal<bool>,
     mut approve_tx: Signal<Option<UnboundedSender<bool>>>,
     mut status: Signal<HashMap<String, AgStatus>>,
+    mut changes: Signal<Vec<FileChange>>,
 ) {
     messages.set(Vec::new());
     plan.set(Vec::new());
     pending.set(false);
     thinking.set(false);
     status.set(HashMap::new());
+    changes.set(Vec::new());
 
     let handle = runtime::start_conversation(&space);
     user_tx.set(Some(handle.user));
@@ -208,12 +233,7 @@ pub fn start_chat(
                     mark(&mut status, &agent, AgStatus::Done);
                 }
                 AgentEvent::PlanReady { tasks } => {
-                    plan.set(
-                        tasks
-                            .into_iter()
-                            .map(|t| PlanRow { id: t.id, agent: t.agent, status: "en attente".into() })
-                            .collect(),
-                    );
+                    plan.set(tasks.into_iter().map(plan_row).collect());
                     pending.set(true);
                 }
                 AgentEvent::TaskStarted { id, agent } => {
@@ -222,6 +242,9 @@ pub fn start_chat(
                 }
                 AgentEvent::TaskDone { id } => set_status(&mut plan, &id, "fait ✓"),
                 AgentEvent::TaskFailed { id, .. } => set_status(&mut plan, &id, "échec ✗"),
+                AgentEvent::FileChanged { path, added, removed, diff } => {
+                    changes.write().push(FileChange { path, added, removed, diff });
+                }
             }
         }
     });

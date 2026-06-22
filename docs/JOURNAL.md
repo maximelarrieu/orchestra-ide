@@ -357,6 +357,17 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - Docs (README, FONCTIONNEL, ARCHITECTURE) alignées sur le focus développement.
 - Cap produit : un IDE de l'ère agentique **orienté création/reprise de projets de dev**.
 
+## Suivi des modifications de fichiers (diffs) + plan enrichi (post-Phase 5) ✅
+
+- **Nouveau `AgentEvent::FileChanged { path, added, removed, diff }`** émis par le runtime quand un
+  agent écrit un fichier (`Write_File_Validated`) : on lit le contenu avant/après autour de l'appel
+  et on calcule un **diff par lignes** (module cœur `diff`, sans dépendance, testé).
+- **TUI** : vue **Modifications** `[7]` — liste des fichiers changés (`+a -r`) + diff coloré du
+  fichier sélectionné. Réinitialisée à chaque run.
+- **Desktop** : onglet **Modifications** (`ChangesView`) — même liste + diff coloré.
+- **Plan enrichi** : le panneau Plan montre objectif + dépendances par tâche (déjà le cas côté TUI ;
+  ajouté côté desktop). Avec l'encart Squad, on voit *qui* fait *quoi* et *ce qui change*.
+
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
 - Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts

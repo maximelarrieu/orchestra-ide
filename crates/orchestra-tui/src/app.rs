@@ -86,6 +86,17 @@ pub enum View {
     Agents,
     /// Sélecteur d'espaces connus (récents) — ouvrir sans retaper le chemin.
     Spaces,
+    /// Modifications de fichiers réalisées par les agents (liste + diff).
+    Changes,
+}
+
+/// Un changement de fichier observé (émis par un agent via `Write_File_Validated`).
+#[derive(Debug, Clone)]
+pub struct FileChange {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    pub diff: String,
 }
 
 /// État du navigateur de dossiers (sélecteur d'espaces `[3]` → `[b]`).
@@ -206,6 +217,10 @@ pub struct App {
     pub browse: Option<BrowseState>,
     /// Formulaire de création d'espace ouvert (`Some`), ou fermé.
     pub new_space: Option<NewSpaceForm>,
+    /// Fichiers modifiés par les agents (les plus récents en fin) — vue `[7]`.
+    pub changes: Vec<FileChange>,
+    /// Index du changement sélectionné dans la vue Modifications.
+    pub change_sel: usize,
 }
 
 /// État d'une tâche du plan d'orchestration, côté affichage.
@@ -303,6 +318,8 @@ impl App {
             space_sel: 0,
             browse: None,
             new_space: None,
+            changes: Vec::new(),
+            change_sel: 0,
         }
     }
 
@@ -495,6 +512,25 @@ impl App {
         self.editor = Some(Editor::from_str(&text));
         self.editor_target = target;
         self.viewer = None;
+    }
+
+    /// `[7]` — ouvre/ferme la **vue Modifications** (fichiers changés par les agents).
+    pub fn toggle_changes(&mut self) {
+        if self.view == View::Changes {
+            self.view = View::Radar;
+            return;
+        }
+        self.change_sel = self.changes.len().saturating_sub(1); // dernier changement par défaut
+        self.notice = None;
+        self.view = View::Changes;
+    }
+
+    pub fn changes_move(&mut self, delta: isize) {
+        if self.changes.is_empty() {
+            return;
+        }
+        let last = self.changes.len() as isize - 1;
+        self.change_sel = (self.change_sel as isize + delta).clamp(0, last) as usize;
     }
 
     /// `[3]` — ouvre/ferme le **sélecteur d'espaces connus** (récents), rafraîchi depuis le
@@ -767,6 +803,8 @@ impl App {
         self.busy = None;
         self.busy_since = None;
         self.agent_status.clear(); // statuts live remis à zéro pour le nouveau run
+        self.changes.clear();
+        self.change_sel = 0;
     }
 
     /// Intègre un événement du runtime dans l'état (compteurs + historique + stats agents).
@@ -793,6 +831,15 @@ impl App {
             }
             AgentEvent::TaskFailed { id, .. } => {
                 self.set_task_status(id, PlanStatus::Failed);
+                return;
+            }
+            AgentEvent::FileChanged { path, added, removed, diff } => {
+                self.changes.push(FileChange {
+                    path: path.clone(),
+                    added: *added,
+                    removed: *removed,
+                    diff: diff.clone(),
+                });
                 return;
             }
             _ => {}

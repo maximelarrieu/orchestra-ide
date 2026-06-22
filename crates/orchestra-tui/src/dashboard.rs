@@ -64,6 +64,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             View::Docs => render_docs_list(frame, center, app),
             View::Agents => render_agents(frame, center, app),
             View::Spaces => render_spaces(frame, center, app),
+            View::Changes => render_changes(frame, center, app),
         }
     }
     render_menu(frame, menu, app);
@@ -278,6 +279,63 @@ fn render_new_space(frame: &mut Frame, area: Rect, f: &crate::app::NewSpaceForm)
         Style::new().dark_gray(),
     )));
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Vue Modifications : fichiers changés par les agents (liste) + diff du fichier sélectionné.
+fn render_changes(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 📝 MODIFICATIONS DE FICHIERS ");
+    if app.changes.is_empty() {
+        let lines = vec![Line::from(Span::styled(
+            "  Aucune modification pour l'instant — les écritures des agents apparaîtront ici.",
+            Style::new().dark_gray(),
+        ))];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let list_h = (app.changes.len() as u16 + 1).clamp(2, 8);
+    let [list_area, diff_area] =
+        Layout::vertical([Constraint::Length(list_h), Constraint::Min(3)]).areas(inner);
+
+    let list_lines: Vec<Line> = app
+        .changes
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let selected = i == app.change_sel;
+            Line::from(vec![
+                Span::raw(if selected { "▶ " } else { "  " }),
+                Span::styled(
+                    c.path.clone(),
+                    if selected { Style::new().cyan().bold() } else { Style::new().cyan() },
+                ),
+                Span::styled(format!("  +{} ", c.added), Style::new().green()),
+                Span::styled(format!("-{}", c.removed), Style::new().red()),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(list_lines), list_area);
+
+    let diff = app.changes.get(app.change_sel).map(|c| c.diff.as_str()).unwrap_or("");
+    let diff_lines: Vec<Line> = diff
+        .lines()
+        .map(|l| {
+            let style = if l.starts_with("+ ") {
+                Style::new().green()
+            } else if l.starts_with("- ") {
+                Style::new().red()
+            } else {
+                Style::new().dark_gray()
+            };
+            Line::from(Span::styled(l.to_string(), style))
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(diff_lines).block(Block::bordered().title(" diff ")),
+        diff_area,
+    );
 }
 
 /// Sélecteur d'espaces connus (récents), pour rouvrir sans retaper le chemin.
@@ -764,11 +822,16 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("▏", Style::new().cyan()),
             Span::styled("   (Entrée = charger · Échap = annuler)", Style::new().dark_gray()),
         ])]
+    } else if app.view == View::Changes {
+        vec![Line::from(Span::styled(
+            "📝 Modifications — ↑↓ choisir un fichier · diff coloré · Échap retour",
+            Style::new().cyan(),
+        ))]
     } else if let Some(notice) = &app.notice {
         vec![Line::from(Span::styled(notice.clone(), Style::new().yellow()))]
     } else {
         vec![Line::from(
-            "[1] Intention  [5] Chat  [2] Docs  [3] Espace  [4] Persona  [6] Agents  [q] Quitter",
+            "[1] Intention  [5] Chat  [2] Docs  [3] Espace  [4] Persona  [6] Agents  [7] Modifs  [q] Quitter",
         )]
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);

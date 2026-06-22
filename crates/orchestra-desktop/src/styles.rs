@@ -58,7 +58,16 @@ pub const CSS: &str = r#"
     .agentchip.done { color: #8895a7; }
 
     .plan { list-style: none; padding-left: 0; }
-    .plan li { padding: .2rem .4rem; border-left: 3px solid #2c3a55; margin: .2rem 0; }
+    .plan li { padding: .3rem .5rem; border-left: 3px solid #2c3a55; margin: .3rem 0; }
+    .planhead { font-weight: 600; }
+    .planobj { color: #aab4c0; font-size: .88rem; }
+    .plandeps { color: #8895a7; font-size: .8rem; }
+    .diff { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem;
+            background: #05070c; border-radius: 6px; padding: .5rem; overflow: auto; }
+    .dl { white-space: pre-wrap; }
+    .dl.add { color: #9ff0b5; }
+    .dl.del { color: #ff9aa2; }
+    .dl.ctx { color: #8895a7; }
     .radar { background: #05070c; color: #cdd6e0; padding: .6rem; border-radius: 6px;
              max-height: 360px; overflow: auto; white-space: pre-wrap; font-size: .85rem; }
     .viewer { flex: 1; background: #05070c; color: #cdd6e0; padding: .6rem 1rem; border-radius: 6px;
