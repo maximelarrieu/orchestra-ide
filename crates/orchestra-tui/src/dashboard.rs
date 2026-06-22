@@ -822,9 +822,22 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             last.spans.push(Span::styled("▏", Style::new().magenta()));
         }
         lines.push(Line::from(Span::styled(
-            "(Entrée envoyer · Maj/Alt+Entrée nouvelle ligne · Ctrl+G cadrer · Ctrl+R analyser l'existant · Échap quitter)",
+            "(Entrée envoyer · Maj/Alt+Entrée nouvelle ligne · Échap quitter)",
             Style::new().dark_gray(),
         )));
+        // Actions rapides propres au type de projet (F1..Fn).
+        if let Some(kind) = app.space.as_ref().map(|s| s.config.project_type) {
+            let actions = orchestra_core::runtime::quick_actions(kind);
+            if !actions.is_empty() {
+                let hint = actions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| format!("F{} {}", i + 1, a.label))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                lines.push(Line::from(Span::styled(format!("Actions : {hint}"), Style::new().cyan())));
+            }
+        }
         lines
     } else if let Some(buf) = &app.intention {
         vec![Line::from(vec![

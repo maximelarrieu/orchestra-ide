@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use dioxus::prelude::*;
 use orchestra_core::model::{ContextSpace, ProjectType};
+use orchestra_core::runtime::QuickAction;
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -137,6 +138,31 @@ fn change_item(index: usize, path: String, added: usize, removed: usize, active:
             button { class: "{cls}", onclick: move |_| sel.set(index),
                 "{path}  +{added} -{removed}" }
         }
+    }
+}
+
+/// Bouton d'action rapide de l'Assistant (propre au type de projet) : envoie le message
+/// correspondant au coordinateur. La saisie courante sert d'entrée si l'action l'utilise.
+pub fn action_button(
+    a: QuickAction,
+    user_tx: Signal<Option<UnboundedSender<String>>>,
+    mut draft: Signal<String>,
+) -> Element {
+    let cls = if a.primary { "go" } else { "" };
+    let build = a.build;
+    let uses = a.uses_input;
+    let label = a.label;
+    rsx! {
+        button { class: "{cls}",
+            onclick: move |_| {
+                if let Some(tx) = user_tx() {
+                    let _ = tx.send(build(&draft()));
+                    if uses {
+                        draft.set(String::new());
+                    }
+                }
+            },
+            "{label}" }
     }
 }
 

@@ -60,6 +60,10 @@ fn app() -> Element {
     let changes = use_signal(Vec::<state::FileChange>::new);
     // Racine de l'espace de la conversation en cours (pour la redémarrer au changement d'espace).
     let mut chat_root = use_signal(|| None::<PathBuf>);
+    // Type de projet actif → pilote les actions rapides de l'Assistant (Dev vs Langue).
+    let kind = space()
+        .map(|s| s.config.project_type)
+        .unwrap_or(orchestra_core::model::ProjectType::Dev);
 
     let start_chat = move |_| {
         if let Some(sp) = space() {
@@ -97,32 +101,12 @@ fn app() -> Element {
                     div { class: "chatwrap",
                         div { class: "actions",
                             button { onclick: start_chat, "↻ Nouvelle conversation" }
-                            button { class: "go",
-                                onclick: move |_| {
-                                    if let Some(tx) = user_tx() {
-                                        let _ = tx.send(orchestra_core::runtime::orchestrate_message(&draft()));
-                                        draft.set(String::new());
-                                    }
-                                },
-                                "▶ Objectif rapide" }
-                            button {
-                                onclick: move |_| {
-                                    if let Some(tx) = user_tx() {
-                                        let _ = tx.send(orchestra_core::runtime::cadrage_message(&draft()));
-                                        draft.set(String::new());
-                                    }
-                                },
-                                "🧭 Cadrer le projet" }
-                            button {
-                                onclick: move |_| {
-                                    if let Some(tx) = user_tx() {
-                                        let _ = tx.send(orchestra_core::runtime::comprehension_message());
-                                    }
-                                },
-                                "🔎 Analyser le projet" }
+                            for a in orchestra_core::runtime::quick_actions(kind) {
+                                { components::action_button(a, user_tx, draft) }
+                            }
                         }
                         p { class: "hint",
-                            "Décris ton besoin dans la zone de saisie. « Objectif rapide » lance une orchestration ; « Cadrer » fait poser des questions puis rédige un brief ; « Analyser » comprend un projet existant."
+                            "Décris ton besoin dans la zone de saisie, ou utilise une action ci-dessus — tu peux aussi simplement discuter avec le coordinateur."
                         }
                         components::SquadPanel { space, status: agents_status }
                         div { class: "worksplit",

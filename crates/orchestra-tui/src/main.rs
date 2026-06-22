@@ -394,18 +394,17 @@ async fn event_loop(
                                         }
                                     }
                                 }
-                                // Ctrl+G : cadrage — la saisie courante sert d'idée de projet.
-                                KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                    let idea = app.chat_submit().unwrap_or_default();
-                                    if let Some(tx) = &chat_tx {
-                                        let _ = tx.send(orchestra_core::runtime::cadrage_message(&idea));
-                                    }
-                                }
-                                // Ctrl+R : analyser un projet existant (phase de compréhension).
-                                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                    let _ = app.chat_submit(); // vide la saisie éventuelle
-                                    if let Some(tx) = &chat_tx {
-                                        let _ = tx.send(orchestra_core::runtime::comprehension_message());
+                                // F1..Fn : actions rapides propres au type de projet (cf. quick_actions).
+                                KeyCode::F(n) => {
+                                    if let Some(kind) = app.space.as_ref().map(|s| s.config.project_type) {
+                                        let actions = orchestra_core::runtime::quick_actions(kind);
+                                        if let Some(a) = actions.get((n as usize).saturating_sub(1)) {
+                                            let (build, uses) = (a.build, a.uses_input);
+                                            let input = if uses { app.chat_submit().unwrap_or_default() } else { String::new() };
+                                            if let Some(tx) = &chat_tx {
+                                                let _ = tx.send(build(&input));
+                                            }
+                                        }
                                     }
                                 }
                                 KeyCode::PageUp => app.radar_scroll_by(10),

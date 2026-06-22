@@ -403,6 +403,19 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   TUI — section « 📝 Modifs récentes » ajoutée à la sidebar toujours visible (6 derniers fichiers
   + `+a/-r`). L'onglet/vue Modifications plein écran reste disponible pour la revue détaillée.
 
+## Actions de l'Assistant propres au type de projet (post-Phase 5) ✅
+
+- `runtime::quick_actions(kind)` (data-driven, testé) : la barre d'actions de l'Assistant s'adapte
+  au type de projet.
+  - **Dev** : ▶ Objectif rapide · 🧭 Cadrer · 🔎 Analyser.
+  - **Langue** : 📚 Plan d'apprentissage (cours → leçons, écrit dans `docs/plan-apprentissage.md`) ·
+    ▶ Leçon & exercice du jour (prochaine leçon selon la progression). Le chat sert à poser des
+    questions / s'entraîner.
+- Messages partagés : `learning_plan_message` / `daily_lesson_message` (+ orchestrate/cadrage/
+  comprehension pour Dev).
+- Desktop : boutons générés depuis `quick_actions` (`action_button`). TUI : **F1..Fn** dans le chat,
+  aide listée dynamiquement. Mêmes actions des deux côtés.
+
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
 - Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts
