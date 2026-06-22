@@ -140,6 +140,14 @@ fn app() -> Element {
                 View::Agents => rsx! { components::AgentsView { space, selected: selected_agent } },
                 View::Changes => rsx! { components::ChangesView { changes } },
             }
+
+            // Barre de statut (façon VS Code).
+            div { class: "statusbar",
+                span { class: "sb-item",
+                    if let Some(sp) = space() { "📁 {sp.config.project_name}" } else { "Aucun espace" }
+                }
+                span { class: "sb-item", "🎻 Orchestra IDE" }
+            }
         }
     }
 }
