@@ -19,7 +19,7 @@ use orchestra_core::model::ContextSpace;
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
-use state::{drive_orchestration, ChatMsg, PlanRow, View};
+use state::{ChatMsg, PlanRow, View};
 
 /// Espace ouvert au démarrage.
 const DEFAULT_SPACE: &str = "examples/apprentissage-espagnol";
@@ -36,43 +36,31 @@ fn app() -> Element {
         let _ = orchestra_core::registry::remember_space(&PathBuf::from(DEFAULT_SPACE));
         state::known_spaces()
     });
-    let mut objective = use_signal(|| state::DEFAULT_GOAL.to_string());
-    let view = use_signal(|| View::Orchestrate);
+    // Vue unique de travail : l'Assistant (conversation). Les autres vues sont Documents,
+    // Agents & skills, Modifications.
+    let view = use_signal(|| View::Chat);
 
-    // État d'orchestration / plan (partagé avec le chat pour l'approbation inline).
-    let log = use_signal(Vec::<String>::new);
+    // État du plan (panneau + approbation inline dans la conversation).
     let plan = use_signal(Vec::<PlanRow>::new);
-    let mut pending = use_signal(|| false);
+    let pending = use_signal(|| false);
     let approve_tx = use_signal(|| None::<UnboundedSender<bool>>);
 
     // État des vues Documents / Agents.
     let selected_agent = use_signal(|| 0usize);
     let doc_content = use_signal(String::new);
 
-    // État du chat.
+    // État de la conversation.
     let messages = use_signal(Vec::<ChatMsg>::new);
     let thinking = use_signal(|| false);
     let mut draft = use_signal(String::new);
     let user_tx = use_signal(|| None::<UnboundedSender<String>>);
-    // Statut live des agents (encart « squad »), partagé orchestration + chat.
+    // Statut live des agents (encart « squad »).
     let agents_status = use_signal(std::collections::HashMap::<String, state::AgStatus>::new);
     // Fichiers modifiés par les agents (vue Modifications).
     let changes = use_signal(Vec::<state::FileChange>::new);
-    // Racine de l'espace auquel appartient la conversation en cours (pour la redémarrer quand
-    // l'utilisateur change d'espace — sinon le coordinateur reste sur l'ancienne squad).
+    // Racine de l'espace de la conversation en cours (pour la redémarrer au changement d'espace).
     let mut chat_root = use_signal(|| None::<PathBuf>);
 
-    let launch = move |_| {
-        if let Some(sp) = space() {
-            drive_orchestration(sp, objective(), log, plan, pending, approve_tx, agents_status, changes);
-        }
-    };
-    let approve = move |_| {
-        if let Some(tx) = approve_tx() {
-            let _ = tx.send(true);
-        }
-        pending.set(false);
-    };
     let start_chat = move |_| {
         if let Some(sp) = space() {
             let root = sp.root.clone();
@@ -105,31 +93,19 @@ fn app() -> Element {
             {components::nav(view)}
 
             match view() {
-                View::Orchestrate => rsx! {
-                    div { class: "orchestrate",
-                        textarea {
-                            class: "goal",
-                            value: "{objective}",
-                            oninput: move |e| objective.set(e.value()),
-                        }
-                        div { class: "actions",
-                            button { onclick: launch, "▶ Lancer l'orchestre" }
-                            if pending() {
-                                button { class: "go", onclick: approve, "✓ Exécuter le plan" }
-                            }
-                        }
-                        components::SquadPanel { space, status: agents_status }
-                        if !plan().is_empty() {
-                            {components::plan_panel(&plan())}
-                        }
-                        {components::radar(&log())}
-                    }
-                },
                 View::Chat => rsx! {
                     div { class: "chatwrap",
                         div { class: "actions",
                             button { onclick: start_chat, "↻ Nouvelle conversation" }
                             button { class: "go",
+                                onclick: move |_| {
+                                    if let Some(tx) = user_tx() {
+                                        let _ = tx.send(orchestra_core::runtime::orchestrate_message(&draft()));
+                                        draft.set(String::new());
+                                    }
+                                },
+                                "▶ Objectif rapide" }
+                            button {
                                 onclick: move |_| {
                                     if let Some(tx) = user_tx() {
                                         let _ = tx.send(orchestra_core::runtime::cadrage_message(&draft()));
@@ -146,7 +122,7 @@ fn app() -> Element {
                                 "🔎 Analyser le projet" }
                         }
                         p { class: "hint",
-                            "Cadrage : décris ton idée dans la zone de saisie puis « Cadrer le projet » — le coordinateur t'interviewe et rédige un brief avant de coder."
+                            "Décris ton besoin dans la zone de saisie. « Objectif rapide » lance une orchestration ; « Cadrer » fait poser des questions puis rédige un brief ; « Analyser » comprend un projet existant."
                         }
                         components::SquadPanel { space, status: agents_status }
                         if user_tx().is_some() {

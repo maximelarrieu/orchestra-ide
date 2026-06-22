@@ -295,6 +295,21 @@ pub fn start_conversation(space: &ContextSpace) -> ChatHandle {
     start_conversation_inner(space, LlmClient::from_env().map(Arc::new))
 }
 
+/// Message d'**objectif rapide** : demande au coordinateur d'orchestrer directement un objectif
+/// (plan → validation → exécution) sans phase de discussion. Partagé TUI ⇄ GUI.
+pub fn orchestrate_message(objective: &str) -> String {
+    let o = objective.trim();
+    if o.is_empty() {
+        "Orchestre la prochaine étape utile du projet : établis un plan, fais-le valider, puis exécute-le."
+            .to_string()
+    } else {
+        format!(
+            "Orchestre cet objectif : {o}\n\
+             Établis un plan, fais-le valider, puis exécute-le avec les agents."
+        )
+    }
+}
+
 /// Message de **compréhension** d'un projet existant : à envoyer en premier après avoir repris
 /// un projet, pour que les agents scannent le code, documentent et posent leurs questions
 /// **avant** toute évolution. Partagé TUI ⇄ GUI.

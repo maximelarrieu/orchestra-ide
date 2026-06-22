@@ -388,6 +388,17 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   « 🔎 Analyser le projet » dans le chat. TUI : `[r]` dans le navigateur, **Ctrl+R** dans le chat.
 - S'appuie sur le suivi des modifications déjà en place (on voit ce que les agents changent).
 
+## Simplification : un seul espace conversationnel (post-Phase 5) ✅
+
+- **Fusion Orchestrer + Chat** côté desktop en un onglet unique **« Assistant »** (conversation).
+  L'exécution passe désormais par **un seul chemin** : le coordinateur. Trois actions au-dessus du
+  fil : **▶ Objectif rapide**, **🧭 Cadrer**, **🔎 Analyser** — toutes envoient un message dédié
+  (`runtime::orchestrate_message` / `cadrage_message` / `comprehension_message`).
+- Suppression de l'onglet Orchestrer, de `drive_orchestration`, du radar et de l'objectif séparés
+  côté desktop (le plan + l'approbation s'affichent inline dans la conversation).
+- TUI : `[5]` Assistant (conversation) + `[1]` Objectif rapide ; libellés clarifiés. Capacités
+  identiques des deux côtés (converser · objectif rapide · cadrer · analyser).
+
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
 - Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts

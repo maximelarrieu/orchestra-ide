@@ -16,13 +16,9 @@ pub use orchestra_core::catalog::{skill_entries, SkillEntry, SkillKind};
 // Registre des espaces connus (récents) — partagé avec le TUI.
 pub use orchestra_core::registry::KnownSpace;
 
-/// Objectif par défaut proposé dans la zone de saisie.
-pub const DEFAULT_GOAL: &str = "Avance concrètement sur l'objectif de cet espace.";
-
 /// Vue centrale courante (équivalent des touches du TUI).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
-    Orchestrate,
     Chat,
     Documents,
     Agents,
@@ -99,62 +95,6 @@ fn mark(status: &mut Signal<HashMap<String, AgStatus>>, name: &str, st: AgStatus
         return;
     }
     status.write().insert(name.to_string(), st);
-}
-
-/// Lance l'orchestration et **streame les [`AgentEvent`]** dans les signaux fournis. Appelé
-/// depuis un gestionnaire d'événement (le `spawn` Dioxus tourne dans le scope réactif courant).
-#[allow(clippy::too_many_arguments)]
-pub fn drive_orchestration(
-    space: ContextSpace,
-    objective: String,
-    mut log: Signal<Vec<String>>,
-    mut plan: Signal<Vec<PlanRow>>,
-    mut pending: Signal<bool>,
-    mut approve_tx: Signal<Option<UnboundedSender<bool>>>,
-    mut status: Signal<HashMap<String, AgStatus>>,
-    mut changes: Signal<Vec<FileChange>>,
-) {
-    log.set(Vec::new());
-    plan.set(Vec::new());
-    pending.set(false);
-    status.set(HashMap::new());
-    changes.set(Vec::new());
-
-    spawn(async move {
-        let handle = runtime::orchestrate(&space, &objective);
-        approve_tx.set(Some(handle.approve));
-        let mut events = handle.events;
-        while let Some(ev) = events.recv().await {
-            match ev {
-                AgentEvent::PlanReady { tasks } => {
-                    plan.set(tasks.into_iter().map(plan_row).collect());
-                    pending.set(true);
-                }
-                AgentEvent::TaskStarted { id, agent } => {
-                    set_status(&mut plan, &id, "en cours");
-                    mark(&mut status, &agent, AgStatus::Working);
-                }
-                AgentEvent::TaskDone { id } => set_status(&mut plan, &id, "fait ✓"),
-                AgentEvent::TaskFailed { id, .. } => set_status(&mut plan, &id, "échec ✗"),
-                AgentEvent::Started { agent } => {
-                    mark(&mut status, &agent, AgStatus::Working);
-                    log.write().push(format!("▶ {agent}"));
-                }
-                AgentEvent::Done { agent } => {
-                    mark(&mut status, &agent, AgStatus::Done);
-                    log.write().push(format!("✔ {agent}"));
-                }
-                AgentEvent::Log { agent, msg } => {
-                    mark(&mut status, &agent, AgStatus::Working);
-                    log.write().push(format!("{agent} : {msg}"));
-                }
-                AgentEvent::Thinking { agent } => mark(&mut status, &agent, AgStatus::Thinking),
-                AgentEvent::FileChanged { path, added, removed, diff } => {
-                    changes.write().push(FileChange { path, added, removed, diff });
-                }
-            }
-        }
-    });
 }
 
 /// Convertit une tâche planifiée (cœur) en ligne de plan affichable.

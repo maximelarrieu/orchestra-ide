@@ -18,8 +18,7 @@ pub fn nav(mut view: Signal<View>) -> Element {
     let cur = view();
     rsx! {
         div { class: "nav",
-            button { class: "{tab(cur, View::Orchestrate)}", onclick: move |_| view.set(View::Orchestrate), "Orchestrer" }
-            button { class: "{tab(cur, View::Chat)}", onclick: move |_| view.set(View::Chat), "Chat" }
+            button { class: "{tab(cur, View::Chat)}", onclick: move |_| view.set(View::Chat), "Assistant" }
             button { class: "{tab(cur, View::Documents)}", onclick: move |_| view.set(View::Documents), "Documents" }
             button { class: "{tab(cur, View::Agents)}", onclick: move |_| view.set(View::Agents), "Agents & skills" }
             button { class: "{tab(cur, View::Changes)}", onclick: move |_| view.set(View::Changes), "Modifications" }
@@ -138,14 +137,6 @@ fn change_item(index: usize, path: String, added: usize, removed: usize, active:
             button { class: "{cls}", onclick: move |_| sel.set(index),
                 "{path}  +{added} -{removed}" }
         }
-    }
-}
-
-/// Radar : le flux d'activité (lignes de log).
-pub fn radar(lines: &[String]) -> Element {
-    rsx! {
-        h3 { "Radar" }
-        pre { class: "radar", {lines.join("\n")} }
     }
 }
 

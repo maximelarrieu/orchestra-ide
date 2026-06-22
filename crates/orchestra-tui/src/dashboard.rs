@@ -810,10 +810,10 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         lines
     } else if let Some(buf) = &app.intention {
         vec![Line::from(vec![
-            Span::styled("🎯 Intention : ", Style::new().bold()),
+            Span::styled("🎯 Objectif : ", Style::new().bold()),
             Span::raw(buf.clone()),
             Span::styled("▏", Style::new().cyan()),
-            Span::styled("   (Entrée = lancer · Échap = annuler)", Style::new().dark_gray()),
+            Span::styled("   (Entrée = orchestrer · Échap = annuler)", Style::new().dark_gray()),
         ])]
     } else if let Some(buf) = &app.input {
         vec![Line::from(vec![
@@ -831,7 +831,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         vec![Line::from(Span::styled(notice.clone(), Style::new().yellow()))]
     } else {
         vec![Line::from(
-            "[1] Intention  [5] Chat  [2] Docs  [3] Espace  [4] Persona  [6] Agents  [7] Modifs  [q] Quitter",
+            "[5] Assistant  [1] Objectif rapide  [2] Docs  [3] Espace  [4] Persona  [6] Agents  [7] Modifs  [q] Quitter",
         )]
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);
