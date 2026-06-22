@@ -125,8 +125,15 @@ fn app() -> Element {
                             "Décris ton besoin dans la zone de saisie. « Objectif rapide » lance une orchestration ; « Cadrer » fait poser des questions puis rédige un brief ; « Analyser » comprend un projet existant."
                         }
                         components::SquadPanel { space, status: agents_status }
-                        if user_tx().is_some() {
-                            {components::chat_view(messages, thinking, draft, user_tx, plan, pending, approve_tx)}
+                        div { class: "worksplit",
+                            div { class: "chatcol",
+                                if user_tx().is_some() {
+                                    {components::chat_view(messages, thinking, draft, user_tx, plan, pending, approve_tx)}
+                                }
+                            }
+                            div { class: "sidecol",
+                                components::LiveChanges { changes }
+                            }
                         }
                     }
                 },

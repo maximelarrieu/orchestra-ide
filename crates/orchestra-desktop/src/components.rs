@@ -140,6 +140,50 @@ fn change_item(index: usize, path: String, added: usize, removed: usize, active:
     }
 }
 
+/// Panneau **Modifications en direct** (à côté de la conversation) : liste des fichiers changés
+/// par les agents + diff du fichier cliqué. Affiche l'historique du run en cours.
+#[component]
+pub fn LiveChanges(changes: Signal<Vec<FileChange>>) -> Element {
+    let mut sel = use_signal(|| None::<usize>);
+    let list = changes();
+    rsx! {
+        div { class: "livechanges",
+            h3 { "Modifications ({list.len()})" }
+            if list.is_empty() {
+                p { class: "muted", "Les fichiers modifiés par les agents apparaîtront ici, en direct." }
+            } else {
+                ul { class: "list",
+                    for (i, c) in list.iter().enumerate() {
+                        {
+                            let path = c.path.clone();
+                            rsx! {
+                                li {
+                                    button { class: "row", onclick: move |_| sel.set(Some(i)),
+                                        "{path}  +{c.added} -{c.removed}" }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(i) = sel() {
+                    if let Some(c) = list.get(i) {
+                        div { class: "diff",
+                            for line in c.diff.lines() {
+                                {
+                                    let cls = if line.starts_with("+ ") { "dl add" }
+                                        else if line.starts_with("- ") { "dl del" }
+                                        else { "dl ctx" };
+                                    rsx! { div { class: "{cls}", "{line}" } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Barre d'espaces : saisie d'un chemin + **liste des espaces connus** (récents) à rouvrir d'un
 /// clic, sans retaper le chemin. Chaque entrée peut être retirée du suivi (×).
 #[component]

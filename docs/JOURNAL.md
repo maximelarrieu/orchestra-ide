@@ -398,6 +398,10 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
   côté desktop (le plan + l'approbation s'affichent inline dans la conversation).
 - TUI : `[5]` Assistant (conversation) + `[1]` Objectif rapide ; libellés clarifiés. Capacités
   identiques des deux côtés (converser · objectif rapide · cadrer · analyser).
+- **Modifications en direct à côté de la conversation** : desktop — l'Assistant est en 2 colonnes
+  (conversation à gauche, panneau `LiveChanges` à droite : liste + diff au clic, historique du run).
+  TUI — section « 📝 Modifs récentes » ajoutée à la sidebar toujours visible (6 derniers fichiers
+  + `+a/-r`). L'onglet/vue Modifications plein écran reste disponible pour la revue détaillée.
 
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 

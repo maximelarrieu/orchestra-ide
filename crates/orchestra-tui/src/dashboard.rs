@@ -95,9 +95,27 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // Modifications récentes (toujours visibles, comme le panneau latéral du desktop).
+    if !app.changes.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            format!(" 📝 Modifs ({}) · [7]", app.changes.len()),
+            Style::new().bold(),
+        )));
+        for c in app.changes.iter().rev().take(6) {
+            let name = c.path.rsplit(['/', '\\']).next().unwrap_or(&c.path);
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::raw(truncate_str(name, inner_w.saturating_sub(8))),
+                Span::styled(format!(" +{} ", c.added), Style::new().green()),
+                Span::styled(format!("-{}", c.removed), Style::new().red()),
+            ]));
+        }
+    }
+
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(" [2] Docs   [4] Persona", Style::new().dark_gray())));
-    lines.push(Line::from(Span::styled(" [6] Agents", Style::new().dark_gray())));
+    lines.push(Line::from(Span::styled(" [6] Agents  [7] Modifs", Style::new().dark_gray())));
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 

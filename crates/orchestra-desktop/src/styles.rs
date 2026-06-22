@@ -173,6 +173,14 @@ pub const CSS: &str = r#"
     .markdown hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
     .markdown .mermaid { background: #fff; padding: .8rem; border-radius: var(--radius); text-align: center; }
 
+    /* Espace de travail : conversation (gauche) + Modifications en direct (droite) */
+    .worksplit { display: flex; gap: 1rem; align-items: stretch; }
+    .chatcol { flex: 1; min-width: 0; }
+    .sidecol { width: 380px; flex: none; border-left: 1px solid var(--border); padding-left: .8rem;
+               max-height: 72vh; overflow: auto; }
+    .livechanges .list { min-width: 0; }
+    .livechanges .diff { margin-top: .5rem; max-height: 40vh; }
+
     /* Chat */
     .chat { display: flex; flex-direction: column; gap: .6rem; }
     .messages { display: flex; flex-direction: column; gap: .5rem; height: 62vh; min-height: 320px;
