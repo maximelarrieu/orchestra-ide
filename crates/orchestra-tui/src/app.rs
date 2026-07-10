@@ -961,15 +961,4 @@ mod tests {
         assert!(!mk(Some("Budget : 350k€")).persona_incomplete());
         assert!(!mk(None).persona_incomplete(), "pas de persona → pas bloquant");
     }
-
-    /// L'espace d'exemple livré doit se charger ET être lançable (sinon `[1]` ne fait
-    /// rien). Ce test reproduit ce que voit l'utilisateur qui ouvre cet espace.
-    #[test]
-    fn bundled_example_space_can_launch() {
-        let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/apprentissage-espagnol");
-        let space = ContextSpace::load(&example).expect("l'exemple doit se charger");
-        let app = App::new(Some(space));
-        assert!(app.can_launch(), "un espace chargé doit être lançable → [1] actif");
-    }
 }

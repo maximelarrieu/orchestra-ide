@@ -34,8 +34,8 @@ Modèle des Espaces de Contexte agnostiques + coquille ASCII du dashboard (3 zon
 en-tête / écran radar / menu). **Sans LLM, sans agent** : le radar est vide.
 
 ```bash
-# Ouvre l'espace exemple fourni
-cargo run -p orchestra-tui -- examples/apprentissage-espagnol
+# Ouvre un dossier de projet (ou lance sans argument dans le dossier courant)
+cargo run -p orchestra-tui -- /chemin/vers/mon-projet
 # Quitter : q ou Échap
 ```
 
@@ -72,7 +72,7 @@ l'espace comme une tâche `tokio` qui publie des `AgentEvent` sur un canal
 `tokio::sync::mpsc` ; le TUI les consomme en direct.
 
 ```bash
-cargo run -p orchestra-tui -- examples/apprentissage-espagnol
+cargo run -p orchestra-tui -- /chemin/vers/mon-projet
 # Dans le dashboard : [1] lance l'orchestre → le radar défile en temps réel.  [q] quitte.
 ```
 
@@ -98,7 +98,7 @@ export GEMINI_API_KEY="..."
 export ORCHESTRA_PROVIDER=gemini      # anthropic | gemini
 export ORCHESTRA_MODEL=gemini-2.5-flash
 
-cargo run -p orchestra-tui -- examples/apprentissage-espagnol
+cargo run -p orchestra-tui -- /chemin/vers/mon-projet
 # [1] lance l'orchestre — le radar affiche les actions réelles des agents.
 ```
 
@@ -250,8 +250,8 @@ pleine conversation (outil `orchestrate`) : il propose un **plan** (que tu appro
 intègre la synthèse dans sa réponse — et le dialogue continue.
 
 ```
-[5] → « Fais-moi une leçon de 10 min sur les verbes à particule séparable »
-   → le coordinateur délègue à Agent_Tuteur, récupère son retour, te répond et te questionne
+[5] → « Ajoute une commande CLI `export` qui sérialise l'état en JSON »
+   → l'Orchestrateur déploie les sous-agents utiles, récupère leurs retours, te répond
    → tu réponds → … (conversation continue)
 ```
 

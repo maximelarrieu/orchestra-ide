@@ -129,7 +129,7 @@ export GEMINI_API_KEY="..."             # Gemini (défaut gemini-2.5-flash)
 export ORCHESTRA_PROVIDER=gemini        # anthropic | gemini
 export ORCHESTRA_MODEL=gemini-2.5-flash
 
-cargo run -p orchestra-tui -- examples/apprentissage-espagnol
+cargo run -p orchestra-tui -- /chemin/vers/mon-projet
 ```
 
 Le fournisseur est choisi automatiquement selon les clés présentes ; `ORCHESTRA_PROVIDER` a
@@ -224,7 +224,8 @@ C'est à la fois la **mémoire de l'orchestre** (le travail se capitalise) et un
 d'économie de tokens** : un agent résume une source volumineuse une fois, les autres lisent
 la synthèse au lieu de relire le fichier.
 
-## 5. Exemple fourni
+## 5. Démarrage
 
-`examples/apprentissage-espagnol/` est un Espace prêt à ouvrir pour découvrir le
-tableau de bord et le radar sans rien créer.
+Aucun espace n'est fourni : ouvre un dossier de projet existant (ou lance `orchestra init`
+pour en créer un). L'Orchestrateur déploie ensuite sa propre équipe à la volée — rien à
+pré-configurer.

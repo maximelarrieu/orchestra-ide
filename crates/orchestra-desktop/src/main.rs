@@ -18,13 +18,9 @@ use dioxus::prelude::*;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::session::Sessions;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
 use state::{ChatMsg, DesktopSession, PlanRow, View};
-
-/// Espace ouvert au démarrage.
-const DEFAULT_SPACE: &str = "examples/apprentissage-espagnol";
 
 fn main() {
     dioxus::launch(app);
@@ -32,15 +28,9 @@ fn main() {
 
 fn app() -> Element {
     // Sessions (onglets) : une par Espace ouvert, chacune avec son propre contexte et son
-    // historique. Une seule au démarrage ; l'utilisateur en ouvre d'autres via la barre d'espaces.
-    let mut sessions = use_signal(|| {
-        let mut s = Sessions::<DesktopSession>::new();
-        if let Ok(sp) = ContextSpace::load(&PathBuf::from(DEFAULT_SPACE)) {
-            let _ = orchestra_core::registry::remember_space(&PathBuf::from(DEFAULT_SPACE));
-            s.open(DesktopSession::new(sp));
-        }
-        s
-    });
+    // historique. On démarre **sans** session : l'utilisateur ouvre ou crée un espace via la
+    // barre d'espaces (les récents s'y retrouvent aussi).
+    let sessions = use_signal(Sessions::<DesktopSession>::new);
     // Espaces connus (récents).
     let known = use_signal(state::known_spaces);
     // Vue centrale : Assistant / Documents / Modifications.

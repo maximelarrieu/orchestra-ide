@@ -208,7 +208,7 @@ mod tests {
         fs::create_dir_all(dir.join("docs")).unwrap();
         fs::write(dir.join(".orchestra/persona.md"), "# Persona").unwrap();
         fs::write(dir.join(".orchestra/adr/0001-choix.md"), "# ADR").unwrap();
-        fs::write(dir.join("docs/lecons.md"), "# Leçons").unwrap();
+        fs::write(dir.join("docs/guide.md"), "# Guide").unwrap();
         fs::write(dir.join("notes.txt"), "ignore").unwrap(); // non-markdown ignoré
 
         let config = ProjectConfig {
@@ -228,7 +228,7 @@ mod tests {
         assert!(kinds.contains(&DocKind::Persona));
         assert!(kinds.contains(&DocKind::Adr));
         // Le markdown du workspace est trouvé, le .txt non, le .orchestra non re-listé.
-        assert!(docs.iter().any(|d| d.label == "docs/lecons.md" && d.kind == DocKind::Doc));
+        assert!(docs.iter().any(|d| d.label == "docs/guide.md" && d.kind == DocKind::Doc));
         assert!(!docs.iter().any(|d| d.label.contains("notes")));
         assert_eq!(docs.iter().filter(|d| d.kind == DocKind::Doc).count(), 1);
 
