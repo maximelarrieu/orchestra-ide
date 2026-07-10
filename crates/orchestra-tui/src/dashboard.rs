@@ -20,7 +20,17 @@ use crate::markdown;
 const SIDEBAR_MIN_TERM_WIDTH: u16 = 60;
 const SIDEBAR_WIDTH: u16 = 26;
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &App, tabs: &[String], active: usize) {
+    // Barre d'onglets (sessions) au tout premier rang, seulement s'il y en a plusieurs.
+    let work = if tabs.len() > 1 {
+        let [tabbar, rest] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(frame.area());
+        render_tab_bar(frame, tabbar, tabs, active);
+        rest
+    } else {
+        frame.area()
+    };
+
     // La zone du bas grandit pendant une saisie de chat multi-ligne.
     let menu_h: u16 = match &app.chat {
         Some(buf) => (buf.matches('\n').count() as u16 + 4).clamp(4, 12),
@@ -31,10 +41,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         Constraint::Min(6),          // corps (sidebar + zone centrale)
         Constraint::Length(menu_h),  // menu / saisie
     ])
-    .areas(frame.area());
+    .areas(work);
 
     // Cockpit : sidebar « orchestre » à gauche + zone centrale, sauf terminal trop étroit.
-    let center = if frame.area().width >= SIDEBAR_MIN_TERM_WIDTH {
+    let center = if work.width >= SIDEBAR_MIN_TERM_WIDTH {
         let [sidebar, center] =
             Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(20)]).areas(body);
         render_sidebar(frame, sidebar, app);
@@ -65,6 +75,24 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     }
     render_menu(frame, menu, app);
+}
+
+/// Barre d'onglets (sessions) : un « chip » par session ouverte, l'active mise en évidence.
+/// Rappel des raccourcis à droite. N'apparaît qu'à partir de deux sessions.
+fn render_tab_bar(frame: &mut Frame, area: Rect, tabs: &[String], active: usize) {
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, title) in tabs.iter().enumerate() {
+        let label = format!(" {} {} ", i + 1, title);
+        let style = if i == active {
+            Style::new().black().on_cyan().bold()
+        } else {
+            Style::new().cyan()
+        };
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled("  (Tab/Maj+Tab · Ctrl+W ferme)", Style::new().dark_gray()));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Sidebar « orchestre » : statut live de chaque agent (toujours visible).
@@ -753,7 +781,7 @@ mod tests {
     /// l'historique (l'auto-scroll repose sur des `saturating_sub`).
     fn render_at(width: u16, height: u16) {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|f| render(f, &demo_app())).unwrap();
+        terminal.draw(|f| render(f, &demo_app(), &["Demo".to_string()], 0)).unwrap();
     }
 
     #[test]
@@ -770,12 +798,12 @@ mod tests {
 
         let mut app = demo_app();
         app.toggle_docs(); // vue Documents
-        terminal.draw(|f| render(f, &app)).unwrap();
+        terminal.draw(|f| render(f, &app, &["Demo".to_string()], 0)).unwrap();
 
         app.toggle_docs(); // retour radar
         app.start_space_input(); // invite de saisie dans le menu
         app.input_push('x');
-        terminal.draw(|f| render(f, &app)).unwrap();
+        terminal.draw(|f| render(f, &app, &["Demo".to_string()], 0)).unwrap();
     }
 
     /// Le visualiseur Markdown doit se rendre (avec défilement borné) sans panique.
@@ -790,7 +818,7 @@ mod tests {
             path: std::path::PathBuf::from("doc.md"),
             is_persona: false,
         });
-        terminal.draw(|f| render(f, &app)).unwrap();
+        terminal.draw(|f| render(f, &app, &["Demo".to_string()], 0)).unwrap();
     }
 
     #[test]
@@ -817,6 +845,6 @@ mod tests {
             ed.insert_char('B');
             ed.newline();
         }
-        terminal.draw(|f| render(f, &app)).unwrap();
+        terminal.draw(|f| render(f, &app, &["Demo".to_string()], 0)).unwrap();
     }
 }

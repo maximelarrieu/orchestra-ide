@@ -22,6 +22,7 @@ use futures::StreamExt;
 use orchestra_core::events::AgentEvent;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime;
+use orchestra_core::session::{Sessions, Tabbed};
 use ratatui::crossterm::event::{
     Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -31,6 +32,52 @@ use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::app::{App, View};
+
+/// Un **onglet** de travail : l'état complet d'un dashboard (`App`) + les canaux de sa
+/// conversation en cours. Chaque onglet garde donc **son propre contexte et son historique** ;
+/// basculer d'onglet ne perd rien, et les agents d'un onglet en arrière-plan continuent de
+/// travailler (leurs événements s'empilent dans `rx` jusqu'à ce qu'on y revienne).
+struct TuiTab {
+    app: App,
+    /// Canal d'événements du runtime (présent pendant une orchestration / conversation).
+    rx: Option<UnboundedReceiver<AgentEvent>>,
+    /// Canal d'envoi des messages au coordinateur (présent pendant une conversation).
+    chat_tx: Option<UnboundedSender<String>>,
+    /// Canal d'approbation de plan (présent pendant orchestration / conversation).
+    plan_tx: Option<UnboundedSender<bool>>,
+}
+
+impl TuiTab {
+    /// Nouvel onglet à partir d'un `App`, canaux fermés (aucune conversation en cours).
+    fn new(app: App) -> Self {
+        Self { app, rx: None, chat_tx: None, plan_tx: None }
+    }
+}
+
+impl Tabbed for TuiTab {
+    fn title(&self) -> String {
+        match &self.app.space {
+            Some(s) => s.config.project_name.clone(),
+            None => "(vide)".to_string(),
+        }
+    }
+    fn root(&self) -> &Path {
+        match &self.app.space {
+            Some(s) => &s.root,
+            None => Path::new(""),
+        }
+    }
+}
+
+/// Mutation d'onglets **différée** : posée pendant le traitement clavier (où l'onglet actif est
+/// emprunté), puis appliquée une fois cet emprunt relâché — sinon on emprunterait `Sessions`
+/// deux fois. `Open` = ouvrir/activer un onglet pour un `App` fraîchement chargé.
+enum SessionCmd {
+    Open(Box<App>),
+    Next,
+    Prev,
+    CloseActive,
+}
 
 /// Charge un espace depuis un chemin, le **mémorise** dans le registre (récents) et renvoie un
 /// `App` neuf prêt à l'afficher. Centralise l'ouverture (saisie de chemin **et** sélecteur).
@@ -102,7 +149,10 @@ async fn run_dashboard(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if loaded.is_some() {
         let _ = orchestra_core::registry::remember_space(root); // mémorise l'espace d'ouverture
     }
-    let mut app = App::new(loaded);
+    let app = App::new(loaded);
+    // Une seule session (onglet) au départ ; l'utilisateur en ouvre d'autres via `[3]`.
+    let mut sessions: Sessions<TuiTab> = Sessions::new();
+    sessions.open(TuiTab::new(app));
 
     let mut terminal = ratatui::init();
     // Best-effort : permet de distinguer Maj/Alt+Entrée (terminaux compatibles kitty).
@@ -110,7 +160,7 @@ async fn run_dashboard(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         stdout(),
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     );
-    let result = event_loop(&mut terminal, &mut app).await;
+    let result = event_loop(&mut terminal, &mut sessions).await;
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     ratatui::restore();
     result
@@ -121,18 +171,22 @@ async fn run_dashboard(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
 /// l'orchestre et la fin de tous les agents.
 async fn event_loop(
     terminal: &mut DefaultTerminal,
-    app: &mut App,
+    sessions: &mut Sessions<TuiTab>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
-    let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
-    // `Some` pendant une conversation : canal pour envoyer les messages au coordinateur.
-    let mut chat_tx: Option<UnboundedSender<String>> = None;
-    // `Some` pendant une orchestration : canal d'approbation du plan (true = exécuter).
-    let mut plan_tx: Option<UnboundedSender<bool>> = None;
 
     loop {
-        terminal.draw(|frame| dashboard::render(frame, app))?;
+        // Barre d'onglets (calculée avant d'emprunter l'onglet actif).
+        let titles = sessions.titles();
+        let active_tab = sessions.active_index();
+        // Onglet actif : l'`App` rendu/piloté + ses canaux. Plus aucun onglet ⇒ on quitte.
+        let Some(tab) = sessions.active_mut() else { break };
+        let TuiTab { app, rx, chat_tx, plan_tx } = tab;
+        // Mutation d'onglets à appliquer après relâchement de l'emprunt ci-dessus.
+        let mut cmd: Option<SessionCmd> = None;
+
+        terminal.draw(|frame| dashboard::render(frame, app, &titles, active_tab))?;
 
         tokio::select! {
             maybe_input = input.next() => {
@@ -249,10 +303,8 @@ async fn event_loop(
                                     if field == Some(NewField::Create) {
                                         match app.new_space_build() {
                                             Some((root, opts)) => match create_space(&root, opts) {
-                                                Ok(new_app) => {
-                                                    *app = new_app;
-                                                    rx = None;
-                                                }
+                                                // La nouvelle session s'ouvre dans un onglet dédié.
+                                                Ok(new_app) => cmd = Some(SessionCmd::Open(Box::new(new_app))),
                                                 Err(msg) => app.notice = Some(msg),
                                             },
                                             None => app.notice = Some("Le nom du projet est obligatoire.".into()),
@@ -273,10 +325,7 @@ async fn event_loop(
                                 KeyCode::Enter => {
                                     if let Some(path) = app.browse_enter() {
                                         match open_space(&path) {
-                                            Ok(new_app) => {
-                                                *app = new_app;
-                                                rx = None;
-                                            }
+                                            Ok(new_app) => cmd = Some(SessionCmd::Open(Box::new(new_app))),
                                             Err(msg) => app.notice = Some(msg),
                                         }
                                     }
@@ -287,10 +336,7 @@ async fn event_loop(
                                     if let Some(path) = app.selected_browse_path() {
                                         match orchestra_core::scaffold::adopt_project(Path::new(&path)) {
                                             Ok(_) => match open_space(&path) {
-                                                Ok(new_app) => {
-                                                    *app = new_app;
-                                                    rx = None;
-                                                }
+                                                Ok(new_app) => cmd = Some(SessionCmd::Open(Box::new(new_app))),
                                                 Err(msg) => app.notice = Some(msg),
                                             },
                                             Err(e) => app.notice = Some(format!("Reprise impossible : {e}")),
@@ -308,10 +354,8 @@ async fn event_loop(
                                 KeyCode::Enter => {
                                     if let Some(path) = app.selected_space_path() {
                                         match open_space(&path) {
-                                            Ok(new_app) => {
-                                                *app = new_app;
-                                                rx = None; // stoppe l'orchestre précédent
-                                            }
+                                            // Ouvre la session dans un onglet (ou réactive le sien).
+                                            Ok(new_app) => cmd = Some(SessionCmd::Open(Box::new(new_app))),
                                             Err(msg) => app.notice = Some(msg),
                                         }
                                     }
@@ -328,8 +372,8 @@ async fn event_loop(
                             match key.code {
                                 KeyCode::Esc => {
                                     app.end_chat();
-                                    chat_tx = None; // ferme le canal → termine la conversation
-                                    plan_tx = None;
+                                    *chat_tx = None; // ferme le canal → termine la conversation
+                                    *plan_tx = None;
                                 }
                                 // Maj/Alt+Entrée : nouvelle ligne ; Entrée seul : envoyer.
                                 KeyCode::Enter
@@ -339,7 +383,7 @@ async fn event_loop(
                                 }
                                 KeyCode::Enter => {
                                     if let Some(msg) = app.chat_submit() {
-                                        if let Some(tx) = &chat_tx {
+                                        if let Some(tx) = chat_tx.as_ref() {
                                             let _ = tx.send(msg);
                                         }
                                     }
@@ -351,7 +395,7 @@ async fn event_loop(
                                         if let Some(a) = actions.get((n as usize).saturating_sub(1)) {
                                             let (build, uses) = (a.build, a.uses_input);
                                             let input = if uses { app.chat_submit().unwrap_or_default() } else { String::new() };
-                                            if let Some(tx) = &chat_tx {
+                                            if let Some(tx) = chat_tx.as_ref() {
                                                 let _ = tx.send(build(&input));
                                             }
                                         }
@@ -376,8 +420,8 @@ async fn event_loop(
                                         // Orchestration réelle : plan → approbation → exécution.
                                         let handle =
                                             runtime::orchestrate(app.space.as_ref().unwrap(), &goal);
-                                        plan_tx = Some(handle.approve);
-                                        rx = Some(handle.events);
+                                        *plan_tx = Some(handle.approve);
+                                        *rx = Some(handle.events);
                                     }
                                 }
                                 KeyCode::Backspace => app.intention_backspace(),
@@ -392,10 +436,7 @@ async fn event_loop(
                                 KeyCode::Enter => {
                                     if let Some(path) = app.take_input() {
                                         match open_space(&path) {
-                                            Ok(new_app) => {
-                                                *app = new_app;
-                                                rx = None; // stoppe l'orchestre précédent
-                                            }
+                                            Ok(new_app) => cmd = Some(SessionCmd::Open(Box::new(new_app))),
                                             Err(msg) => app.notice = Some(msg),
                                         }
                                     }
@@ -427,15 +468,21 @@ async fn event_loop(
                                         app.notice = None;
                                         app.start_chat();
                                         let handle = runtime::start_conversation(app.space.as_ref().unwrap());
-                                        rx = Some(handle.events);
-                                        chat_tx = Some(handle.user);
-                                        plan_tx = Some(handle.approve); // approbation des plans proposés en chat
+                                        *rx = Some(handle.events);
+                                        *chat_tx = Some(handle.user);
+                                        *plan_tx = Some(handle.approve); // approbation des plans proposés en chat
                                     }
                                 }
                                 KeyCode::Char('2') => app.toggle_docs(),
                                 KeyCode::Char('3') => app.toggle_spaces(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
                                 KeyCode::Char('7') if app.space.is_some() => app.toggle_changes(),
+                                // Onglets (sessions) : Tab/Maj+Tab pour circuler, Ctrl+W pour fermer.
+                                KeyCode::Tab => cmd = Some(SessionCmd::Next),
+                                KeyCode::BackTab => cmd = Some(SessionCmd::Prev),
+                                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) && titles.len() > 1 => {
+                                    cmd = Some(SessionCmd::CloseActive);
+                                }
                                 KeyCode::PageUp => app.radar_scroll_by(10),
                                 KeyCode::PageDown => app.radar_scroll_by(-10),
                                 KeyCode::Up => app.radar_scroll_by(3),
@@ -455,11 +502,20 @@ async fn event_loop(
                     None => {
                         // Canal fermé : tous les agents ont terminé.
                         app.mark_finished();
-                        rx = None;
+                        *rx = None;
                     }
                 }
             }
             _ = tick.tick() => { app.tick(); }        // rafraîchissement + animation spinner
+        }
+
+        // L'emprunt de l'onglet actif est relâché : on peut muter la collection d'onglets.
+        match cmd {
+            Some(SessionCmd::Open(app)) => { sessions.open(TuiTab::new(*app)); }
+            Some(SessionCmd::Next) => sessions.next(),
+            Some(SessionCmd::Prev) => sessions.prev(),
+            Some(SessionCmd::CloseActive) => sessions.close_active(),
+            None => {}
         }
     }
     Ok(())

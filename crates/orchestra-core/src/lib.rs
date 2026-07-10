@@ -18,6 +18,7 @@ pub mod orchestration;
 pub mod registry;
 pub mod runtime;
 pub mod scaffold;
+pub mod session;
 pub mod skills;
 
 pub use error::OrchestraError;
