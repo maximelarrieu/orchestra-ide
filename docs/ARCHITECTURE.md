@@ -55,10 +55,9 @@ crates/
 │  ├─ lib.rs            # ré-exports publics
 │  ├─ error.rs          # OrchestraError (type d'erreur unique)
 │  ├─ events.rs         # AgentEvent — contrat cœur ↔ UI
-│  ├─ runtime.rs        # spawn() : lance les agents (boucle LLM ou simulée)
+│  ├─ runtime.rs        # Orchestrateur PTAC : conversation + spawn_agent (boucle LLM ou simulée)
 │  ├─ llm.rs            # LlmClient : Claude/Gemini au choix, en HTTP (Phase 4a) + prompt caching
 │  ├─ skills.rs         # primitives exécutables via tool use — registre (Phase 4a, +Web_Fetch)
-│  ├─ catalog.rs        # catalogue agents/skills + édition (brancher, suggérer) — partagé TUI/GUI
 │  ├─ markdown_skill.rs # skills « fiches » SKILL.md + Load_Skill (divulgation progressive)
 │  ├─ memory.rs         # mémoire partagée d'espace : Remember / Recall (.orchestra/memory.md)
 │  ├─ orchestration.rs  # modèle de plan (Task/Plan, tri topo, validation, repli)
@@ -66,10 +65,8 @@ crates/
 │  ├─ registry.rs       # registre global des espaces connus (récents) — partagé TUI/GUI
 │  ├─ scaffold.rs       # scaffold_space() : crée un Espace (Phase 2)
 │  └─ model/
-│     ├─ project_type.rs  # enum ProjectType
 │     ├─ config.rs        # ProjectConfig + Integrations
-│     ├─ space.rs         # ContextSpace (+ Adr)
-│     └─ skill_id.rs      # default_skills() / default_agents()
+│     └─ space.rs         # ContextSpace (+ Adr)
 ├─ orchestra-tui/src/
 │  ├─ main.rs           # dispatch CLI + boucle async tokio::select!
 │  ├─ app.rs            # App : état agrégé du dashboard (sans ratatui)
@@ -86,9 +83,11 @@ crates/
 
 ## 3. Modèle de données — l'« Espace de Contexte »
 
-Le concept central est volontairement **agnostique** : un projet Dev ou Langue partage la
-même structure ; seuls les Skills, agents et intégrations diffèrent. (L'IDE est centré sur le
-**développement** ; Langue est conservé mais mis de côté.)
+Le concept central est volontairement **minimal et agnostique du domaine** : un Espace ne
+décrit qu'un nom, un éventuel workspace de code et des intégrations. **Aucun agent ni skill
+n'est pré-câblé** — l'Orchestrateur déploie sa propre équipe à la volée (`spawn_agent`). Les
+anciens champs (`project_type`, `agents`, `skills`, `documentalist_enabled`) éventuellement
+présents dans de vieux `config.json` sont ignorés au chargement.
 
 ```mermaid
 classDiagram
@@ -101,22 +100,8 @@ classDiagram
     }
     class ProjectConfig {
         +String project_name
-        +ProjectType project_type
         +Option~PathBuf~ workspace_path
-        +bool documentalist_enabled
-        +Vec~String~ skills
-        +Vec~AgentDef~ agents
         +Integrations integrations
-    }
-    class AgentDef {
-        +String name
-        +String role
-        +Vec~String~ skills
-    }
-    class ProjectType {
-        <<enum>>
-        Dev
-        Langue
     }
     class Integrations {
         +Option~GitIntegration~ git
@@ -129,8 +114,6 @@ classDiagram
     }
     ContextSpace --> ProjectConfig
     ContextSpace --> "0..*" Adr
-    ProjectConfig --> "0..*" AgentDef
-    ProjectConfig --> ProjectType
     ProjectConfig --> Integrations
 ```
 

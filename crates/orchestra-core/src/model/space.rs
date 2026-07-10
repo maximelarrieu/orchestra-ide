@@ -213,11 +213,7 @@ mod tests {
 
         let config = ProjectConfig {
             project_name: "T".into(),
-            project_type: crate::model::project_type::ProjectType::Langue,
             workspace_path: None,
-            documentalist_enabled: false,
-            skills: vec![],
-            agents: vec![],
             integrations: Default::default(),
         };
         let space = ContextSpace {

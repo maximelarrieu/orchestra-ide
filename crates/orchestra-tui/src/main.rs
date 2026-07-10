@@ -245,8 +245,6 @@ async fn event_loop(
                                 KeyCode::Esc => app.cancel_new_space(),
                                 KeyCode::Up => app.new_space_focus(-1),
                                 KeyCode::Down | KeyCode::Tab => app.new_space_focus(1),
-                                KeyCode::Left => app.new_space_adjust(-1),
-                                KeyCode::Right => app.new_space_adjust(1),
                                 KeyCode::Enter => {
                                     if field == Some(NewField::Create) {
                                         match app.new_space_build() {
@@ -264,9 +262,6 @@ async fn event_loop(
                                     }
                                 }
                                 KeyCode::Backspace => app.new_space_backspace(),
-                                KeyCode::Char(' ') if field == Some(NewField::Documentalist) => {
-                                    app.new_space_adjust(1)
-                                }
                                 KeyCode::Char(c) => app.new_space_push(c),
                                 _ => {}
                             }
@@ -349,10 +344,10 @@ async fn event_loop(
                                         }
                                     }
                                 }
-                                // F1..Fn : actions rapides propres au type de projet (cf. quick_actions).
+                                // F1..Fn : actions rapides de l'Assistant (cf. quick_actions).
                                 KeyCode::F(n) => {
-                                    if let Some(kind) = app.space.as_ref().map(|s| s.config.project_type) {
-                                        let actions = orchestra_core::runtime::quick_actions(kind);
+                                    if app.space.is_some() {
+                                        let actions = orchestra_core::runtime::quick_actions();
                                         if let Some(a) = actions.get((n as usize).saturating_sub(1)) {
                                             let (build, uses) = (a.build, a.uses_input);
                                             let input = if uses { app.chat_submit().unwrap_or_default() } else { String::new() };

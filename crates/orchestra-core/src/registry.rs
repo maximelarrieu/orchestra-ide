@@ -100,7 +100,7 @@ fn forget_in(file: &Path, path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ProjectConfig, ProjectType};
+    use crate::model::ProjectConfig;
 
     fn make_space(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -112,11 +112,7 @@ mod tests {
         fs::create_dir_all(root.join(".orchestra")).unwrap();
         let cfg = ProjectConfig {
             project_name: format!("Space_{tag}"),
-            project_type: ProjectType::Dev,
             workspace_path: None,
-            documentalist_enabled: false,
-            skills: vec![],
-            agents: vec![],
             integrations: Default::default(),
         };
         fs::write(

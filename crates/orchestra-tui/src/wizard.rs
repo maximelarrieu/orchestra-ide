@@ -8,7 +8,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use orchestra_core::model::config::{GitIntegration, GithubIntegration, Integrations};
-use orchestra_core::model::ProjectType;
 use orchestra_core::{scaffold_space, InitOptions};
 
 /// Point d'entrée de la sous-commande `init`. `target` = répertoire où créer l'espace.
@@ -19,43 +18,29 @@ pub fn run(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     let default_name = default_project_name(target);
     let project_name = prompt_line("Nom du projet", Some(&default_name))?;
-    let project_type = prompt_project_type()?;
 
-    // Le chemin du code n'a de sens que pour les projets « Dev ».
-    let workspace_path = if project_type == ProjectType::Dev {
-        let raw = prompt_line("Chemin du code à piloter (workspace)", Some("."))?;
-        Some(absolutize(&raw)) // chemin absolu → robuste quel que soit le cwd au lancement
-    } else {
+    let raw = prompt_line("Chemin du code à piloter (workspace, vide si aucun)", Some("."))?;
+    let workspace_path = if raw.trim().is_empty() {
         None
+    } else {
+        Some(absolutize(&raw)) // chemin absolu → robuste quel que soit le cwd au lancement
     };
 
-    let documentalist_enabled = prompt_yes_no("Activer l'Agent Documentaliste ?", false)?;
-    let integrations = prompt_integrations(project_type)?;
+    let integrations = prompt_integrations()?;
 
     let opts = InitOptions {
         project_name,
-        project_type,
         workspace_path,
-        documentalist_enabled,
         integrations,
         objectives: String::new(),
-        agents: Vec::new(),
     };
 
     let space = scaffold_space(target, opts)?;
 
     println!("\n✓ Espace « {} » créé.", space.config.project_name);
-    println!("  Type        : {}", space.config.project_type.label());
     if let Some(ws) = &space.config.workspace_path {
         println!("  Workspace   : {}", ws.display());
     }
-    let agent_names: Vec<&str> = space.config.agents.iter().map(|a| a.name.as_str()).collect();
-    println!("  Agents      : {}", agent_names.join(", "));
-    println!("  Skills      : {}", space.config.skills.join(", "));
-    println!(
-        "  Documentaliste : {}",
-        if space.config.documentalist_enabled { "oui" } else { "non" }
-    );
     let integ = &space.config.integrations;
     if integ.git.is_some() || integ.github.is_some() {
         let mut parts = Vec::new();
@@ -87,13 +72,10 @@ fn absolutize(raw: &str) -> PathBuf {
     }
 }
 
-/// Propose de configurer les intégrations Git/GitHub (projets Dev). Tokens jamais saisis
+/// Propose de configurer les intégrations Git/GitHub. Tokens jamais saisis
 /// ici : seul le *nom* de la variable d'environnement est enregistré.
-fn prompt_integrations(kind: ProjectType) -> io::Result<Integrations> {
+fn prompt_integrations() -> io::Result<Integrations> {
     let mut integ = Integrations::default();
-    if kind != ProjectType::Dev {
-        return Ok(integ); // intégrations proposées pour les projets Dev
-    }
 
     if prompt_yes_no("Activer l'intégration Git ?", false)? {
         let main_branch = prompt_line("  Branche principale", Some("main"))?;
@@ -144,27 +126,6 @@ fn prompt_line(label: &str, default: Option<&str>) -> io::Result<String> {
         Ok(default.unwrap_or("").to_string())
     } else {
         Ok(trimmed.to_string())
-    }
-}
-
-/// Menu numéroté des types de projet. Boucle jusqu'à un choix valide.
-fn prompt_project_type() -> io::Result<ProjectType> {
-    const CHOICES: [(&str, ProjectType); 2] = [
-        ("Dev", ProjectType::Dev),
-        ("Langue", ProjectType::Langue),
-    ];
-
-    println!("Type de projet :");
-    for (i, (label, _)) in CHOICES.iter().enumerate() {
-        println!("  [{}] {label}", i + 1);
-    }
-
-    loop {
-        let raw = prompt_line("Choix", Some("1"))?;
-        match raw.parse::<usize>() {
-            Ok(n) if (1..=CHOICES.len()).contains(&n) => return Ok(CHOICES[n - 1].1),
-            _ => println!("  ✗ Entre un nombre entre 1 et {}.", CHOICES.len()),
-        }
     }
 }
 

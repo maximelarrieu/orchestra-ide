@@ -432,6 +432,28 @@ Recentrage du produit sur **un agent principal unique et puissant** qui déploie
 - **Suite** : Phase 2 (retrait de `ProjectType`/agents pré-définis/menu Agents ; « espace » →
   « session ») ; Phase 3 (refonte UI façon Cursor : explorateur · centre code/diff · chat).
 
+## Refonte — Phase 2 : ménage (catalogue, roster, types) ✅
+
+Suppression de tout ce qui pré-câblait l'orchestre : l'Orchestrateur compose désormais son
+équipe seul, la config ne décrit plus qu'un espace nu.
+- **Tranche 2** — suppression du catalogue et des matrices par défaut : `catalog.rs`,
+  `model/skill_id.rs` (`default_agents`/`default_skills`) supprimés ; plus de skills/agents
+  injectés à la création (une session démarre vierge).
+- **Tranche 3a** — retrait du **moteur de roster/orchestration** de `runtime.rs`
+  (`spawn`/`run_agent`/`roster`/`run_waves`/`plan_objective`/`synthesize`…). Seul subsiste le
+  chemin PTAC de l'Orchestrateur. `AgentContext` allégé, `agent_tools`/`build_system_prompt`
+  simplifiés, `orchestrate()` en one-shot PTAC.
+- **Tranche 3b** — retrait de **`ProjectType`** (Dev/Langue) et du schéma associé. `ProjectConfig`
+  se réduit à `project_name` / `workspace_path` / `integrations` ; les anciens champs
+  (`project_type`, `agents`, `skills`, `documentalist_enabled`, `AgentDef`) présents dans
+  d'anciens `config.json` sont **ignorés au chargement** (serde tolère l'inconnu). `quick_actions()`
+  devient générique (plus de branche Langue ; messages `learning_plan`/`daily_lesson` retirés).
+  `InitOptions` allégé ; persona générique ; assistant `orchestra init` sans choix de type ;
+  formulaires « nouvel espace » (TUI + desktop) réduits aux champs utiles ; `SquadPanel`/sidebar
+  affichent l'Orchestrateur + les sous-agents **apparus à la volée** (plus de roster figé).
+- Parité TUI ⇄ GUI respectée ; `orchestra-core` + `orchestra-tui` verts, `clippy` sans warning.
+- **Suite** : Phase 3 (refonte UI façon Cursor) et les sessions/onglets.
+
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
 - Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts

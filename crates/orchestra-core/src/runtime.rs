@@ -203,27 +203,8 @@ pub fn comprehension_message() -> String {
         .to_string()
 }
 
-/// Message **« plan d'apprentissage »** (projets Langue) : fait établir un plan cours → leçons.
-pub fn learning_plan_message() -> String {
-    "Je souhaite progresser dans la langue cible définie dans mon persona. Évalue mon niveau \
-     (pose-moi 2-3 questions si besoin), puis propose un PLAN D'APPRENTISSAGE progressif, structuré \
-     en **cours** (thèmes) et **leçons** (étapes courtes), avec l'objectif de chaque leçon. Écris ce \
-     plan dans `docs/plan-apprentissage.md` et tiens-le à jour. Distingue clairement les cours et \
-     les leçons à faire."
-        .to_string()
-}
-
-/// Message **« leçon & exercice du jour »** (projets Langue) : la prochaine leçon selon la progression.
-pub fn daily_lesson_message() -> String {
-    "Donne-moi la PROCHAINE leçon de mon plan d'apprentissage (`docs/plan-apprentissage.md`), selon \
-     ma progression : une leçon courte et claire, suivie de quelques exercices à faire. Note la leçon \
-     traitée (mémoire / docs) pour suivre l'avancement. Rédige les consignes dans la langue \
-     d'explication de mon persona, et le contenu des exercices dans la langue cible."
-        .to_string()
-}
-
-/// Une **action rapide** proposée dans l'Assistant, selon le type de projet. Data-driven et
-/// partagée TUI ⇄ GUI : les deux interfaces affichent les mêmes actions.
+/// Une **action rapide** proposée dans l'Assistant. Data-driven et partagée TUI ⇄ GUI :
+/// les deux interfaces affichent les mêmes actions.
 pub struct QuickAction {
     /// Libellé du bouton / de l'entrée.
     pub label: &'static str,
@@ -235,20 +216,13 @@ pub struct QuickAction {
     pub build: fn(&str) -> String,
 }
 
-/// Actions rapides de l'Assistant selon le type de projet.
-pub fn quick_actions(kind: crate::model::ProjectType) -> Vec<QuickAction> {
-    use crate::model::ProjectType;
-    match kind {
-        ProjectType::Dev => vec![
-            QuickAction { label: "▶ Objectif rapide", primary: true, uses_input: true, build: orchestrate_message },
-            QuickAction { label: "🧭 Cadrer le projet", primary: false, uses_input: true, build: cadrage_message },
-            QuickAction { label: "🔎 Analyser le projet", primary: false, uses_input: false, build: |_| comprehension_message() },
-        ],
-        ProjectType::Langue => vec![
-            QuickAction { label: "📚 Plan d'apprentissage", primary: false, uses_input: false, build: |_| learning_plan_message() },
-            QuickAction { label: "▶ Leçon & exercice du jour", primary: true, uses_input: false, build: |_| daily_lesson_message() },
-        ],
-    }
+/// Actions rapides de l'Assistant — identiques pour tout espace.
+pub fn quick_actions() -> Vec<QuickAction> {
+    vec![
+        QuickAction { label: "▶ Objectif rapide", primary: true, uses_input: true, build: orchestrate_message },
+        QuickAction { label: "🧭 Cadrer le projet", primary: false, uses_input: true, build: cadrage_message },
+        QuickAction { label: "🔎 Analyser le projet", primary: false, uses_input: false, build: |_| comprehension_message() },
+    ]
 }
 
 /// Message de **cadrage** : transforme une idée en brief documenté **avant** de coder. À envoyer
@@ -550,11 +524,7 @@ mod tests {
             root,
             config: ProjectConfig {
                 project_name: "Test".into(),
-                project_type: crate::model::ProjectType::Dev,
                 workspace_path: None,
-                documentalist_enabled: false,
-                skills: vec![],
-                agents: vec![],
                 integrations: Default::default(),
             },
             persona: None,
@@ -594,6 +564,6 @@ mod tests {
 
     #[test]
     fn quick_actions_available() {
-        assert!(!quick_actions(crate::model::ProjectType::Dev).is_empty());
+        assert!(!quick_actions().is_empty());
     }
 }

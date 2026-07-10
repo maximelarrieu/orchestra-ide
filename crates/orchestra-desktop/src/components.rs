@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use dioxus::prelude::*;
-use orchestra_core::model::{ContextSpace, ProjectType};
+use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime::QuickAction;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -32,19 +32,20 @@ fn tab(cur: View, this: View) -> &'static str {
     }
 }
 
-/// Encart « squad » : statut live de chaque agent de l'espace (coordinateur + agents +
-/// documentaliste), pour **voir qui travaille** pendant l'orchestration / le chat.
+/// Encart « squad » : statut live de l'Orchestrateur et des sous-agents qu'il déploie à la
+/// volée, pour **voir qui travaille** pendant l'orchestration / le chat. Plus aucun agent
+/// pré-câblé — le roster se compose au fil des agents qui apparaissent.
 #[component]
-pub fn SquadPanel(space: Signal<Option<ContextSpace>>, status: Signal<HashMap<String, AgStatus>>) -> Element {
-    let Some(sp) = space() else {
-        return rsx! {};
-    };
-    let mut roster: Vec<String> = vec![orchestra_core::runtime::COORDINATOR.to_string()];
-    roster.extend(sp.config.agents.iter().map(|a| a.name.clone()));
-    if sp.config.documentalist_enabled {
-        roster.push("Agent_Documentaliste".to_string());
-    }
+pub fn SquadPanel(status: Signal<HashMap<String, AgStatus>>) -> Element {
     let map = status();
+    let mut roster: Vec<String> = vec![orchestra_core::runtime::COORDINATOR.to_string()];
+    let mut others: Vec<String> = map
+        .keys()
+        .filter(|k| k.as_str() != orchestra_core::runtime::COORDINATOR)
+        .cloned()
+        .collect();
+    others.sort();
+    roster.extend(others);
     rsx! {
         div { class: "squad",
             span { class: "muted", "Squad :" }
@@ -332,12 +333,9 @@ fn NewSpaceForm(
 ) -> Element {
     let mut parent = use_signal(|| orchestra_core::browser::home_dir().to_string_lossy().to_string());
     let mut name = use_signal(String::new);
-    let kind = use_signal(|| ProjectType::Dev);
     let mut workspace = use_signal(String::new);
     let mut objectives = use_signal(String::new);
-    let mut documentalist = use_signal(|| false);
     let mut err = use_signal(String::new);
-    let doc_cls = if documentalist() { "tab on" } else { "tab" };
 
     rsx! {
         div { class: "newspace",
@@ -345,24 +343,15 @@ fn NewSpaceForm(
                 oninput: move |e| parent.set(e.value()) }
             input { class: "chatinput", value: "{name}", placeholder: "Nom du projet",
                 oninput: move |e| name.set(e.value()) }
-            div { class: "types",
-                { type_btn(ProjectType::Dev, kind) }
-                { type_btn(ProjectType::Langue, kind) }
-            }
-            if kind() == ProjectType::Dev {
-                input { class: "chatinput", value: "{workspace}", placeholder: "Workspace (chemin du code)",
-                    oninput: move |e| workspace.set(e.value()) }
-            }
+            input { class: "chatinput", value: "{workspace}", placeholder: "Workspace (chemin du code, optionnel)",
+                oninput: move |e| workspace.set(e.value()) }
             textarea { class: "fichearea", value: "{objectives}",
                 placeholder: "Objectifs / description du projet…",
                 oninput: move |e| objectives.set(e.value()) }
-            button { class: "{doc_cls}", onclick: move |_| documentalist.set(!documentalist()),
-                if documentalist() { "📝 Documentaliste : activé" } else { "📝 Documentaliste : désactivé" }
-            }
             div { class: "actions",
                 button { class: "go",
                     onclick: move |_| {
-                        match state::create_space(space, space_path, known, &parent(), &name(), kind(), &workspace(), &objectives(), documentalist()) {
+                        match state::create_space(space, space_path, known, &parent(), &name(), &workspace(), &objectives()) {
                             Ok(()) => creating.set(false),
                             Err(e) => err.set(e),
                         }
@@ -374,14 +363,6 @@ fn NewSpaceForm(
                 p { class: "error", "{err}" }
             }
         }
-    }
-}
-
-fn type_btn(k: ProjectType, mut kind: Signal<ProjectType>) -> Element {
-    let cls = if kind() == k { "tab on" } else { "tab" };
-    let label = k.label();
-    rsx! {
-        button { class: "{cls}", onclick: move |_| kind.set(k), "{label}" }
     }
 }
 

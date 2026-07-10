@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use dioxus::prelude::*;
 use orchestra_core::events::AgentEvent;
-use orchestra_core::model::{ContextSpace, ProjectType};
+use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -265,29 +265,24 @@ pub fn create_space(
     mut known: Signal<Vec<KnownSpace>>,
     parent: &str,
     name: &str,
-    kind: ProjectType,
     workspace: &str,
     objectives: &str,
-    documentalist: bool,
 ) -> Result<(), String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("Le nom du projet est obligatoire.".into());
     }
     let root = PathBuf::from(parent.trim()).join(slug(name));
-    let workspace_path = if kind == ProjectType::Dev && !workspace.trim().is_empty() {
-        Some(PathBuf::from(workspace.trim()))
-    } else {
+    let workspace_path = if workspace.trim().is_empty() {
         None
+    } else {
+        Some(PathBuf::from(workspace.trim()))
     };
     let opts = orchestra_core::InitOptions {
         project_name: name.to_string(),
-        project_type: kind,
         workspace_path,
-        documentalist_enabled: documentalist,
         integrations: Default::default(),
         objectives: objectives.to_string(),
-        agents: Vec::new(),
     };
     match orchestra_core::scaffold_space(&root, opts) {
         Ok(sp) => {

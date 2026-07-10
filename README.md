@@ -23,7 +23,7 @@ Doc technique générée du code : `cargo doc -p orchestra-core --open`.
 ```
 crates/
 ├─ orchestra-core/   # domaine pur — AUCUNE dépendance UI
-│  └─ src/{error,events,runtime,scaffold,model/{project_type,config,space,skill_id}}.rs
+│  └─ src/{error,events,runtime,scaffold,model/{config,space}}.rs
 └─ orchestra-tui/    # frontend ratatui + CLI — consomme orchestra-core
    └─ src/{main,app,dashboard,wizard}.rs
 ```
@@ -44,8 +44,9 @@ s'il n'en trouve pas, le dashboard s'affiche en état « Aucun espace chargé »
 
 ## Phase 2 — `orchestra init` ✅
 
-Assistant interactif qui génère un Espace de Contexte selon le type de projet
-(Dev / Langue), en pré-remplissant la matrice de Skills et d'agents par défaut.
+Assistant interactif qui génère un Espace de Contexte (nom, workspace de code optionnel,
+intégrations Git/GitHub). Aucun agent ni skill n'est pré-câblé : l'Orchestrateur déploie
+sa propre équipe à la volée.
 
 ```bash
 # Crée .orchestra/{config.json, persona.md, adr/} dans le dossier cible (défaut : .)

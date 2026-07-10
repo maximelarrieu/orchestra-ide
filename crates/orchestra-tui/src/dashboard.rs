@@ -116,20 +116,21 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Agents à afficher dans la sidebar : Coordinateur (s'il est apparu) + agents + Documentaliste.
+/// Agents à afficher dans la sidebar : l'Orchestrateur en tête, puis les sous-agents qu'il a
+/// déployés à la volée (tout ce qui est apparu dans le suivi live). Plus aucun agent pré-câblé.
 fn sidebar_agents(app: &App) -> Vec<String> {
     let mut v = Vec::new();
-    if app.agent_status.contains_key("Coordinateur") {
-        v.push("Coordinateur".to_string());
+    if app.agent_status.contains_key(orchestra_core::runtime::COORDINATOR) {
+        v.push(orchestra_core::runtime::COORDINATOR.to_string());
     }
-    if let Some(s) = &app.space {
-        for a in &s.config.agents {
-            v.push(a.name.clone());
-        }
-        if s.config.documentalist_enabled {
-            v.push("Agent_Documentaliste".to_string());
-        }
-    }
+    let mut others: Vec<String> = app
+        .agent_status
+        .keys()
+        .filter(|k| k.as_str() != orchestra_core::runtime::COORDINATOR)
+        .cloned()
+        .collect();
+    others.sort();
+    v.extend(others);
     v
 }
 
@@ -190,17 +191,9 @@ fn render_new_space(frame: &mut Frame, area: Rect, f: &crate::app::NewSpaceForm)
     let mut lines = vec![
         row("Dossier parent", f.path.clone(), cur == NewField::Path),
         row("Nom du projet", f.name.clone(), cur == NewField::Name),
-        row("Type (←/→)", f.kind.label().to_string(), cur == NewField::Kind),
+        row("Workspace (code)", f.workspace.clone(), cur == NewField::Workspace),
+        row("Objectifs", f.objectives.clone(), cur == NewField::Objectives),
     ];
-    if f.kind == orchestra_core::model::ProjectType::Dev {
-        lines.push(row("Workspace (code)", f.workspace.clone(), cur == NewField::Workspace));
-    }
-    lines.push(row("Objectifs", f.objectives.clone(), cur == NewField::Objectives));
-    lines.push(row(
-        "Documentaliste (Espace)",
-        if f.documentalist { "oui".into() } else { "non".into() },
-        cur == NewField::Documentalist,
-    ));
     lines.push(Line::raw(""));
     let create_style = if cur == NewField::Create {
         Style::new().green().bold().reversed()
@@ -210,7 +203,7 @@ fn render_new_space(frame: &mut Frame, area: Rect, f: &crate::app::NewSpaceForm)
     lines.push(Line::from(Span::styled("  [ Créer l'espace ]", create_style)));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "Tab/↑↓ champ · saisie · ←/→ type · Espace documentaliste · Entrée créer · Échap annuler",
+        "Tab/↑↓ champ · saisie · Entrée créer · Échap annuler",
         Style::new().dark_gray(),
     )));
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -383,9 +376,9 @@ fn render_text_editor(frame: &mut Frame, area: Rect, ed: &Editor, title: &str) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
-    let (name, kind) = match &app.space {
-        Some(s) => (s.config.project_name.clone(), s.config.project_type.label()),
-        None => ("Aucun espace chargé".to_string(), "—"),
+    let name = match &app.space {
+        Some(s) => s.config.project_name.clone(),
+        None => "Aucun espace chargé".to_string(),
     };
 
     let status = if let Some(agent) = &app.busy {
@@ -418,7 +411,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("ORCHESTRA IDE v0.1.0", Style::new().bold().cyan()),
         Span::raw("  |  "),
         Span::styled(format!("[{name}]"), Style::new().yellow().bold()),
-        Span::raw(format!(" ({kind})  |  ")),
+        Span::raw("  |  "),
         mode,
         Span::raw("  |  "),
         status,
@@ -432,7 +425,7 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
         let block = Block::bordered().title(" 🛰  ÉCRAN RADAR (FLUX D'ACTIVITÉ DES AGENTS) ");
         let hint = match (app.can_launch(), app.phase) {
             (true, Phase::Idle) => "  Prêt. [1] lancer une intention · [5] converser.",
-            (false, _) => "  Aucun agent dans cet espace (ou aucun espace chargé).",
+            (false, _) => "  Aucun espace chargé.",
             _ => "  En attente d'activité…",
         };
         let mut lines = vec![
@@ -653,7 +646,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         ))]
     } else if app.view == View::Spaces && app.new_space.is_some() {
         vec![Line::from(Span::styled(
-            "➕ Nouvel espace — Tab/↑↓ champ · ←/→ type · Espace documentaliste · Entrée créer · Échap",
+            "➕ Nouvel espace — Tab/↑↓ champ · Entrée créer · Échap",
             Style::new().cyan(),
         ))]
     } else if app.view == View::Spaces && app.browse.is_some() {
@@ -686,9 +679,9 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             "(Entrée envoyer · Maj/Alt+Entrée nouvelle ligne · Échap quitter)",
             Style::new().dark_gray(),
         )));
-        // Actions rapides propres au type de projet (F1..Fn).
-        if let Some(kind) = app.space.as_ref().map(|s| s.config.project_type) {
-            let actions = orchestra_core::runtime::quick_actions(kind);
+        // Actions rapides de l'Assistant (F1..Fn).
+        if app.space.is_some() {
+            let actions = orchestra_core::runtime::quick_actions();
             if !actions.is_empty() {
                 let hint = actions
                     .iter()
@@ -732,8 +725,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orchestra_core::model::config::{AgentDef, ProjectConfig};
-    use orchestra_core::model::project_type::ProjectType;
+    use orchestra_core::model::config::ProjectConfig;
     use orchestra_core::model::ContextSpace;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -744,11 +736,7 @@ mod tests {
             root: PathBuf::from("."),
             config: ProjectConfig {
                 project_name: "Demo".to_string(),
-                project_type: ProjectType::Dev,
                 workspace_path: None,
-                documentalist_enabled: false,
-                skills: vec![],
-                agents: vec![AgentDef::new("Agent_Scraper")],
                 integrations: Default::default(),
             },
             persona: None,

@@ -320,7 +320,6 @@ fn format_issues(v: &Value) -> String {
 mod tests {
     use super::*;
     use crate::model::config::{GitIntegration, GithubIntegration, Integrations, ProjectConfig};
-    use crate::model::project_type::ProjectType;
     use std::path::PathBuf;
 
     fn space(integrations: Integrations) -> ContextSpace {
@@ -328,11 +327,7 @@ mod tests {
             root: PathBuf::from("."),
             config: ProjectConfig {
                 project_name: "T".into(),
-                project_type: ProjectType::Dev,
                 workspace_path: None,
-                documentalist_enabled: false,
-                skills: vec![],
-                agents: vec![],
                 integrations,
             },
             persona: None,

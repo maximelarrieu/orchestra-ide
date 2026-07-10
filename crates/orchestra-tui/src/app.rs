@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use orchestra_core::browser::DirEntry;
 use orchestra_core::events::{AgentEvent, PlannedTask};
-use orchestra_core::model::{ContextSpace, DocKind, ProjectType, SpaceDoc};
+use orchestra_core::model::{ContextSpace, DocKind, SpaceDoc};
 use orchestra_core::registry::KnownSpace;
 
 use crate::editor::Editor;
@@ -79,36 +79,33 @@ pub struct BrowseState {
 pub enum NewField {
     Path,
     Name,
-    Kind,
     Workspace,
     Objectives,
-    Documentalist,
     Create,
 }
 
-/// Formulaire de création d'un nouvel Espace (`[3]` → `[n]`). Les agents/skills se règlent
-/// ensuite dans le menu Agents (catalogue complet selon le type).
+/// Formulaire de création d'un nouvel Espace (`[3]` → `[n]`). L'Orchestrateur déploie
+/// ensuite lui-même son équipe — rien à pré-configurer ici.
 pub struct NewSpaceForm {
     /// Dossier parent où créer l'espace (l'espace est créé dans `path/<slug(nom)>`).
     pub path: String,
     pub name: String,
-    pub kind: ProjectType,
-    /// Workspace de code (projets Dev).
+    /// Workspace de code à piloter (vide si aucun).
     pub workspace: String,
     pub objectives: String,
-    pub documentalist: bool,
     pub field: NewField,
 }
 
 impl NewSpaceForm {
-    /// Champs actifs dans l'ordre (Workspace n'apparaît que pour les projets Dev).
+    /// Champs actifs dans l'ordre.
     pub fn fields(&self) -> Vec<NewField> {
-        let mut v = vec![NewField::Path, NewField::Name, NewField::Kind];
-        if self.kind == ProjectType::Dev {
-            v.push(NewField::Workspace);
-        }
-        v.extend([NewField::Objectives, NewField::Documentalist, NewField::Create]);
-        v
+        vec![
+            NewField::Path,
+            NewField::Name,
+            NewField::Workspace,
+            NewField::Objectives,
+            NewField::Create,
+        ]
     }
 }
 
@@ -200,13 +197,8 @@ pub struct PlanRow {
 /// Cadres du spinner d'activité (braille).
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Exemple d'intention proposé par défaut selon le type de projet (`[1]`).
-fn default_intention(kind: ProjectType) -> &'static str {
-    match kind {
-        ProjectType::Dev => "Lis le README et propose 3 améliorations prioritaires du code.",
-        ProjectType::Langue => "Donne-moi une leçon de 15 min avec quelques exercices, puis corrige mes réponses.",
-    }
-}
+/// Exemple d'intention pré-rempli dans la saisie `[1]` (l'utilisateur l'édite ou le valide).
+const DEFAULT_INTENTION: &str = "Lis le README et propose 3 améliorations prioritaires du code.";
 
 /// Slug de dossier sûr à partir d'un nom (minuscules ; tout caractère non alphanumérique → `-`).
 fn slug(name: &str) -> String {
@@ -528,10 +520,8 @@ impl App {
         self.new_space = Some(NewSpaceForm {
             path: orchestra_core::browser::home_dir().to_string_lossy().to_string(),
             name: String::new(),
-            kind: ProjectType::Dev,
             workspace: String::new(),
             objectives: String::new(),
-            documentalist: false,
             field: NewField::Path,
         });
         self.notice = None;
@@ -548,21 +538,6 @@ impl App {
             let cur = fields.iter().position(|x| *x == f.field).unwrap_or(0) as isize;
             let next = (cur + delta).clamp(0, fields.len() as isize - 1) as usize;
             f.field = fields[next];
-        }
-    }
-
-    /// Sur le champ Type : fait défiler les types de projet ; sur Documentaliste : bascule.
-    pub fn new_space_adjust(&mut self, delta: isize) {
-        let Some(f) = self.new_space.as_mut() else { return };
-        match f.field {
-            NewField::Kind => {
-                const KINDS: [ProjectType; 2] = [ProjectType::Dev, ProjectType::Langue];
-                let cur = KINDS.iter().position(|k| *k == f.kind).unwrap_or(0) as isize;
-                let n = ((cur + delta).rem_euclid(KINDS.len() as isize)) as usize;
-                f.kind = KINDS[n];
-            }
-            NewField::Documentalist => f.documentalist = !f.documentalist,
-            _ => {}
         }
     }
 
@@ -599,19 +574,16 @@ impl App {
             return None;
         }
         let root = std::path::PathBuf::from(f.path.trim()).join(slug(name));
-        let workspace_path = if f.kind == ProjectType::Dev && !f.workspace.trim().is_empty() {
-            Some(std::path::PathBuf::from(f.workspace.trim()))
-        } else {
+        let workspace_path = if f.workspace.trim().is_empty() {
             None
+        } else {
+            Some(std::path::PathBuf::from(f.workspace.trim()))
         };
         let opts = orchestra_core::InitOptions {
             project_name: name.to_string(),
-            project_type: f.kind,
             workspace_path,
-            documentalist_enabled: f.documentalist,
             integrations: Default::default(),
             objectives: f.objectives.clone(),
-            agents: Vec::new(),
         };
         Some((root, opts))
     }
@@ -640,12 +612,7 @@ impl App {
     /// `[1]` — entre en saisie d'une intention, pré-remplie d'un exemple selon le type de
     /// projet (l'utilisateur l'édite ou la valide telle quelle).
     pub fn start_intention(&mut self) {
-        let example = self
-            .space
-            .as_ref()
-            .map(|s| default_intention(s.config.project_type))
-            .unwrap_or("");
-        self.intention = Some(example.to_string());
+        self.intention = Some(DEFAULT_INTENTION.to_string());
         self.notice = None;
     }
 
@@ -672,9 +639,7 @@ impl App {
 
     /// Vrai si un Espace valide est chargé : sans lui, pas d'agents à lancer.
     pub fn can_launch(&self) -> bool {
-        self.space
-            .as_ref()
-            .is_some_and(|s| !s.config.agents.is_empty())
+        self.space.is_some()
     }
 
     /// Vrai si le persona contient encore des placeholders « à compléter » : lancer un
@@ -959,6 +924,7 @@ mod tests {
     fn intention_input_edit_and_take() {
         let mut app = App::new(None);
         app.start_intention();
+        app.intention = Some(String::new()); // repart d'une saisie vide (l'exemple est effacé)
         app.intention_push('g');
         app.intention_push('o');
         app.intention_backspace();
@@ -977,18 +943,13 @@ mod tests {
 
     #[test]
     fn detects_incomplete_persona() {
-        use orchestra_core::model::config::{AgentDef, ProjectConfig};
-        use orchestra_core::model::project_type::ProjectType;
+        use orchestra_core::model::config::ProjectConfig;
         let mk = |persona: Option<&str>| {
             let space = ContextSpace {
                 root: std::path::PathBuf::from("."),
                 config: ProjectConfig {
                     project_name: "T".into(),
-                    project_type: ProjectType::Dev,
                     workspace_path: None,
-                    documentalist_enabled: false,
-                    skills: vec![],
-                    agents: vec![AgentDef::new("A")],
                     integrations: Default::default(),
                 },
                 persona: persona.map(str::to_string),
@@ -1009,6 +970,6 @@ mod tests {
             .join("../../examples/apprentissage-espagnol");
         let space = ContextSpace::load(&example).expect("l'exemple doit se charger");
         let app = App::new(Some(space));
-        assert!(app.can_launch(), "l'exemple doit avoir des agents → [1] actif");
+        assert!(app.can_launch(), "un espace chargé doit être lançable → [1] actif");
     }
 }

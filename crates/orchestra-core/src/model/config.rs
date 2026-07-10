@@ -2,80 +2,24 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::project_type::ProjectType;
-
-/// Contenu de `.orchestra/config.json` : la définition complète d'un Espace de Contexte.
+/// Contenu de `.orchestra/config.json` : la définition d'un Espace de Contexte.
 ///
-/// Volontairement agnostique — un projet Dev ou Langue partage la même structure ;
-/// seuls les Skills/Agents et les intégrations diffèrent.
+/// Volontairement minimal et agnostique du domaine : l'Orchestrateur déploie lui-même
+/// son équipe et choisit ses outils à la volée — rien n'est pré-câblé côté config.
+/// Les anciens champs (`project_type`, `agents`, `skills`, `documentalist_enabled`) présents
+/// dans d'anciens `config.json` sont simplement ignorés au chargement (serde tolère les
+/// champs inconnus).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project_name: String,
-    pub project_type: ProjectType,
 
-    /// Chemin local ciblé (projets « Dev »). `None` pour les projets hors-dev.
+    /// Chemin local du code à piloter. `None` si l'espace n'est pas adossé à un dossier de code.
     #[serde(default)]
     pub workspace_path: Option<PathBuf>,
 
-    /// Active l'Agent Documentaliste (Phase 5).
-    #[serde(default)]
-    pub documentalist_enabled: bool,
-
-    /// Identifiants des Skills activés (exécutables en Phase 3).
-    #[serde(default)]
-    pub skills: Vec<String>,
-
-    /// Agents composant l'orchestre (nom, rôle, skills propres).
-    #[serde(default)]
-    pub agents: Vec<AgentDef>,
-
-    /// Intégrations écosystème (Phase 4) — toutes optionnelles.
+    /// Intégrations écosystème (Git/GitHub/Jira) — toutes optionnelles.
     #[serde(default)]
     pub integrations: Integrations,
-}
-
-/// Définition d'un agent : nom, rôle (qui oriente son prompt) et skills propres.
-///
-/// Rétro-compatible : un agent écrit comme une simple chaîne dans `config.json`
-/// (`"agents": ["Agent_Tuteur"]`) est chargé comme `AgentDef { name, role: "", skills: [] }`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct AgentDef {
-    pub name: String,
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub skills: Vec<String>,
-}
-
-impl AgentDef {
-    /// Crée un agent depuis un nom (rôle/skills vides).
-    pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), role: String::new(), skills: Vec::new() }
-    }
-}
-
-impl<'de> Deserialize<'de> for AgentDef {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Repr {
-            Name(String),
-            Full {
-                name: String,
-                #[serde(default)]
-                role: String,
-                #[serde(default)]
-                skills: Vec<String>,
-            },
-        }
-        Ok(match Repr::deserialize(deserializer)? {
-            Repr::Name(name) => AgentDef { name, role: String::new(), skills: Vec::new() },
-            Repr::Full { name, role, skills } => AgentDef { name, role, skills },
-        })
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -114,30 +58,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_dev_space() {
-        let raw = r#"{
-            "project_name": "Mon_App",
-            "project_type": "dev",
-            "agents": ["Agent_Architecte", "Agent_Codeur"],
-            "skills": ["Read_File", "Write_File_Validated", "Execute_Terminal_Command"]
-        }"#;
+    fn parse_minimal_space() {
+        let raw = r#"{ "project_name": "Mon_App" }"#;
 
         let cfg: ProjectConfig = serde_json::from_str(raw).expect("config valide");
-        assert_eq!(cfg.project_type, ProjectType::Dev);
-        assert_eq!(cfg.skills.len(), 3);
-        // Rétro-compat : agents écrits en chaînes → AgentDef (rôle/skills vides).
-        assert_eq!(cfg.agents.len(), 2);
-        assert_eq!(cfg.agents[0].name, "Agent_Architecte");
-        assert!(cfg.agents[0].role.is_empty());
+        assert_eq!(cfg.project_name, "Mon_App");
         // Champs absents → valeurs par défaut (serde(default)).
         assert!(cfg.workspace_path.is_none());
-        assert!(!cfg.documentalist_enabled);
         assert!(cfg.integrations.git.is_none());
     }
 
     #[test]
-    fn project_type_round_trips_snake_case() {
-        let json = serde_json::to_string(&ProjectType::Dev).unwrap();
-        assert_eq!(json, "\"dev\"");
+    fn ignores_legacy_fields() {
+        // D'anciens config.json portent encore project_type/agents/skills/documentalist :
+        // ils doivent être ignorés silencieusement (pas d'erreur de désérialisation).
+        let raw = r#"{
+            "project_name": "Legacy",
+            "project_type": "dev",
+            "documentalist_enabled": true,
+            "agents": ["Agent_Architecte", "Agent_Codeur"],
+            "skills": ["Read_File", "Write_File_Validated"]
+        }"#;
+
+        let cfg: ProjectConfig = serde_json::from_str(raw).expect("config valide");
+        assert_eq!(cfg.project_name, "Legacy");
+        assert!(cfg.workspace_path.is_none());
     }
 }

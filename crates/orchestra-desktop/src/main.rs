@@ -59,10 +59,6 @@ fn app() -> Element {
     let changes = use_signal(Vec::<state::FileChange>::new);
     // Racine de l'espace de la conversation en cours (pour la redémarrer au changement d'espace).
     let mut chat_root = use_signal(|| None::<PathBuf>);
-    // Type de projet actif → pilote les actions rapides de l'Assistant (Dev vs Langue).
-    let kind = space()
-        .map(|s| s.config.project_type)
-        .unwrap_or(orchestra_core::model::ProjectType::Dev);
 
     let start_chat = move |_| {
         if let Some(sp) = space() {
@@ -100,14 +96,14 @@ fn app() -> Element {
                     div { class: "chatwrap",
                         div { class: "actions",
                             button { onclick: start_chat, "↻ Nouvelle conversation" }
-                            for a in orchestra_core::runtime::quick_actions(kind) {
+                            for a in orchestra_core::runtime::quick_actions() {
                                 { components::action_button(a, user_tx, draft) }
                             }
                         }
                         p { class: "hint",
                             "Décris ton besoin dans la zone de saisie, ou utilise une action ci-dessus — tu peux aussi simplement discuter avec le coordinateur."
                         }
-                        components::SquadPanel { space, status: agents_status }
+                        components::SquadPanel { status: agents_status }
                         div { class: "worksplit",
                             div { class: "chatcol",
                                 if user_tx().is_some() {
