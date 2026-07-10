@@ -4,22 +4,14 @@
 //! (`dashboard`). On peut ainsi tester l'agrégation sans terminal ni tokio.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use orchestra_core::browser::DirEntry;
 use orchestra_core::events::{AgentEvent, PlannedTask};
-use orchestra_core::model::{AgentDef, ContextSpace, DocKind, ProjectType, SpaceDoc};
+use orchestra_core::model::{ContextSpace, DocKind, ProjectType, SpaceDoc};
 use orchestra_core::registry::KnownSpace;
 
 use crate::editor::Editor;
-
-/// Statistiques de session d'un agent (cumulées tant que l'appli tourne).
-#[derive(Default)]
-pub struct AgentStat {
-    pub invocations: usize,
-    pub thinking: Duration,
-    thinking_start: Option<Instant>,
-}
 
 /// Statut « live » d'un agent, pour la sidebar de l'orchestre.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,33 +22,11 @@ pub enum LiveStatus {
     Done,
 }
 
-/// Champ d'agent en cours d'édition (saisie dans le menu Agents).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentField {
-    Name,
-    Role,
-    Add,
-    /// Création d'un skill Markdown (`.orchestra/skills/<id>/SKILL.md`).
-    NewSkill,
-}
-
-impl AgentField {
-    pub fn label(self) -> &'static str {
-        match self {
-            AgentField::Name => "Nouveau nom",
-            AgentField::Role => "Rôle",
-            AgentField::Add => "Nom du nouvel agent",
-            AgentField::NewSkill => "Nom du nouveau skill (fiche Markdown)",
-        }
-    }
-}
-
-/// Cible de l'éditeur de texte : le persona de l'espace, un fichier `SKILL.md`, ou un document
-/// quelconque de l'espace (memory, ADR, `.md` du workspace).
+/// Cible de l'éditeur de texte : le persona de l'espace, ou un document quelconque de l'espace
+/// (memory, ADR, `.md` du workspace).
 #[derive(Debug, Clone)]
 pub enum EditTarget {
     Persona,
-    SkillFile(std::path::PathBuf),
     Document(std::path::PathBuf),
 }
 
@@ -82,8 +52,6 @@ pub enum View {
     Radar,
     /// Navigateur des documents de l'espace (persona, ADRs, docs).
     Docs,
-    /// Gestionnaire d'agents (rôle, skills, stats, édition).
-    Agents,
     /// Sélecteur d'espaces connus (récents) — ouvrir sans retaper le chemin.
     Spaces,
     /// Modifications de fichiers réalisées par les agents (liste + diff).
@@ -175,8 +143,6 @@ pub struct App {
     pub editor_target: EditTarget,
     /// Titre affiché de l'éditeur courant.
     pub editor_title: String,
-    /// Identifiants des skills Markdown reconnus de l'espace (pour marquer le menu Agents).
-    pub md_skills: Vec<String>,
     /// Documents de l'espace (rafraîchis à l'ouverture du navigateur).
     pub docs: Vec<SpaceDoc>,
     /// Index du document sélectionné dans le navigateur.
@@ -185,12 +151,6 @@ pub struct App {
     pub viewer: Option<Viewer>,
     /// Conversation avec le coordinateur en cours : `Some(tampon de saisie)`.
     pub chat: Option<String>,
-    /// Index de l'agent sélectionné dans le gestionnaire d'agents.
-    pub agent_sel: usize,
-    /// Édition d'un champ d'agent en cours : `Some((champ, tampon))`.
-    pub agent_prompt: Option<(AgentField, String)>,
-    /// Stats de session par agent (clé = nom).
-    pub agent_stats: HashMap<String, AgentStat>,
     /// Statut live par agent, pour la sidebar (clé = nom).
     pub agent_status: HashMap<String, LiveStatus>,
     /// Défilement du radar : nombre de lignes remontées depuis le bas (0 = suit le bas).
@@ -207,8 +167,6 @@ pub struct App {
     pub plan: Vec<PlanRow>,
     /// Vrai quand un plan attend l'approbation de l'utilisateur (Entrée/Échap).
     pub pending_plan: bool,
-    /// Sélecteur de skills ouvert (`Some`) ou fermé (`None`).
-    pub skill_picker: Option<SkillPicker>,
     /// Espaces connus (récents d'abord), pour le sélecteur `[3]`.
     pub spaces: Vec<KnownSpace>,
     /// Index de l'espace sélectionné dans le sélecteur.
@@ -237,18 +195,6 @@ pub enum PlanStatus {
 pub struct PlanRow {
     pub task: PlannedTask,
     pub status: PlanStatus,
-}
-
-// Types du sélecteur de skills : **partagés avec la GUI** via `orchestra-core::catalog` pour
-// garantir un comportement identique (cf. CLAUDE.md, règle de parité TUI ⇄ GUI).
-pub use orchestra_core::catalog::{SkillEntry, SkillKind};
-
-/// Sélecteur de skills pour un agent : catalogue navigable + cases à cocher.
-pub struct SkillPicker {
-    /// Index de l'agent édité (dans `config.agents`).
-    pub agent: usize,
-    pub entries: Vec<SkillEntry>,
-    pub cursor: usize,
 }
 
 /// Cadres du spinner d'activité (braille).
@@ -280,10 +226,6 @@ fn slug(name: &str) -> String {
 
 impl App {
     pub fn new(space: Option<ContextSpace>) -> Self {
-        let md_skills = space
-            .as_ref()
-            .map(|s| orchestra_core::markdown_skill::load_all(&s.root).into_iter().flat_map(|m| [m.id, m.name]).collect())
-            .unwrap_or_default();
         Self {
             space,
             events: Vec::new(),
@@ -297,21 +239,16 @@ impl App {
             editor: None,
             editor_target: EditTarget::Persona,
             editor_title: String::new(),
-            md_skills,
             docs: Vec::new(),
             doc_sel: 0,
             viewer: None,
             chat: None,
-            agent_sel: 0,
-            agent_prompt: None,
-            agent_stats: HashMap::new(),
             agent_status: HashMap::new(),
             radar_scroll: 0,
             busy: None,
             busy_since: None,
             plan: Vec::new(),
             pending_plan: false,
-            skill_picker: None,
             spinner: 0,
             notice: None,
             spaces: orchestra_core::registry::known_spaces(),
@@ -394,55 +331,6 @@ impl App {
         } else {
             self.notice = Some("Aucun espace chargé : impossible d'éditer le persona.".into());
         }
-    }
-
-    /// `[n]` (menu Agents) — saisit le nom d'un nouveau skill Markdown à créer.
-    pub fn start_new_skill(&mut self) {
-        if self.space.is_some() {
-            self.agent_prompt = Some((AgentField::NewSkill, String::new()));
-        } else {
-            self.notice = Some("Aucun espace chargé : impossible de créer un skill.".into());
-        }
-    }
-
-    /// Crée la fiche `.orchestra/skills/<nom>/SKILL.md` (via le cœur) puis l'ouvre dans
-    /// l'éditeur pour rédaction immédiate des instructions.
-    fn create_skill(&mut self, name: &str) {
-        let Some(root) = self.space.as_ref().map(|s| s.root.clone()) else {
-            self.notice = Some("Aucun espace chargé.".into());
-            return;
-        };
-        match orchestra_core::markdown_skill::create(&root, name, "") {
-            Ok(path) => {
-                self.refresh_md_skills();
-                let label = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string();
-                let content = orchestra_core::model::load_document(&path).unwrap_or_default();
-                self.editor = Some(Editor::from_str(&content));
-                self.editor_target = EditTarget::SkillFile(path);
-                self.editor_title = format!(" ✏ SKILL ({label})");
-                self.notice = Some("Skill créé — rédige ses instructions puis Ctrl+S.".into());
-            }
-            Err(e) => self.notice = Some(format!("Création impossible : {e}")),
-        }
-    }
-
-    /// Recharge la liste des skills Markdown reconnus (après création/édition).
-    pub fn refresh_md_skills(&mut self) {
-        self.md_skills = self
-            .space
-            .as_ref()
-            .map(|s| {
-                orchestra_core::markdown_skill::load_all(&s.root)
-                    .into_iter()
-                    .flat_map(|m| [m.id, m.name])
-                    .collect()
-            })
-            .unwrap_or_default();
-    }
-
-    /// Vrai si `id` correspond à un skill Markdown de l'espace (fiche d'instructions).
-    pub fn is_markdown_skill(&self, id: &str) -> bool {
-        self.md_skills.iter().any(|s| s == id)
     }
 
     /// `[2]` — bascule entre le radar et le navigateur de documents (rafraîchit la liste).
@@ -857,7 +745,6 @@ impl App {
         if let AgentEvent::Thinking { agent } = &ev {
             self.busy = Some(agent.clone());
             self.busy_since = Some(Instant::now());
-            self.agent_stats.entry(agent.clone()).or_default().thinking_start = Some(Instant::now());
             self.agent_status.insert(agent.clone(), LiveStatus::Thinking);
             return;
         }
@@ -875,18 +762,6 @@ impl App {
             _ => {}
         }
 
-        match &ev {
-            AgentEvent::Started { agent } => {
-                self.agent_stats.entry(agent.clone()).or_default().invocations += 1;
-            }
-            AgentEvent::Done { agent } | AgentEvent::Log { agent, .. } => {
-                let st = self.agent_stats.entry(agent.clone()).or_default();
-                if let Some(start) = st.thinking_start.take() {
-                    st.thinking += start.elapsed();
-                }
-            }
-            _ => {}
-        }
         match &ev {
             AgentEvent::Started { .. } => self.started += 1,
             AgentEvent::Done { .. } => self.done += 1,
@@ -917,251 +792,6 @@ impl App {
         self.plan.clear();
     }
 
-    // --- Gestionnaire d'agents (`[6]`) ---------------------------------------------
-
-    /// `[6]` — bascule entre le radar et le gestionnaire d'agents.
-    pub fn toggle_agents(&mut self) {
-        if self.view == View::Agents {
-            self.view = View::Radar;
-            self.agent_prompt = None;
-            return;
-        }
-        self.agent_sel = 0;
-        self.agent_prompt = None;
-        self.notice = None;
-        self.view = View::Agents;
-    }
-
-    fn agent_count(&self) -> usize {
-        self.space.as_ref().map(|s| s.config.agents.len()).unwrap_or(0)
-    }
-
-    pub fn agents_move(&mut self, delta: isize) {
-        let n = self.agent_count();
-        if n == 0 {
-            return;
-        }
-        let next = (self.agent_sel as isize + delta).clamp(0, n as isize - 1);
-        self.agent_sel = next as usize;
-    }
-
-    /// Agent sélectionné (lecture).
-    pub fn selected_agent(&self) -> Option<&AgentDef> {
-        self.space.as_ref()?.config.agents.get(self.agent_sel)
-    }
-
-    pub fn start_agent_rename(&mut self) {
-        if let Some(a) = self.selected_agent() {
-            self.agent_prompt = Some((AgentField::Name, a.name.clone()));
-        }
-    }
-    pub fn start_agent_role(&mut self) {
-        if let Some(a) = self.selected_agent() {
-            self.agent_prompt = Some((AgentField::Role, a.role.clone()));
-        }
-    }
-    /// Ouvre le **sélecteur de skills** pour l'agent sélectionné : catalogue (primitives +
-    /// fiches) avec descriptions, où l'on coche/décoche au lieu de taper des noms à l'aveugle.
-    pub fn open_skill_picker(&mut self) {
-        let Some(space) = self.space.as_ref() else { return };
-        if space.config.agents.get(self.agent_sel).is_none() {
-            return;
-        }
-        // Construction du catalogue **déléguée au cœur** (même logique que la GUI).
-        let entries = orchestra_core::catalog::skill_entries(space, self.agent_sel);
-        self.skill_picker = Some(SkillPicker { agent: self.agent_sel, entries, cursor: 0 });
-        self.notice = None;
-    }
-
-    pub fn picker_move(&mut self, delta: isize) {
-        if let Some(p) = self.skill_picker.as_mut() {
-            if p.entries.is_empty() {
-                return;
-            }
-            let last = p.entries.len() - 1;
-            p.cursor = (p.cursor as isize + delta).clamp(0, last as isize) as usize;
-        }
-    }
-
-    /// Coche/décoche le skill courant et réécrit la liste de l'agent (persistée).
-    pub fn picker_toggle(&mut self) {
-        let Some(p) = self.skill_picker.as_mut() else { return };
-        if let Some(e) = p.entries.get_mut(p.cursor) {
-            e.selected = !e.selected;
-        }
-        let agent_idx = p.agent;
-        let selected: Vec<String> = p.entries.iter().filter(|e| e.selected).map(|e| e.id.clone()).collect();
-        if let Some(space) = self.space.as_mut() {
-            if let Some(a) = space.config.agents.get_mut(agent_idx) {
-                a.skills = selected;
-            }
-        }
-        self.persist_config();
-    }
-
-    pub fn close_skill_picker(&mut self) {
-        self.skill_picker = None;
-    }
-
-    /// Ouvre la fiche `SKILL.md` du skill courant dans l'éditeur (uniquement pour une fiche).
-    pub fn picker_edit_fiche(&mut self) {
-        let Some(p) = self.skill_picker.as_ref() else { return };
-        let Some(e) = p.entries.get(p.cursor) else { return };
-        if e.kind != SkillKind::Fiche {
-            self.notice = Some("Seules les fiches sont éditables (les primitives sont du code).".into());
-            return;
-        }
-        let id = e.id.clone();
-        let Some(root) = self.space.as_ref().map(|s| s.root.clone()) else { return };
-        let path = orchestra_core::markdown_skill::skills_dir(&root).join(&id).join("SKILL.md");
-        let content = orchestra_core::model::load_document(&path).unwrap_or_default();
-        let label = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string();
-        self.editor = Some(Editor::from_str(&content));
-        self.editor_target = EditTarget::SkillFile(path);
-        self.editor_title = format!(" ✏ SKILL ({label})");
-        self.skill_picker = None;
-    }
-
-    /// `[b]` (sélecteur de skills) — **branche** le skill non branché sélectionné : crée sa
-    /// fiche (via le cœur), rafraîchit le catalogue et rouvre le sélecteur (le skill devient
-    /// une « fiche » éditable via `[e]`).
-    pub fn picker_wire_fiche(&mut self) {
-        let Some(p) = self.skill_picker.as_ref() else { return };
-        let Some(e) = p.entries.get(p.cursor) else { return };
-        if e.kind != SkillKind::Unwired {
-            self.notice = Some("Ce skill est déjà branché (primitive ou fiche).".into());
-            return;
-        }
-        let id = e.id.clone();
-        let Some(space) = self.space.as_ref() else { return };
-        match orchestra_core::catalog::wire_skill(space, &id) {
-            Ok(_) => {
-                self.refresh_md_skills();
-                self.open_skill_picker(); // recharge : le skill apparaît désormais comme « fiche »
-                self.notice = Some(format!("Skill « {id} » branché — [e] pour rédiger sa fiche."));
-            }
-            Err(err) => self.notice = Some(format!("Échec du branchement : {err}")),
-        }
-    }
-
-    pub fn start_agent_add(&mut self) {
-        if self.space.is_some() {
-            self.agent_prompt = Some((AgentField::Add, String::new()));
-        }
-    }
-
-    pub fn agent_prompt_push(&mut self, c: char) {
-        if let Some((_, buf)) = self.agent_prompt.as_mut() {
-            buf.push(c);
-        }
-    }
-    pub fn agent_prompt_backspace(&mut self) {
-        if let Some((_, buf)) = self.agent_prompt.as_mut() {
-            buf.pop();
-        }
-    }
-    pub fn cancel_agent_prompt(&mut self) {
-        self.agent_prompt = None;
-    }
-
-    /// Valide la saisie en cours et persiste les agents dans `config.json` (via le cœur).
-    pub fn submit_agent_prompt(&mut self) {
-        let Some((field, buf)) = self.agent_prompt.take() else { return };
-        let value = buf.trim().to_string();
-        if field == AgentField::NewSkill {
-            self.create_skill(&value); // chemin distinct : crée une fiche + ouvre l'éditeur
-            return;
-        }
-        let sel = self.agent_sel;
-        let Some(space) = self.space.as_mut() else { return };
-        match field {
-            AgentField::Name => {
-                if !value.is_empty() {
-                    if let Some(a) = space.config.agents.get_mut(sel) {
-                        a.name = value;
-                    }
-                }
-            }
-            AgentField::Role => {
-                if let Some(a) = space.config.agents.get_mut(sel) {
-                    a.role = value;
-                }
-            }
-            AgentField::Add => {
-                if !value.is_empty() {
-                    space.config.agents.push(AgentDef::new(value));
-                    self.agent_sel = space.config.agents.len() - 1;
-                }
-            }
-            AgentField::NewSkill => return, // traité plus haut (création de fiche)
-        }
-        self.persist_config();
-    }
-
-    /// Supprime l'agent sélectionné et persiste.
-    pub fn delete_selected_agent(&mut self) {
-        let sel = self.agent_sel;
-        let Some(space) = self.space.as_mut() else { return };
-        if sel < space.config.agents.len() {
-            let removed = space.config.agents.remove(sel);
-            if self.agent_sel >= space.config.agents.len() {
-                self.agent_sel = space.config.agents.len().saturating_sub(1);
-            }
-            self.persist_config();
-            if self.notice.is_none() {
-                self.notice = Some(format!("Agent « {} » supprimé.", removed.name));
-            }
-        }
-    }
-
-    /// `[t]` (menu Agents) — active/désactive l'**Agent Documentaliste** (prise de notes :
-    /// cours, exercices, corrections, fiches de révision…). Disponible quel que soit le type de
-    /// projet. Persisté.
-    pub fn toggle_documentalist(&mut self) {
-        let Some(space) = self.space.as_mut() else {
-            self.notice = Some("Aucun espace chargé.".into());
-            return;
-        };
-        space.config.documentalist_enabled = !space.config.documentalist_enabled;
-        let on = space.config.documentalist_enabled;
-        self.persist_config();
-        self.notice = Some(if on {
-            "Agent Documentaliste activé.".into()
-        } else {
-            "Agent Documentaliste désactivé.".into()
-        });
-    }
-
-    /// `[g]` (menu Agents) — ajoute le prochain agent **suggéré** (catalogue du type de projet)
-    /// pas encore présent, avec son rôle et ses skills par défaut. Persisté.
-    pub fn add_suggested_agent(&mut self) {
-        let Some(space) = self.space.as_ref() else {
-            self.notice = Some("Aucun espace chargé.".into());
-            return;
-        };
-        let mut suggestions = orchestra_core::catalog::inactive_agent_templates(space);
-        if suggestions.is_empty() {
-            self.notice = Some("Tous les agents suggérés sont déjà présents.".into());
-            return;
-        }
-        let agent = suggestions.remove(0);
-        let name = agent.name.clone();
-        if let Some(space) = self.space.as_mut() {
-            space.config.agents.push(agent);
-            self.agent_sel = space.config.agents.len() - 1;
-        }
-        self.persist_config();
-        self.notice = Some(format!("Agent suggéré « {name} » ajouté."));
-    }
-
-    fn persist_config(&mut self) {
-        if let Some(space) = self.space.as_ref() {
-            match space.save_config() {
-                Ok(()) => self.notice = Some("Agents enregistrés.".into()),
-                Err(e) => self.notice = Some(format!("Échec enregistrement : {e}")),
-            }
-        }
-    }
 
     /// Signalé par la boucle principale quand le canal se ferme (tous les agents finis).
     pub fn mark_finished(&mut self) {
@@ -1236,83 +866,6 @@ mod tests {
         app.on_event(AgentEvent::Log { agent: "Coordinateur".into(), msg: "ok".into() });
         assert!(app.busy.is_none());
         assert_eq!(app.events.len(), 1);
-    }
-
-    #[test]
-    fn agent_add_persists_to_config() {
-        use orchestra_core::model::project_type::ProjectType;
-        use orchestra_core::{scaffold_space, InitOptions};
-
-        let dir = std::env::temp_dir().join(format!("orch-agents-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        scaffold_space(
-            &dir,
-            InitOptions {
-                project_name: "T".into(),
-                project_type: ProjectType::Dev,
-                workspace_path: None,
-                documentalist_enabled: false,
-                integrations: Default::default(),
-                objectives: String::new(),
-                agents: Vec::new(),
-            },
-        )
-        .unwrap();
-
-        let mut app = App::new(Some(ContextSpace::load(&dir).unwrap()));
-        app.toggle_agents();
-        app.start_agent_add();
-        for c in "Agent_X".chars() {
-            app.agent_prompt_push(c);
-        }
-        app.submit_agent_prompt();
-
-        let reloaded = ContextSpace::load(&dir).unwrap();
-        assert!(reloaded.config.agents.iter().any(|a| a.name == "Agent_X"),
-            "le nouvel agent doit être persisté dans config.json");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn new_skill_creates_fiche_and_opens_editor() {
-        use orchestra_core::model::project_type::ProjectType;
-        use orchestra_core::{scaffold_space, InitOptions};
-
-        let dir = std::env::temp_dir().join(format!("orch-newskill-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        scaffold_space(
-            &dir,
-            InitOptions {
-                project_name: "T".into(),
-                project_type: ProjectType::Dev,
-                workspace_path: None,
-                documentalist_enabled: false,
-                integrations: Default::default(),
-                objectives: String::new(),
-                agents: Vec::new(),
-            },
-        )
-        .unwrap();
-
-        let mut app = App::new(Some(ContextSpace::load(&dir).unwrap()));
-        app.toggle_agents();
-        app.start_new_skill();
-        assert_eq!(app.agent_prompt.as_ref().map(|(f, _)| *f), Some(AgentField::NewSkill));
-        for c in "Creation Quiz".chars() {
-            app.agent_prompt_push(c);
-        }
-        app.submit_agent_prompt();
-
-        // La fiche est créée sur disque, reconnue, et ouverte dans l'éditeur (cible SkillFile).
-        assert!(dir.join(".orchestra/skills/Creation_Quiz/SKILL.md").is_file());
-        assert!(app.is_markdown_skill("Creation_Quiz"));
-        assert!(app.editor.is_some());
-        assert!(matches!(app.editor_target, EditTarget::SkillFile(_)));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

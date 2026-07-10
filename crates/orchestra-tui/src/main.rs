@@ -157,10 +157,6 @@ async fn event_loop(
                                                 .map(|space| space.save_persona(&text))
                                                 .transpose()
                                                 .map(|_| "Persona enregistré."),
-                                            app::EditTarget::SkillFile(path) => {
-                                                orchestra_core::markdown_skill::save(path, &text)
-                                                    .map(|()| "Skill enregistré.")
-                                            }
                                             app::EditTarget::Document(path) => {
                                                 orchestra_core::model::save_document(path, &text)
                                                     .map(|()| "Document enregistré.")
@@ -169,7 +165,6 @@ async fn event_loop(
                                         match result {
                                             Ok(msg) => {
                                                 app.editor = None;
-                                                app.refresh_md_skills();
                                                 app.notice = Some(msg.to_string());
                                             }
                                             Err(e) => {
@@ -223,46 +218,6 @@ async fn event_loop(
                                 }
                                 KeyCode::PageUp => app.radar_scroll_by(10),
                                 KeyCode::PageDown => app.radar_scroll_by(-10),
-                                _ => {}
-                            }
-                        } else if app.skill_picker.is_some() {
-                            // Sélecteur de skills : navigation + cocher + créer/éditer une fiche.
-                            match key.code {
-                                KeyCode::Up => app.picker_move(-1),
-                                KeyCode::Down => app.picker_move(1),
-                                KeyCode::Char(' ') => app.picker_toggle(),
-                                KeyCode::Char('n') => {
-                                    app.close_skill_picker();
-                                    app.start_new_skill();
-                                }
-                                KeyCode::Char('b') => app.picker_wire_fiche(),
-                                KeyCode::Char('e') => app.picker_edit_fiche(),
-                                KeyCode::Esc => app.close_skill_picker(),
-                                _ => {}
-                            }
-                        } else if app.agent_prompt.is_some() {
-                            // Saisie d'un champ d'agent (nom / rôle / skills / ajout).
-                            match key.code {
-                                KeyCode::Esc => app.cancel_agent_prompt(),
-                                KeyCode::Enter => app.submit_agent_prompt(),
-                                KeyCode::Backspace => app.agent_prompt_backspace(),
-                                KeyCode::Char(c) => app.agent_prompt_push(c),
-                                _ => {}
-                            }
-                        } else if app.view == View::Agents {
-                            // Gestionnaire d'agents : sélection + édition.
-                            match key.code {
-                                KeyCode::Up => app.agents_move(-1),
-                                KeyCode::Down => app.agents_move(1),
-                                KeyCode::Char('r') => app.start_agent_rename(),
-                                KeyCode::Char('o') => app.start_agent_role(),
-                                KeyCode::Char('s') => app.open_skill_picker(),
-                                KeyCode::Char('a') => app.start_agent_add(),
-                                KeyCode::Char('g') => app.add_suggested_agent(),
-                                KeyCode::Char('t') => app.toggle_documentalist(),
-                                KeyCode::Char('n') => app.start_new_skill(),
-                                KeyCode::Char('d') => app.delete_selected_agent(),
-                                KeyCode::Esc | KeyCode::Char('6') => app.toggle_agents(),
                                 _ => {}
                             }
                         } else if app.view == View::Docs {
@@ -485,7 +440,6 @@ async fn event_loop(
                                 KeyCode::Char('2') => app.toggle_docs(),
                                 KeyCode::Char('3') => app.toggle_spaces(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
-                                KeyCode::Char('6') if app.space.is_some() => app.toggle_agents(),
                                 KeyCode::Char('7') if app.space.is_some() => app.toggle_changes(),
                                 KeyCode::PageUp => app.radar_scroll_by(10),
                                 KeyCode::PageDown => app.radar_scroll_by(-10),

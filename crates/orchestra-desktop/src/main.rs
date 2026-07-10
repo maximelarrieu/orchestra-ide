@@ -45,8 +45,7 @@ fn app() -> Element {
     let pending = use_signal(|| false);
     let approve_tx = use_signal(|| None::<UnboundedSender<bool>>);
 
-    // État des vues Documents / Agents.
-    let selected_agent = use_signal(|| 0usize);
+    // État de la vue Documents.
     let doc_content = use_signal(String::new);
 
     // État de la conversation.
@@ -122,7 +121,6 @@ fn app() -> Element {
                     }
                 },
                 View::Documents => rsx! { components::DocumentsView { space, content: doc_content } },
-                View::Agents => rsx! { components::AgentsView { space, selected: selected_agent } },
                 View::Changes => rsx! { components::ChangesView { changes } },
             }
 

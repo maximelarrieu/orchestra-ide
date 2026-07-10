@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, LiveStatus, Phase, PlanStatus, SkillKind, View, Viewer};
+use crate::app::{App, LiveStatus, Phase, PlanStatus, View, Viewer};
 use crate::editor::Editor;
 use crate::markdown;
 
@@ -48,8 +48,6 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_text_editor(frame, center, ed, &app.editor_title);
     } else if let Some(v) = &app.viewer {
         render_markdown_viewer(frame, center, v);
-    } else if app.skill_picker.is_some() {
-        render_skill_picker(frame, center, app);
     } else {
         match app.view {
             View::Radar if !app.plan.is_empty() => {
@@ -62,7 +60,6 @@ pub fn render(frame: &mut Frame, app: &App) {
             }
             View::Radar => render_radar(frame, center, app),
             View::Docs => render_docs_list(frame, center, app),
-            View::Agents => render_agents(frame, center, app),
             View::Spaces => render_spaces(frame, center, app),
             View::Changes => render_changes(frame, center, app),
         }
@@ -115,7 +112,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(" [2] Docs   [4] Persona", Style::new().dark_gray())));
-    lines.push(Line::from(Span::styled(" [6] Agents  [7] Modifs", Style::new().dark_gray())));
+    lines.push(Line::from(Span::styled(" [7] Modifs", Style::new().dark_gray())));
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -146,86 +143,6 @@ fn truncate_str(s: &str, max: usize) -> String {
 
 /// Gestionnaire d'agents : liste + fiche (rôle, skills, stats de session).
 /// Ligne d'état de l'Agent Documentaliste (activable par `[t]`).
-fn documentalist_line(enabled: bool) -> Line<'static> {
-    let (state, style) = if enabled {
-        ("activé", Style::new().green().bold())
-    } else {
-        ("désactivé", Style::new().dark_gray())
-    };
-    Line::from(vec![
-        Span::styled("Agent Documentaliste : ", Style::new().bold()),
-        Span::styled(state, style),
-        Span::styled("  ([t] basculer — notes : cours, exercices, corrections, révisions)", Style::new().dark_gray()),
-    ])
-}
-
-fn render_agents(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::bordered().title(" 📇 GESTION DES AGENTS ");
-    let mut lines: Vec<Line> = Vec::new();
-    match &app.space {
-        Some(s) if !s.config.agents.is_empty() => {
-            for (i, a) in s.config.agents.iter().enumerate() {
-                let selected = i == app.agent_sel;
-                let role = if a.role.is_empty() { "(rôle non défini)".to_string() } else { a.role.clone() };
-                lines.push(Line::from(vec![
-                    Span::raw(if selected { "▶ " } else { "  " }),
-                    Span::styled(
-                        a.name.clone(),
-                        if selected { Style::new().cyan().bold() } else { Style::new().cyan() },
-                    ),
-                    Span::styled(format!(" — {role}"), Style::new().dark_gray()),
-                ]));
-            }
-            if let Some(a) = s.config.agents.get(app.agent_sel) {
-                let (inv, secs) = app
-                    .agent_stats
-                    .get(&a.name)
-                    .map(|st| (st.invocations, st.thinking.as_secs()))
-                    .unwrap_or((0, 0));
-                lines.push(Line::raw(""));
-                // Skills : exécutables en vert, simples étiquettes en gris « (inactif) ».
-                let mut spans = vec![Span::styled("Skills : ", Style::new().bold())];
-                if a.skills.is_empty() {
-                    spans.push(Span::styled("(aucun)", Style::new().dark_gray()));
-                } else {
-                    for (i, sk) in a.skills.iter().enumerate() {
-                        if i > 0 {
-                            spans.push(Span::raw(", "));
-                        }
-                        if orchestra_core::skills::is_executable(sk) {
-                            spans.push(Span::styled(sk.clone(), Style::new().green())); // primitive (code)
-                        } else if app.is_markdown_skill(sk) {
-                            spans.push(Span::styled(format!("{sk} (fiche)"), Style::new().cyan())); // SKILL.md
-                        } else {
-                            spans.push(Span::styled(format!("{sk} (inactif)"), Style::new().dark_gray()));
-                        }
-                    }
-                }
-                lines.push(Line::from(spans));
-                lines.push(Line::from(vec![
-                    Span::styled("Stats (session) : ", Style::new().bold()),
-                    Span::raw(format!("{inv} invocation(s) · {secs}s de réflexion")),
-                ]));
-            }
-            lines.push(Line::raw(""));
-            lines.push(documentalist_line(s.config.documentalist_enabled));
-        }
-        Some(s) => {
-            lines.push(Line::from(Span::styled(
-                "  Aucun agent. [a] ajouter · [g] ajouter un agent suggéré.",
-                Style::new().dark_gray(),
-            )));
-            lines.push(Line::raw(""));
-            lines.push(documentalist_line(s.config.documentalist_enabled));
-        }
-        None => lines.push(Line::from(Span::styled(
-            "  Aucun espace chargé.",
-            Style::new().dark_gray(),
-        ))),
-    }
-    frame.render_widget(Paragraph::new(lines).block(block), area);
-}
-
 /// Navigateur de dossiers : parcourt l'arborescence et repère les espaces (sans saisie).
 fn render_browse(frame: &mut Frame, area: Rect, b: &crate::app::BrowseState) {
     let block = Block::bordered().title(" 📂 PARCOURIR — choisir un espace ");
@@ -570,45 +487,6 @@ fn render_radar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(rows[start..end].to_vec()).block(block), area);
 }
 
-/// Sélecteur de skills : catalogue à cocher (primitives + fiches) avec descriptions.
-fn render_skill_picker(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(picker) = &app.skill_picker else { return };
-    let agent_name = app
-        .space
-        .as_ref()
-        .and_then(|s| s.config.agents.get(picker.agent))
-        .map(|a| a.name.clone())
-        .unwrap_or_default();
-    let block = Block::bordered().title(format!(" 🧩 SKILLS DE « {agent_name} » "));
-
-    let mut lines: Vec<Line> = Vec::new();
-    if picker.entries.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  Aucun skill disponible. [n] pour créer une fiche.",
-            Style::new().dark_gray(),
-        )));
-    }
-    for (i, e) in picker.entries.iter().enumerate() {
-        let sel = i == picker.cursor;
-        let check = if e.selected { "[x] " } else { "[ ] " };
-        let (badge, badge_style) = match e.kind {
-            SkillKind::Primitive => ("prim.", Style::new().green()),
-            SkillKind::Fiche => ("fiche", Style::new().cyan()),
-            SkillKind::Unwired => ("inact", Style::new().dark_gray()),
-        };
-        let name_style = if sel { Style::new().bold().reversed() } else { Style::new() };
-        let check_style = if e.selected { Style::new().green().bold() } else { Style::new().dark_gray() };
-        lines.push(Line::from(vec![
-            Span::raw(if sel { "▶ " } else { "  " }),
-            Span::styled(check, check_style),
-            Span::styled(format!("{:<26} ", e.id), name_style),
-            Span::styled(format!("{badge}  "), badge_style),
-            Span::styled(e.description.clone(), Style::new().dark_gray()),
-        ]));
-    }
-    frame.render_widget(Paragraph::new(lines).block(block), area);
-}
-
 /// Panneau du plan d'orchestration : une ligne par tâche (état + agent + dépendances + objectif).
 fn render_plan_panel(frame: &mut Frame, area: Rect, app: &App) {
     let title = if app.pending_plan {
@@ -753,12 +631,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" 📋 OPTIONS & MENUS ");
 
     // Les modes (éditeur / visualiseur / chat / saisie) ont priorité sur le menu.
-    let lines: Vec<Line> = if app.skill_picker.is_some() {
-        vec![Line::from(Span::styled(
-            "🧩 Skills — ↑↓ · [Espace] assigner/retirer · [b] brancher · [n] nouvelle fiche · [e] éditer · Échap",
-            Style::new().cyan(),
-        ))]
-    } else if app.pending_plan {
+    let lines: Vec<Line> = if app.pending_plan {
         vec![Line::from(Span::styled(
             "🗺  Plan proposé — [Entrée] exécuter l'orchestre · [Échap] annuler",
             Style::new().yellow().bold(),
@@ -791,18 +664,6 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
     } else if app.view == View::Spaces && app.input.is_none() {
         vec![Line::from(Span::styled(
             "🗂  Espaces — ↑↓ · Entrée ouvrir · [n] nouveau · [b] parcourir · [a] chemin · [x] retirer · Échap",
-            Style::new().cyan(),
-        ))]
-    } else if let Some((field, buf)) = &app.agent_prompt {
-        vec![Line::from(vec![
-            Span::styled(format!("{} : ", field.label()), Style::new().bold()),
-            Span::raw(buf.clone()),
-            Span::styled("▏", Style::new().cyan()),
-            Span::styled("   (Entrée = valider · Échap = annuler)", Style::new().dark_gray()),
-        ])]
-    } else if app.view == View::Agents {
-        vec![Line::from(Span::styled(
-            "📇 Agents — ↑↓ · [r] renom · [o] rôle · [s] skills · [a] ajout · [g] suggéré · [t] documentaliste · [n] skill · [d] suppr · Échap",
             Style::new().cyan(),
         ))]
     } else if let Some(buf) = &app.chat {
@@ -862,7 +723,7 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         vec![Line::from(Span::styled(notice.clone(), Style::new().yellow()))]
     } else {
         vec![Line::from(
-            "[5] Assistant  [1] Objectif rapide  [2] Docs  [3] Espace  [4] Persona  [6] Agents  [7] Modifs  [q] Quitter",
+            "[5] Assistant  [1] Objectif rapide  [2] Docs  [3] Session  [4] Persona  [7] Modifs  [q] Quitter",
         )]
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -926,18 +787,6 @@ mod tests {
         app.toggle_docs(); // retour radar
         app.start_space_input(); // invite de saisie dans le menu
         app.input_push('x');
-        terminal.draw(|f| render(f, &app)).unwrap();
-    }
-
-    /// Le gestionnaire d'agents (liste + fiche) et la saisie d'un champ doivent se rendre.
-    #[test]
-    fn renders_agents_view_and_prompt() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let mut app = demo_app();
-        app.toggle_agents();
-        terminal.draw(|f| render(f, &app)).unwrap();
-        app.start_agent_rename();
-        app.agent_prompt_push('Z');
         terminal.draw(|f| render(f, &app)).unwrap();
     }
 
