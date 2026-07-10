@@ -168,8 +168,13 @@ async fn run_agent_turn(
                     .enumerate()
                     .map(|(i, s)| crate::events::PlannedTask {
                         id: (i + 1).to_string(),
-                        agent: s.get("agent").and_then(Value::as_str).unwrap_or("").to_string(),
-                        objective: s.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
+                        agent: String::new(),
+                        // Tolère une chaîne simple ou un objet {title}.
+                        objective: s
+                            .as_str()
+                            .map(str::to_string)
+                            .or_else(|| s.get("title").and_then(Value::as_str).map(str::to_string))
+                            .unwrap_or_default(),
                         depends_on: Vec::new(),
                     })
                     .collect();
@@ -280,23 +285,16 @@ fn plan_tools() -> Vec<ToolSpec> {
             description:
                 "Publie (ou remplace) TON PLAN dans le panneau Tâches de l'interface. Appelle-le \
                  dès que tu as un plan, AVANT d'agir. Fournis `steps` : une liste ordonnée \
-                 d'étapes courtes (`title`), avec optionnellement l'`agent` prévu. Tiens ensuite \
-                 le plan à jour avec `Update_Step`."
+                 d'intitulés d'étapes courts (chaînes de texte). Tiens ensuite le plan à jour \
+                 avec `Update_Step`."
                     .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "steps": {
                         "type": "array",
-                        "description": "Étapes ordonnées du plan",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title": { "type": "string", "description": "Intitulé court de l'étape" },
-                                "agent": { "type": "string", "description": "Agent/rôle prévu (optionnel)" }
-                            },
-                            "required": ["title"]
-                        }
+                        "description": "Étapes ordonnées du plan (intitulés courts)",
+                        "items": { "type": "string" }
                     }
                 },
                 "required": ["steps"]

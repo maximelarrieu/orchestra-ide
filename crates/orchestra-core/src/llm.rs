@@ -22,6 +22,8 @@ const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const MAX_OUTPUT_TOKENS: u32 = 8192;
+/// Budget de réflexion Gemini 2.5 (borné pour laisser de la place à la réponse dans MAX_OUTPUT_TOKENS).
+const THINKING_BUDGET: u32 = 2048;
 
 /// Fournisseur d'IA disponible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,14 +223,34 @@ impl LlmClient {
             Provider::Gemini => {
                 let url = format!("{GEMINI_BASE}/{}:generateContent", backend.model);
                 let body = gemini_body(system, tools, conv);
-                let resp = self
-                    .http
-                    .post(url)
-                    .header("x-goog-api-key", &backend.api_key)
-                    .json(&body)
-                    .send()
-                    .await?;
-                parse_gemini(&checked_json(resp).await?)
+                // Gemini renvoie parfois `MALFORMED_FUNCTION_CALL` de façon transitoire : on
+                // réessaie quelques fois (la sortie varie d'un appel à l'autre) avant d'abandonner.
+                let mut last: Option<LlmError> = None;
+                for attempt in 0..3 {
+                    let resp = self
+                        .http
+                        .post(url.as_str())
+                        .header("x-goog-api-key", &backend.api_key)
+                        .json(&body)
+                        .send()
+                        .await?;
+                    let v = checked_json(resp).await?;
+                    match parse_gemini(&v) {
+                        Ok(blocks) => return Ok(blocks),
+                        Err(e) => {
+                            let malformed = v
+                                .pointer("/candidates/0/finishReason")
+                                .and_then(Value::as_str)
+                                == Some("MALFORMED_FUNCTION_CALL");
+                            if malformed && attempt < 2 {
+                                last = Some(e);
+                                continue;
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                Err(last.unwrap_or_else(|| LlmError::Shape("Gemini : échec après plusieurs tentatives".into())))
             }
         }
     }
@@ -389,12 +411,12 @@ fn gemini_body(system: &str, tools: &[ToolSpec], conv: &[Msg]) -> Value {
     let mut body = Map::new();
     body.insert("systemInstruction".into(), json!({ "parts": [{ "text": system }] }));
     body.insert("contents".into(), json!(contents));
-    // `thinkingBudget: 0` désactive le « raisonnement » interne de Gemini 2.5 (Flash) : sinon
-    // ses tokens de réflexion consomment `maxOutputTokens` et la réponse peut revenir **sans
-    // `parts`** (finishReason MAX_TOKENS) — ce qui rendait le LLM « injoignable ».
+    // Budget de « réflexion » de Gemini 2.5 **borné** (pas 0) : un peu de raisonnement réduit les
+    // appels d'outils mal formés (MALFORMED_FUNCTION_CALL), mais le plafond empêche la réflexion
+    // de consommer tout `maxOutputTokens` et de renvoyer une réponse **sans `parts`** (MAX_TOKENS).
     body.insert(
         "generationConfig".into(),
-        json!({ "maxOutputTokens": MAX_OUTPUT_TOKENS, "thinkingConfig": { "thinkingBudget": 0 } }),
+        json!({ "maxOutputTokens": MAX_OUTPUT_TOKENS, "thinkingConfig": { "thinkingBudget": THINKING_BUDGET } }),
     );
     if !tools.is_empty() {
         let decls: Vec<Value> = tools
@@ -423,6 +445,10 @@ fn parse_gemini(v: &Value) -> Result<Vec<Block>, LlmError> {
             let msg = match (finish, block) {
                 ("MAX_TOKENS", _) => {
                     "réponse tronquée par la limite de tokens (MAX_TOKENS) — aucun contenu renvoyé".to_string()
+                }
+                ("MALFORMED_FUNCTION_CALL", _) => {
+                    "Gemini a produit un appel d'outil mal formé (MALFORMED_FUNCTION_CALL) — réessaie, \
+                     ou reformule ta demande".to_string()
                 }
                 (_, b) if !b.is_empty() => format!("requête bloquée par Gemini (raison : {b})"),
                 ("SAFETY" | "RECITATION", _) => {
@@ -527,8 +553,8 @@ mod tests {
         assert_eq!(b["contents"][2]["parts"][0]["functionResponse"]["name"], "Read_File");
         assert_eq!(b["tools"][0]["functionDeclarations"][0]["name"], "Read_File");
         assert!(b.get("systemInstruction").is_some());
-        // Le « thinking » de Gemini 2.5 est désactivé pour ne pas épuiser le budget de sortie.
-        assert_eq!(b["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0);
+        // Le « thinking » de Gemini 2.5 est borné (pas d'épuisement du budget de sortie).
+        assert_eq!(b["generationConfig"]["thinkingConfig"]["thinkingBudget"], 2048);
     }
 
     #[test]

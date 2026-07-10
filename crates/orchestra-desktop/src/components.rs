@@ -185,12 +185,15 @@ pub fn TaskRail(
                         } else {
                             ("○", "planrow")
                         };
+                        let agent = row.agent.clone();
                         rsx! {
                             li { key: "{row.id}", class: "{cls}",
                                 span { class: "planicon", "{icon}" }
                                 div { class: "plantext",
                                     span { class: "planobj", "{row.objective}" }
-                                    span { class: "planagent", "{row.agent}" }
+                                    if !agent.is_empty() {
+                                        span { class: "planagent", "{agent}" }
+                                    }
                                 }
                             }
                         }
