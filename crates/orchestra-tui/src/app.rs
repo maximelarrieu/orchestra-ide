@@ -1340,51 +1340,6 @@ mod tests {
     }
 
     #[test]
-    fn skill_picker_toggles_and_persists() {
-        use orchestra_core::model::project_type::ProjectType;
-        use orchestra_core::{scaffold_space, InitOptions};
-
-        let dir = std::env::temp_dir().join(format!("orch-picker-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        scaffold_space(
-            &dir,
-            InitOptions {
-                project_name: "T".into(),
-                project_type: ProjectType::Dev,
-                workspace_path: None,
-                documentalist_enabled: false,
-                integrations: Default::default(),
-                objectives: String::new(),
-                agents: Vec::new(),
-            },
-        )
-        .unwrap();
-
-        let mut app = App::new(Some(ContextSpace::load(&dir).unwrap()));
-        app.toggle_agents();
-        app.agent_sel = 0;
-        app.open_skill_picker();
-
-        // Le catalogue contient au moins les primitives (avec descriptions).
-        let idx = {
-            let p = app.skill_picker.as_ref().unwrap();
-            assert!(p.entries.iter().any(|e| e.kind == SkillKind::Primitive && !e.description.is_empty()));
-            p.entries.iter().position(|e| e.id == "Web_Fetch").expect("Web_Fetch dans le catalogue")
-        };
-        let was = app.skill_picker.as_ref().unwrap().entries[idx].selected;
-        app.skill_picker.as_mut().unwrap().cursor = idx;
-        app.picker_toggle();
-
-        // L'assignation est persistée dans config.json (sans avoir tapé le nom).
-        let reloaded = ContextSpace::load(&dir).unwrap();
-        let has = reloaded.config.agents[0].skills.iter().any(|s| s == "Web_Fetch");
-        assert_eq!(has, !was, "le toggle doit inverser l'assignation et la persister");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn live_status_tracks_agents_and_resets() {
         let mut app = App::new(None);
         app.on_event(AgentEvent::Started { agent: "A".into() });

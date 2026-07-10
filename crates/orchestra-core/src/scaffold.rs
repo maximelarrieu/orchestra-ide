@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use crate::error::OrchestraError;
 use crate::model::config::{AgentDef, ProjectConfig};
 use crate::model::project_type::ProjectType;
-use crate::model::skill_id::{default_agents, default_skills};
 use crate::model::space::ContextSpace;
 
 /// Les choix collectés auprès de l'utilisateur par l'assistant d'initialisation.
@@ -35,21 +34,17 @@ pub struct InitOptions {
 }
 
 impl InitOptions {
-    /// Traduit l'intention en configuration complète, en pré-remplissant la matrice
-    /// de Skills et la squad d'agents (celle choisie, sinon les agents par défaut du type).
+    /// Traduit l'intention en configuration. **Aucun agent ni skill pré-défini** n'est injecté :
+    /// une session démarre vierge, et l'Orchestrateur déploie sa propre équipe à la volée
+    /// (`spawn_agent`). Les champs `agents`/`skills` restent vides (héritage schéma).
     pub fn into_config(self) -> ProjectConfig {
-        let agents = if self.agents.is_empty() {
-            default_agents(self.project_type)
-        } else {
-            self.agents
-        };
         ProjectConfig {
             project_name: self.project_name,
             project_type: self.project_type,
             workspace_path: self.workspace_path,
             documentalist_enabled: self.documentalist_enabled,
-            skills: default_skills(self.project_type),
-            agents,
+            skills: Vec::new(),
+            agents: self.agents, // vide par défaut (plus de roster pré-câblé)
             integrations: self.integrations,
         }
     }
@@ -184,12 +179,12 @@ mod tests {
         // Les objectifs saisis se retrouvent dans le persona.
         assert!(space.persona.as_deref().unwrap().contains("API de paiement"));
 
-        // La config est rechargeable et reflète les choix + les défauts injectés.
+        // La config est rechargeable ; une session démarre SANS agents/skills pré-câblés.
         assert_eq!(space.config.project_name, "Mon_App");
         assert_eq!(space.config.project_type, ProjectType::Dev);
         assert!(space.config.documentalist_enabled);
-        assert_eq!(space.config.skills, default_skills(ProjectType::Dev));
-        assert_eq!(space.config.agents, default_agents(ProjectType::Dev));
+        assert!(space.config.skills.is_empty(), "aucun skill pré-défini");
+        assert!(space.config.agents.is_empty(), "aucun agent pré-défini");
         assert!(space.persona.is_some());
         assert!(tmp.0.join(".orchestra").join("adr").is_dir());
     }
