@@ -474,6 +474,23 @@ l'autre sans rien perdre.
   courant. Barre d'onglets cliquable (basculer / fermer).
 - **Suite** : Phase 3 (refonte UI façon Cursor : explorateur · centre code/diff · chat).
 
+## Refonte — Phase 3 (suite) : layout fidèle au template + thèmes 🚧 (desktop)
+
+Reproduction du template fourni (façon Cursor / Claude desktop), **épuré**, avec panneaux
+repliables et bascule de thème.
+- **Layout 5 zones** : rail **Checkpoints** (fin) · **Explorateur** (repliable) · **Conversation** ·
+  **Visualiseur** code+diff (repliable) · rail **Tâches / Mémoire / Contexte**. Replié, l'écran
+  correspond exactement au template (explorateur caché → checkpoints + conversation + code + tâches).
+- **Barre supérieure** : onglets de session (browser-like) + « + » + bascules (explorateur,
+  visualiseur, thème). Pas de bouton « parasite » : chaque contrôle agit.
+- **Thème clair par défaut**, **sombre** en un clic (variables CSS, bascule instantanée).
+- **Réel léger** : Checkpoints = jalons de conversation (clic → défilement, navigationnel) ;
+  **Terminal** = sortie réelle des commandes des agents (nouvel `AgentEvent::Terminal`) ;
+  **Mémoire** = notes de `.orchestra/memory.md` (`memory::entries`) ; **Contexte** = fichiers
+  lus/écrits dans la session ; pastille de statut = état réel de l'agent.
+- Fenêtre par défaut 1280×820 (tient en 1920×1080). Warning `draft` corrigé.
+- `orchestra-core` + `orchestra-tui` verts, `clippy` sans warning ; desktop à vérifier au build local.
+
 ## Refonte — Phase 3 : shell « Cursor » + « orchestre en verre » 🚧 (desktop)
 
 Refonte de l'UI desktop en **3 panneaux** (façon Cursor / Claude desktop) et introduction de

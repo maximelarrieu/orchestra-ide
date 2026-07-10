@@ -149,6 +149,17 @@ async fn run_agent_turn(
                     });
                 }
                 skills::execute_skill(&name, &input, &ctx.workspace).await
+            } else if name == skills::EXEC_COMMAND {
+                // Commande shell : on relaie la sortie vers le panneau Terminal de l'UI.
+                let cmd = input.get("command").and_then(Value::as_str).unwrap_or("").to_string();
+                let outcome = skills::execute_skill(&name, &input, &ctx.workspace).await;
+                let _ = tx.send(AgentEvent::Terminal {
+                    agent: label.to_string(),
+                    command: cmd,
+                    output: outcome.text.clone(),
+                    ok: !outcome.is_error,
+                });
+                outcome
             } else if name == SPAWN_AGENT {
                 // L'Orchestrateur déploie un sous-agent ad hoc (seul lui a cet outil → pas de récursion).
                 let role = input.get("role").and_then(Value::as_str).unwrap_or("Agent").trim().to_string();

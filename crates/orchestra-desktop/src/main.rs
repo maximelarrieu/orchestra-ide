@@ -95,29 +95,63 @@ fn app() -> Element {
         state::start_session_chat(sessions, idx);
     };
 
+    // État d'affichage : panneaux repliables + thème.
+    let mut show_explorer = use_signal(|| true);
+    let mut show_viewer = use_signal(|| true);
+    let mut dark = use_signal(|| false); // thème clair par défaut
+    let mut show_spacebar = use_signal(|| false);
+
     let has_session = space().is_some();
+    let project = space().map(|s| s.config.project_name).unwrap_or_else(|| "Orchestra".into());
+    let status_pill = if thinking() { "réfléchit…" } else if has_session { "prêt" } else { "—" };
+    let app_cls = if dark() { "app dark" } else { "app light" };
+    // La barre d'espaces s'affiche à la demande (+) ou tant qu'aucune session n'est ouverte.
+    let spacebar_open = show_spacebar() || !has_session;
 
     rsx! {
         style { {styles::CSS} }
-        div { class: "app",
-            // En-tête compact : titre + barre d'espaces (ouvrir/créer) + onglets.
+        div { class: "{app_cls}",
+            // --- Barre supérieure : onglets de session + « + » + réglages d'affichage ---
             div { class: "topbar",
-                span { class: "brand", "🎻 Orchestra IDE" }
+                span { class: "brand", "🎻 Orchestra" }
+                { components::tabs_bar(sessions) }
+                button { class: "tabadd", title: "Ouvrir / créer un espace",
+                    onclick: move |_| show_spacebar.set(!show_spacebar()), "+" }
+                div { class: "topspacer" }
+                button { class: "icontoggle",
+                    title: "Explorateur de fichiers",
+                    onclick: move |_| show_explorer.set(!show_explorer()),
+                    "🗂" }
+                button { class: "icontoggle",
+                    title: "Visualiseur de fichier",
+                    onclick: move |_| show_viewer.set(!show_viewer()),
+                    "📄" }
+                button { class: "icontoggle",
+                    title: "Thème clair / sombre",
+                    onclick: move |_| dark.set(!dark()),
+                    if dark() { "☀" } else { "☾" } }
+            }
+
+            // Sélecteur d'espaces (ouvrir / créer / récents) — à la demande.
+            if spacebar_open {
                 components::SpaceBar { sessions, known }
             }
-            { components::tabs_bar(sessions) }
 
-            // Shell 3 panneaux (façon Cursor) : explorateur · centre · conversation.
+            // --- Shell : checkpoints · explorateur · conversation · visualiseur · tâches ---
             div { class: "ide",
-                div { class: "pane left",
-                    components::FileExplorer { sessions, selected }
+                { components::checkpoint_rail(messages) }
+
+                if show_explorer() {
+                    div { class: "pane explorerpane",
+                        components::FileExplorer { sessions, selected }
+                    }
                 }
-                div { class: "pane center",
-                    components::CenterPane { sessions, selected }
-                }
-                div { class: "pane right",
-                    div { class: "righthead",
-                        span { "Orchestrateur" }
+
+                div { class: "pane conversation",
+                    div { class: "convhead",
+                        span { class: "agentname", "Agent — {project}" }
+                        span { class: "statuspill", "{status_pill}" }
+                        div { class: "convspacer" }
                         button { class: "ghost", onclick: start_chat, "↻ Nouvelle conversation" }
                     }
                     components::SquadPanel { status: agents_status }
@@ -129,19 +163,28 @@ fn app() -> Element {
                         }
                         div { class: "chatcol",
                             if user_tx().is_some() {
-                                {components::chat_view(messages, thinking, draft, user_tx, plan, pending, approve_tx)}
+                                {components::chat_view(messages, thinking, draft, user_tx)}
                             }
                         }
                     } else {
-                        p { class: "hint", "Ouvre ou crée un espace pour discuter avec l'Orchestrateur." }
+                        p { class: "hint", "Ouvre ou crée un espace (+) pour discuter avec l'Orchestrateur." }
                     }
                 }
+
+                if show_viewer() {
+                    div { class: "pane viewer",
+                        components::CenterPane { sessions, selected }
+                        { components::terminal_panel(sessions) }
+                    }
+                }
+
+                components::TaskRail { plan, pending, approve_tx, sessions }
             }
 
-            // Barre de statut (façon VS Code).
+            // --- Barre de statut ---
             div { class: "statusbar",
                 span { class: "sb-item",
-                    if let Some(sp) = space() { "📁 {sp.config.project_name}" } else { "Aucun espace" }
+                    if has_session { "📁 {project}" } else { "Aucun espace" }
                 }
                 span { class: "sb-item", "🎻 Orchestra IDE" }
             }

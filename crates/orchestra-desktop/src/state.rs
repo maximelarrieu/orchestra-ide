@@ -22,6 +22,15 @@ pub struct FileActivity {
     pub write: bool,
 }
 
+/// Une commande exécutée par un agent (pour le panneau Terminal).
+#[derive(Clone, PartialEq, Eq)]
+pub struct TermEntry {
+    pub agent: String,
+    pub command: String,
+    pub output: String,
+    pub ok: bool,
+}
+
 /// État vivant d'une **session** (un onglet) : l'Espace + toute sa conversation. Chaque session
 /// garde **son propre contexte et son historique** ; on passe de l'une à l'autre sans rien
 /// perdre, et une session en arrière-plan continue de recevoir ses événements.
@@ -35,6 +44,8 @@ pub struct DesktopSession {
     pub status: HashMap<String, AgStatus>,
     /// Activité live des agents par fichier (chemin relatif → dernier accès). Annote l'explorateur.
     pub activity: HashMap<String, FileActivity>,
+    /// Historique des commandes exécutées (panneau Terminal).
+    pub terminal: Vec<TermEntry>,
     /// Canal d'envoi des messages au coordinateur (présent une fois la conversation démarrée).
     pub user_tx: Option<UnboundedSender<String>>,
     /// Canal d'approbation de plan.
@@ -54,6 +65,7 @@ impl DesktopSession {
             changes: Vec::new(),
             status: HashMap::new(),
             activity: HashMap::new(),
+            terminal: Vec::new(),
             user_tx: None,
             approve_tx: None,
             started: false,
@@ -100,7 +112,6 @@ pub struct PlanRow {
     pub agent: String,
     pub status: String,
     pub objective: String,
-    pub deps: Vec<String>,
 }
 
 /// Un fichier modifié par un agent (pour la vue Modifications).
@@ -154,7 +165,6 @@ fn plan_row(t: orchestra_core::events::PlannedTask) -> PlanRow {
         agent: t.agent,
         status: "en attente".into(),
         objective: t.objective,
-        deps: t.depends_on,
     }
 }
 
@@ -205,6 +215,10 @@ fn apply_event(sess: &mut DesktopSession, ev: AgentEvent) {
         }
         AgentEvent::TaskDone { id } => set_status(sess, &id, "fait ✓"),
         AgentEvent::TaskFailed { id, .. } => set_status(sess, &id, "échec ✗"),
+        AgentEvent::Terminal { agent, command, output, ok } => {
+            mark(sess, &agent, AgStatus::Working);
+            sess.terminal.push(TermEntry { agent, command, output, ok });
+        }
         AgentEvent::FileRead { agent, path } => {
             mark(sess, &agent, AgStatus::Working);
             sess.activity.insert(path, FileActivity { agent, write: false });
@@ -244,6 +258,7 @@ pub fn start_session_chat(mut sessions: Signal<Sessions<DesktopSession>>, index:
             sess.status.clear();
             sess.changes.clear();
             sess.activity.clear();
+            sess.terminal.clear();
             sess.user_tx = Some(handle.user);
             sess.approve_tx = Some(handle.approve);
             sess.started = true;
@@ -276,6 +291,12 @@ pub fn save_document(path: &Path, content: &str) -> bool {
 /// Alimente le panneau central de l'explorateur.
 pub fn read_file_rel(root: &Path, rel: &str) -> Option<String> {
     std::fs::read_to_string(root.join(rel)).ok()
+}
+
+/// Notes de la mémoire partagée de l'espace (`.orchestra/memory.md`), plus récentes d'abord.
+/// Alimente le panneau « Memory ».
+pub fn memory_entries(root: &Path) -> Vec<String> {
+    orchestra_core::memory::entries(root)
 }
 
 // --- Espaces : registre des espaces connus (récents) ---------------------------------------

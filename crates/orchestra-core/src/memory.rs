@@ -34,6 +34,24 @@ pub fn read(root: &Path) -> String {
     fs::read_to_string(memory_path(root)).unwrap_or_default()
 }
 
+/// Notes de la mémoire, texte seul (sans le préfixe `- [#N · agent]`), plus récentes d'abord.
+/// Alimente le panneau « Memory » de l'UI.
+pub fn entries(root: &Path) -> Vec<String> {
+    let mem = read(root);
+    let mut out: Vec<String> = mem
+        .lines()
+        .filter_map(|l| {
+            let l = l.strip_prefix("- [#")?;
+            // Après le `]` de l'en-tête `[#N · agent]`, le reste est la note.
+            let (_, note) = l.split_once(']')?;
+            let note = note.trim();
+            (!note.is_empty()).then(|| note.to_string())
+        })
+        .collect();
+    out.reverse(); // plus récentes en tête
+    out
+}
+
 /// Ajoute une note attribuée à `agent`. Crée le fichier (avec en-tête) au besoin. Les notes
 /// sont numérotées (`#N`) pour un ordre déterministe, sans dépendance à une horloge.
 pub fn append(root: &Path, agent: &str, note: &str) -> Result<(), OrchestraError> {
@@ -190,6 +208,19 @@ mod tests {
         let recall = execute(RECALL, &json!({ "query": "annonces" }), &root, "x");
         assert!(recall.text.contains("12 annonces retenues"));
         assert!(recall.text.contains("Agent_Filtrage"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn entries_parses_notes_recent_first() {
+        let root = tmp();
+        append(&root, "Agent_A", "utilise pnpm, pas npm").unwrap();
+        append(&root, "Agent_B", "jamais migrer la prod sans validation").unwrap();
+        let e = entries(&root);
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0], "jamais migrer la prod sans validation"); // plus récente d'abord
+        assert_eq!(e[1], "utilise pnpm, pas npm");
+        assert!(entries(&tmp()).is_empty()); // mémoire vide
         let _ = fs::remove_dir_all(&root);
     }
 

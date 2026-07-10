@@ -703,6 +703,11 @@ impl App {
                 });
                 return;
             }
+            // Activité fichier / terminal : met à jour le statut live sans polluer le radar.
+            AgentEvent::FileRead { agent, .. } | AgentEvent::Terminal { agent, .. } => {
+                self.agent_status.insert(agent.clone(), LiveStatus::Working);
+                return;
+            }
             _ => {}
         }
 

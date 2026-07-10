@@ -16,9 +16,6 @@ use crate::state::{self, AgStatus, ChatMsg, DesktopSession, FileActivity, KnownS
 pub fn tabs_bar(mut sessions: Signal<Sessions<DesktopSession>>) -> Element {
     let titles = sessions.read().titles();
     let active = sessions.read().active_index();
-    if titles.len() < 2 {
-        return rsx! {};
-    }
     rsx! {
         div { class: "sessiontabs",
             for (i, title) in titles.into_iter().enumerate() {
@@ -71,24 +68,162 @@ pub fn SquadPanel(status: Signal<HashMap<String, AgStatus>>) -> Element {
     }
 }
 
-/// Panneau Plan : une ligne par tâche (id · agent · statut · objectif · dépendances).
-pub fn plan_panel(rows: &[PlanRow]) -> Element {
+/// Rail **Checkpoints** (colonne fine à gauche) : une pastille par message de l'Orchestrateur —
+/// autant de **jalons** de la conversation. Cliquer une pastille **défile** la conversation
+/// jusqu'à ce message (navigationnel, sans restauration). La dernière est mise en évidence.
+pub fn checkpoint_rail(messages: Signal<Vec<ChatMsg>>) -> Element {
+    let msgs = messages();
+    let marks: Vec<usize> = msgs
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m.kind, MsgKind::Coordinator))
+        .map(|(i, _)| i)
+        .collect();
+    let last = marks.last().copied();
     rsx! {
-        h3 { "Plan" }
-        ul { class: "plan",
-            for row in rows {
-                {
-                    let deps = if row.deps.is_empty() { String::new() } else { format!("⟸ {}", row.deps.join(", ")) };
-                    rsx! {
-                        li { key: "{row.id}",
-                            div { class: "planhead", "{row.id} · {row.agent} — {row.status}" }
-                            div { class: "planobj", "{row.objective}" }
-                            if !deps.is_empty() {
-                                div { class: "plandeps", "{deps}" }
+        div { class: "checkpoints",
+            span { class: "cplabel", "CHECKPOINTS" }
+            div { class: "cpdots",
+                for idx in marks {
+                    {
+                        let cls = if Some(idx) == last { "cpdot on" } else { "cpdot" };
+                        rsx! {
+                            button { class: "{cls}", title: "Aller à ce jalon",
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        let js = format!(
+                                            "var e=document.getElementById('msg-{idx}'); if(e){{e.scrollIntoView({{behavior:'smooth',block:'center'}});}}"
+                                        );
+                                        let _ = dioxus::document::eval(&js).await;
+                                    });
+                                }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Panneau **Terminal** (sous le visualiseur de code) : les commandes réellement exécutées par
+/// les agents et leur sortie.
+pub fn terminal_panel(sessions: Signal<Sessions<DesktopSession>>) -> Element {
+    let runs = {
+        let s = sessions.read();
+        s.active().map(|a| a.terminal.clone()).unwrap_or_default()
+    };
+    rsx! {
+        div { class: "termpanel",
+            div { class: "termhead", "TERMINAL" }
+            div { class: "termbody",
+                if runs.is_empty() {
+                    p { class: "muted", "Les commandes lancées par les agents s'afficheront ici." }
+                }
+                for (i, r) in runs.into_iter().enumerate() {
+                    {
+                        let mark = if r.ok { "✓" } else { "✗" };
+                        rsx! {
+                            div { key: "{i}", class: "termrun",
+                                div { class: "termcmd", "→ {r.command}" }
+                                pre { class: "termout", "{r.output}" }
+                                div { class: "termexit", "{mark} {r.agent}" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Rail **Tâches** (droite) : plan de l'Orchestrateur (checklist + approbation), Mémoire de
+/// l'espace et Contexte (fichiers touchés). Réel : plan/mémoire/contexte viennent des données
+/// vivantes de la session.
+#[component]
+pub fn TaskRail(
+    plan: Signal<Vec<PlanRow>>,
+    mut pending: Signal<bool>,
+    approve_tx: Signal<Option<UnboundedSender<bool>>>,
+    sessions: Signal<Sessions<DesktopSession>>,
+) -> Element {
+    let rows = plan();
+    let done = rows.iter().filter(|r| r.status.contains('✓')).count();
+    let total = rows.len();
+    // Mémoire + contexte de la session active.
+    let (memory, context) = {
+        let s = sessions.read();
+        match s.active() {
+            Some(a) => {
+                let mem = state::memory_entries(&a.space.root);
+                let mut ctx: Vec<String> = a.activity.keys().cloned().collect();
+                ctx.sort();
+                (mem, ctx)
+            }
+            None => (Vec::new(), Vec::new()),
+        }
+    };
+    let is_pending = pending();
+
+    rsx! {
+        div { class: "taskrail",
+            // --- Plan ---
+            div { class: "railhead", span { "TASK · PLAN" } span { class: "railcount", "{done}/{total} done" } }
+            if rows.is_empty() {
+                p { class: "muted small", "Le plan de l'Orchestrateur apparaîtra ici lorsqu'il en proposera un." }
+            }
+            ul { class: "plan",
+                for row in rows {
+                    {
+                        let (icon, cls) = if row.status.contains('✓') {
+                            ("✓", "planrow done")
+                        } else if row.status.contains("cours") {
+                            ("◐", "planrow running")
+                        } else if row.status.contains('✗') {
+                            ("✗", "planrow failed")
+                        } else {
+                            ("○", "planrow")
+                        };
+                        rsx! {
+                            li { key: "{row.id}", class: "{cls}",
+                                span { class: "planicon", "{icon}" }
+                                div { class: "plantext",
+                                    span { class: "planobj", "{row.objective}" }
+                                    span { class: "planagent", "{row.agent}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if is_pending {
+                div { class: "approvecard",
+                    span { class: "small", "L'Orchestrateur attend ton feu vert." }
+                    button { class: "go",
+                        onclick: move |_| {
+                            if let Some(tx) = approve_tx() { let _ = tx.send(true); }
+                            pending.set(false);
+                        },
+                        "Approve →" }
+                }
+            }
+
+            // --- Mémoire ---
+            div { class: "railhead", span { "MEMORY" } }
+            if memory.is_empty() {
+                p { class: "muted small", "Vide — les agents y consignent faits et décisions durables." }
+            }
+            for (i, m) in memory.into_iter().enumerate() {
+                div { key: "m{i}", class: "memcard", "{m}" }
+            }
+
+            // --- Contexte ---
+            div { class: "railhead", span { "CONTEXT · {context.len()}" } }
+            if context.is_empty() {
+                p { class: "muted small", "Fichiers lus/écrits par les agents pendant la session." }
+            }
+            for (i, c) in context.into_iter().enumerate() {
+                div { key: "c{i}", class: "ctxrow", "@ {c}" }
             }
         }
     }
@@ -417,7 +552,7 @@ pub fn CenterPane(
     let (project, root, sel, diff, content) = {
         let s = sessions.read();
         let Some(sess) = s.active() else {
-            return rsx! { div { class: "center", div { class: "welcome",
+            return rsx! { div { class: "filepane", div { class: "welcome",
                 h2 { "Orchestra IDE" }
                 p { class: "muted", "Ouvre ou crée un espace pour commencer." }
             } } };
@@ -433,7 +568,7 @@ pub fn CenterPane(
     };
 
     let Some(rel) = sel else {
-        return rsx! { div { class: "center", div { class: "welcome",
+        return rsx! { div { class: "filepane", div { class: "welcome",
             h2 { "🎻 {project}" }
             p { class: "muted", "Sélectionne un fichier à gauche, ou discute avec l'Orchestrateur à droite. Les fichiers que les agents lisent et modifient s'illuminent dans l'explorateur en temps réel." }
         } } };
@@ -447,7 +582,7 @@ pub fn CenterPane(
     let raw_for_edit = raw.clone(); // capture séparée pour le bouton « Éditer » (raw sert aussi au rendu)
 
     rsx! {
-        div { class: "center",
+        div { class: "filepane",
             div { class: "centerhead",
                 span { class: "path", "{rel}" }
                 if diff.is_none() {
@@ -492,16 +627,13 @@ pub fn CenterPane(
 }
 
 
-/// Vue Chat : conversation avec le coordinateur (bulles + saisie + approbation de plan inline).
-#[allow(clippy::too_many_arguments)]
+/// Vue Chat : conversation avec l'Orchestrateur (bulles + saisie). Le plan/approbation vit
+/// désormais dans le rail Tâches (à droite), pas ici.
 pub fn chat_view(
     messages: Signal<Vec<ChatMsg>>,
     thinking: Signal<bool>,
     mut draft: Signal<String>,
     user_tx: Signal<Option<UnboundedSender<String>>>,
-    plan: Signal<Vec<PlanRow>>,
-    mut pending: Signal<bool>,
-    approve_tx: Signal<Option<UnboundedSender<bool>>>,
 ) -> Element {
     // Envoi via le bouton…
     let send_click = move |_| {
@@ -531,27 +663,15 @@ pub fn chat_view(
         }
         draft.set(String::new());
     };
-    let approve = move |_| {
-        if let Some(tx) = approve_tx() {
-            let _ = tx.send(true);
-        }
-        pending.set(false);
-    };
 
     rsx! {
         div { class: "chat",
             div { class: "messages",
                 for (i, m) in messages().into_iter().enumerate() {
-                    ChatBubble { key: "{i}", msg: m }
+                    ChatBubble { key: "{i}", idx: i, msg: m }
                 }
                 if thinking() {
                     div { class: "bubble coord", "…" }
-                }
-            }
-            if pending() {
-                div { class: "planbox",
-                    {plan_panel(&plan())}
-                    button { class: "go", onclick: approve, "✓ Approuver et exécuter le plan" }
                 }
             }
             div { class: "composer",
@@ -559,37 +679,38 @@ pub fn chat_view(
                     class: "chatinput",
                     rows: "2",
                     value: "{draft}",
-                    placeholder: "Écris au chef d'orchestre…  (Entrée pour envoyer · Maj+Entrée pour un saut de ligne)",
+                    placeholder: "Message à l'Orchestrateur…  (Entrée pour envoyer · Maj+Entrée = saut de ligne)",
                     oninput: move |e| draft.set(e.value()),
                     onkeydown: send_key,
                 }
-                button { onclick: send_click, "Envoyer" }
+                button { class: "send", onclick: send_click, "↑" }
             }
         }
     }
 }
 
-/// Une bulle de chat. Les messages d'**agent** sont **repliés par défaut** (le coordinateur
-/// les résume) : une flèche ▶/▼ déroule/cache leur texte. Chaque bulle a son propre état
-/// d'ouverture, d'où un vrai composant.
+/// Une bulle de chat. Les messages d'**agent** sont **repliés par défaut** (l'Orchestrateur
+/// les résume) : une flèche ▶/▼ déroule/cache leur texte. Chaque bulle porte un `id` (`msg-N`)
+/// pour la navigation par le rail Checkpoints.
 #[component]
-fn ChatBubble(msg: ChatMsg) -> Element {
+fn ChatBubble(idx: usize, msg: ChatMsg) -> Element {
     let mut expanded = use_signal(|| false);
+    let anchor = format!("msg-{idx}");
     match msg.kind {
         MsgKind::User => rsx! {
-            div { class: "bubble user", div { class: "text", "{msg.text}" } }
+            div { id: "{anchor}", class: "bubble user", div { class: "text", "{msg.text}" } }
         },
         MsgKind::Coordinator => rsx! {
-            div { class: "bubble coord",
+            div { id: "{anchor}", class: "bubble coord",
                 span { class: "who", "{msg.who}" }
                 div { class: "text", "{msg.text}" }
             }
         },
         MsgKind::System => rsx! {
-            div { class: "bubble system", "{msg.who} {msg.text}" }
+            div { id: "{anchor}", class: "bubble system", "{msg.who} {msg.text}" }
         },
         MsgKind::Agent => rsx! {
-            div { class: "bubble agent",
+            div { id: "{anchor}", class: "bubble agent",
                 button { class: "disclosure", onclick: move |_| expanded.set(!expanded()),
                     if expanded() { "▼ {msg.who}" } else { "▶ {msg.who}" }
                 }

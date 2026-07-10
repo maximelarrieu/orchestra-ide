@@ -33,6 +33,9 @@ pub enum AgentEvent {
     TaskDone { id: String },
     /// Une tâche du plan a échoué.
     TaskFailed { id: String, error: String },
+    /// Un agent a **exécuté une commande** dans le terminal : `agent`, la `command`, sa `output`
+    /// (sortie combinée) et `ok` (succès). Alimente le panneau Terminal de l'UI.
+    Terminal { agent: String, command: String, output: String, ok: bool },
     /// Un agent a **lu un fichier** : `agent` responsable + chemin (relatif au workspace). Permet
     /// à l'« orchestre en verre » de montrer, en direct, qui explore quoi dans l'arborescence.
     FileRead { agent: String, path: String },
@@ -50,6 +53,7 @@ impl AgentEvent {
             | AgentEvent::Log { agent, .. }
             | AgentEvent::Done { agent }
             | AgentEvent::TaskStarted { agent, .. }
+            | AgentEvent::Terminal { agent, .. }
             | AgentEvent::FileRead { agent, .. }
             | AgentEvent::FileChanged { agent, .. } => Some(agent),
             AgentEvent::PlanReady { .. }
