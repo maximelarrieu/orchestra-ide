@@ -92,7 +92,7 @@ pub fn plan_panel(rows: &[PlanRow]) -> Element {
 /// Vue Modifications : fichiers changés par les agents (liste) + diff coloré du fichier choisi.
 #[component]
 pub fn ChangesView(changes: Signal<Vec<FileChange>>) -> Element {
-    let mut sel = use_signal(|| 0usize);
+    let sel = use_signal(|| 0usize);
     let list = changes();
     if list.is_empty() {
         return rsx! {
@@ -332,7 +332,7 @@ fn NewSpaceForm(
 ) -> Element {
     let mut parent = use_signal(|| orchestra_core::browser::home_dir().to_string_lossy().to_string());
     let mut name = use_signal(String::new);
-    let mut kind = use_signal(|| ProjectType::Dev);
+    let kind = use_signal(|| ProjectType::Dev);
     let mut workspace = use_signal(String::new);
     let mut objectives = use_signal(String::new);
     let mut documentalist = use_signal(|| false);
@@ -432,7 +432,7 @@ pub fn DocumentsView(space: Signal<Option<ContextSpace>>, content: Signal<String
     let html = state::render_markdown_html(&content());
 
     // Chemin du document affiché + état d'édition (textarea) + brouillon.
-    let mut sel_path = use_signal(|| None::<PathBuf>);
+    let sel_path = use_signal(|| None::<PathBuf>);
     let mut editing = use_signal(|| false);
     let mut draft = use_signal(String::new);
 
@@ -504,3 +504,112 @@ fn doc_item(
     }
 }
 
+
+/// Vue Chat : conversation avec le coordinateur (bulles + saisie + approbation de plan inline).
+#[allow(clippy::too_many_arguments)]
+pub fn chat_view(
+    messages: Signal<Vec<ChatMsg>>,
+    thinking: Signal<bool>,
+    mut draft: Signal<String>,
+    user_tx: Signal<Option<UnboundedSender<String>>>,
+    plan: Signal<Vec<PlanRow>>,
+    mut pending: Signal<bool>,
+    approve_tx: Signal<Option<UnboundedSender<bool>>>,
+) -> Element {
+    // Envoi via le bouton…
+    let send_click = move |_| {
+        let text = draft();
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Some(tx) = user_tx() {
+            let _ = tx.send(text);
+        }
+        draft.set(String::new());
+    };
+    // …et via la touche Entrée (Maj+Entrée = saut de ligne). Logique dupliquée : un même
+    // closure ne peut être déplacé 2×.
+    let send_key = move |e: KeyboardEvent| {
+        // Maj+Entrée (ou autre touche) → comportement par défaut du textarea (saut de ligne).
+        if e.key() != Key::Enter || e.modifiers().contains(Modifiers::SHIFT) {
+            return;
+        }
+        e.prevent_default(); // Entrée seule = envoi : pas d'insertion de saut de ligne
+        let text = draft();
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Some(tx) = user_tx() {
+            let _ = tx.send(text);
+        }
+        draft.set(String::new());
+    };
+    let approve = move |_| {
+        if let Some(tx) = approve_tx() {
+            let _ = tx.send(true);
+        }
+        pending.set(false);
+    };
+
+    rsx! {
+        div { class: "chat",
+            div { class: "messages",
+                for (i, m) in messages().into_iter().enumerate() {
+                    ChatBubble { key: "{i}", msg: m }
+                }
+                if thinking() {
+                    div { class: "bubble coord", "…" }
+                }
+            }
+            if pending() {
+                div { class: "planbox",
+                    {plan_panel(&plan())}
+                    button { class: "go", onclick: approve, "✓ Approuver et exécuter le plan" }
+                }
+            }
+            div { class: "composer",
+                textarea {
+                    class: "chatinput",
+                    rows: "2",
+                    value: "{draft}",
+                    placeholder: "Écris au chef d'orchestre…  (Entrée pour envoyer · Maj+Entrée pour un saut de ligne)",
+                    oninput: move |e| draft.set(e.value()),
+                    onkeydown: send_key,
+                }
+                button { onclick: send_click, "Envoyer" }
+            }
+        }
+    }
+}
+
+/// Une bulle de chat. Les messages d'**agent** sont **repliés par défaut** (le coordinateur
+/// les résume) : une flèche ▶/▼ déroule/cache leur texte. Chaque bulle a son propre état
+/// d'ouverture, d'où un vrai composant.
+#[component]
+fn ChatBubble(msg: ChatMsg) -> Element {
+    let mut expanded = use_signal(|| false);
+    match msg.kind {
+        MsgKind::User => rsx! {
+            div { class: "bubble user", div { class: "text", "{msg.text}" } }
+        },
+        MsgKind::Coordinator => rsx! {
+            div { class: "bubble coord",
+                span { class: "who", "{msg.who}" }
+                div { class: "text", "{msg.text}" }
+            }
+        },
+        MsgKind::System => rsx! {
+            div { class: "bubble system", "{msg.who} {msg.text}" }
+        },
+        MsgKind::Agent => rsx! {
+            div { class: "bubble agent",
+                button { class: "disclosure", onclick: move |_| expanded.set(!expanded()),
+                    if expanded() { "▼ {msg.who}" } else { "▶ {msg.who}" }
+                }
+                if expanded() {
+                    div { class: "text", "{msg.text}" }
+                }
+            }
+        },
+    }
+}
