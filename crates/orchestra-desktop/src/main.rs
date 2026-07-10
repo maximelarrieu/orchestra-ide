@@ -14,6 +14,8 @@ mod components;
 mod state;
 mod styles;
 
+use dioxus::desktop::tao::dpi::LogicalSize;
+use dioxus::desktop::{Config, WindowBuilder};
 use dioxus::prelude::*;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::session::Sessions;
@@ -23,7 +25,15 @@ use tokio::sync::mpsc::UnboundedSender;
 use state::{ChatMsg, DesktopSession, PlanRow};
 
 fn main() {
-    dioxus::launch(app);
+    // Taille de fenêtre par défaut raisonnable (tient dans un 1920×1080 sans réajuster) ;
+    // redimensionnable, avec un minimum utilisable.
+    let window = WindowBuilder::new()
+        .with_title("Orchestra IDE")
+        .with_inner_size(LogicalSize::new(1280.0, 820.0))
+        .with_min_inner_size(LogicalSize::new(900.0, 600.0));
+    dioxus::LaunchBuilder::new()
+        .with_cfg(Config::new().with_window(window))
+        .launch(app);
 }
 
 fn app() -> Element {

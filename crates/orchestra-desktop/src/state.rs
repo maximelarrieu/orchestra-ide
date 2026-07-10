@@ -35,8 +35,6 @@ pub struct DesktopSession {
     pub status: HashMap<String, AgStatus>,
     /// Activité live des agents par fichier (chemin relatif → dernier accès). Annote l'explorateur.
     pub activity: HashMap<String, FileActivity>,
-    /// Brouillon de saisie propre à la session.
-    pub draft: String,
     /// Canal d'envoi des messages au coordinateur (présent une fois la conversation démarrée).
     pub user_tx: Option<UnboundedSender<String>>,
     /// Canal d'approbation de plan.
@@ -56,7 +54,6 @@ impl DesktopSession {
             changes: Vec::new(),
             status: HashMap::new(),
             activity: HashMap::new(),
-            draft: String::new(),
             user_tx: None,
             approve_tx: None,
             started: false,
