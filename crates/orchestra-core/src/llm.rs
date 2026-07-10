@@ -21,7 +21,7 @@ pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
-const MAX_OUTPUT_TOKENS: u32 = 4096;
+const MAX_OUTPUT_TOKENS: u32 = 8192;
 
 /// Fournisseur d'IA disponible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,7 +389,13 @@ fn gemini_body(system: &str, tools: &[ToolSpec], conv: &[Msg]) -> Value {
     let mut body = Map::new();
     body.insert("systemInstruction".into(), json!({ "parts": [{ "text": system }] }));
     body.insert("contents".into(), json!(contents));
-    body.insert("generationConfig".into(), json!({ "maxOutputTokens": MAX_OUTPUT_TOKENS }));
+    // `thinkingBudget: 0` désactive le « raisonnement » interne de Gemini 2.5 (Flash) : sinon
+    // ses tokens de réflexion consomment `maxOutputTokens` et la réponse peut revenir **sans
+    // `parts`** (finishReason MAX_TOKENS) — ce qui rendait le LLM « injoignable ».
+    body.insert(
+        "generationConfig".into(),
+        json!({ "maxOutputTokens": MAX_OUTPUT_TOKENS, "thinkingConfig": { "thinkingBudget": 0 } }),
+    );
     if !tools.is_empty() {
         let decls: Vec<Value> = tools
             .iter()
@@ -401,10 +407,33 @@ fn gemini_body(system: &str, tools: &[ToolSpec], conv: &[Msg]) -> Value {
 }
 
 fn parse_gemini(v: &Value) -> Result<Vec<Block>, LlmError> {
-    let parts = v
-        .pointer("/candidates/0/content/parts")
-        .and_then(Value::as_array)
-        .ok_or_else(|| LlmError::Shape("aucun `candidates[0].content.parts`".into()))?;
+    let parts = match v.pointer("/candidates/0/content/parts").and_then(Value::as_array) {
+        Some(parts) => parts,
+        None => {
+            // Pas de `parts` : on diagnostique via finishReason / blocage de sécurité plutôt que
+            // d'échouer avec un message opaque.
+            let finish = v
+                .pointer("/candidates/0/finishReason")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let block = v
+                .pointer("/promptFeedback/blockReason")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let msg = match (finish, block) {
+                ("MAX_TOKENS", _) => {
+                    "réponse tronquée par la limite de tokens (MAX_TOKENS) — aucun contenu renvoyé".to_string()
+                }
+                (_, b) if !b.is_empty() => format!("requête bloquée par Gemini (raison : {b})"),
+                ("SAFETY" | "RECITATION", _) => {
+                    format!("réponse bloquée par Gemini (finishReason : {finish})")
+                }
+                (f, _) if !f.is_empty() => format!("réponse sans contenu (finishReason : {f})"),
+                _ => "aucun `candidates[0].content.parts`".to_string(),
+            };
+            return Err(LlmError::Shape(msg));
+        }
+    };
     let mut blocks = Vec::new();
     for (i, p) in parts.iter().enumerate() {
         if let Some(t) = p.get("text").and_then(Value::as_str) {
@@ -498,6 +527,25 @@ mod tests {
         assert_eq!(b["contents"][2]["parts"][0]["functionResponse"]["name"], "Read_File");
         assert_eq!(b["tools"][0]["functionDeclarations"][0]["name"], "Read_File");
         assert!(b.get("systemInstruction").is_some());
+        // Le « thinking » de Gemini 2.5 est désactivé pour ne pas épuiser le budget de sortie.
+        assert_eq!(b["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0);
+    }
+
+    #[test]
+    fn parse_gemini_diagnoses_missing_parts() {
+        // MAX_TOKENS sans contenu → message clair (au lieu du « aucun parts » opaque).
+        let truncated = json!({ "candidates": [{ "finishReason": "MAX_TOKENS", "content": {} }] });
+        let err = parse_gemini(&truncated).unwrap_err();
+        assert!(matches!(&err, LlmError::Shape(m) if m.contains("MAX_TOKENS")));
+
+        // Blocage de sécurité → mentionne la raison.
+        let blocked = json!({ "promptFeedback": { "blockReason": "SAFETY" } });
+        let err = parse_gemini(&blocked).unwrap_err();
+        assert!(matches!(&err, LlmError::Shape(m) if m.contains("SAFETY")));
+
+        // Réponse vide mais valide (parts = []) → pas d'erreur, aucun bloc.
+        let empty = json!({ "candidates": [{ "content": { "parts": [] } }] });
+        assert!(parse_gemini(&empty).unwrap().is_empty());
     }
 
     #[test]
