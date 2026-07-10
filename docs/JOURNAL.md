@@ -495,6 +495,15 @@ repliables et bascule de thème.
   et du visualiseur (+ stub cliquable pour rouvrir), retirés de la barre supérieure. Suppression
   des **actions rapides** obsolètes (Objectif rapide / Cadrer / Analyser) côté cœur + TUI + desktop.
   Indicateur **LLM** dans la barre de statut (Claude / Gemini / mode simulé selon les clés d'env).
+- **Finition 2** : suppression des emojis « datés » (logo, dossiers/fichiers, statuts) remplacés par
+  des marqueurs CSS propres ; bords lissés / arrondis ; **chat aéré façon template** (Orchestrateur
+  en texte plein sans bulle ni label, message utilisateur en bulle arrondie discrète, sous-agents
+  en pilule repliable) ; spinner CSS sur l'étape de plan en cours.
+- **Plan réel → rail Tâches** : l'Orchestrateur dispose désormais de deux outils —
+  `Set_Plan(steps)` (publie le plan) et `Update_Step(step, status)` (running/done/failed) — qui
+  émettent `PlanReady`/`Task*`. Le rail « Tâches » se remplit et suit l'avancement en direct, au
+  lieu que le plan ne reste qu'en prose dans le chat. Le prompt PTAC impose leur usage. Publier un
+  plan n'exige plus d'approbation (l'Orchestrateur pilote lui-même).
 - `orchestra-core` + `orchestra-tui` verts, `clippy` sans warning ; desktop à vérifier au build local.
 
 ## Refonte — Phase 3 : shell « Cursor » + « orchestre en verre » 🚧 (desktop)

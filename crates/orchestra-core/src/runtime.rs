@@ -160,6 +160,39 @@ async fn run_agent_turn(
                     ok: !outcome.is_error,
                 });
                 outcome
+            } else if name == SET_PLAN {
+                // Publie le plan dans le rail Tâches de l'UI.
+                let steps = input.get("steps").and_then(Value::as_array).cloned().unwrap_or_default();
+                let tasks: Vec<crate::events::PlannedTask> = steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| crate::events::PlannedTask {
+                        id: (i + 1).to_string(),
+                        agent: s.get("agent").and_then(Value::as_str).unwrap_or("").to_string(),
+                        objective: s.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
+                        depends_on: Vec::new(),
+                    })
+                    .collect();
+                let n = tasks.len();
+                let _ = tx.send(AgentEvent::PlanReady { tasks });
+                skills::SkillOutcome::ok(format!("Plan publié ({n} étape(s)) dans le rail Tâches."))
+            } else if name == UPDATE_STEP {
+                // Met à jour l'état d'une étape du plan → événement Task* consommé par l'UI.
+                let id = input.get("step").and_then(Value::as_i64).unwrap_or(0).to_string();
+                let status = input.get("status").and_then(Value::as_str).unwrap_or("");
+                let ev = match status {
+                    "running" => Some(AgentEvent::TaskStarted { id: id.clone(), agent: label.to_string() }),
+                    "done" => Some(AgentEvent::TaskDone { id: id.clone() }),
+                    "failed" => Some(AgentEvent::TaskFailed { id: id.clone(), error: String::new() }),
+                    _ => None,
+                };
+                match ev {
+                    Some(ev) => {
+                        let _ = tx.send(ev);
+                        skills::SkillOutcome::ok(format!("Étape {id} → {status}."))
+                    }
+                    None => skills::SkillOutcome::err("`status` doit valoir running, done ou failed."),
+                }
             } else if name == SPAWN_AGENT {
                 // L'Orchestrateur déploie un sous-agent ad hoc (seul lui a cet outil → pas de récursion).
                 let role = input.get("role").and_then(Value::as_str).unwrap_or("Agent").trim().to_string();
@@ -235,13 +268,67 @@ fn spawn_agent_tool() -> ToolSpec {
     }
 }
 
+/// Outils de **plan** : l'Orchestrateur publie son plan (et met à jour l'avancement) dans le rail
+/// « Tâches » de l'UI — au lieu de ne l'écrire qu'en prose dans le chat.
+const SET_PLAN: &str = "Set_Plan";
+const UPDATE_STEP: &str = "Update_Step";
+
+fn plan_tools() -> Vec<ToolSpec> {
+    vec![
+        ToolSpec {
+            name: SET_PLAN.to_string(),
+            description:
+                "Publie (ou remplace) TON PLAN dans le panneau Tâches de l'interface. Appelle-le \
+                 dès que tu as un plan, AVANT d'agir. Fournis `steps` : une liste ordonnée \
+                 d'étapes courtes (`title`), avec optionnellement l'`agent` prévu. Tiens ensuite \
+                 le plan à jour avec `Update_Step`."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "description": "Étapes ordonnées du plan",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string", "description": "Intitulé court de l'étape" },
+                                "agent": { "type": "string", "description": "Agent/rôle prévu (optionnel)" }
+                            },
+                            "required": ["title"]
+                        }
+                    }
+                },
+                "required": ["steps"]
+            }),
+        },
+        ToolSpec {
+            name: UPDATE_STEP.to_string(),
+            description:
+                "Met à jour l'état d'une étape du plan (rail Tâches). `step` = numéro de l'étape \
+                 (1 = première). `status` ∈ { \"running\", \"done\", \"failed\" }. Marque une étape \
+                 `running` quand tu la commences, puis `done` (ou `failed`) quand elle est finie."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "step": { "type": "integer", "description": "Numéro de l'étape (à partir de 1)" },
+                    "status": { "type": "string", "enum": ["running", "done", "failed"] }
+                },
+                "required": ["step", "status"]
+            }),
+        },
+    ]
+}
+
 /// Jeu d'outils **complet** de l'Orchestrateur : agir directement (tous les skills exécutables),
-/// intégrations Git/GitHub configurées, mémoire, chargement de fiches, et déploiement d'agents.
+/// intégrations Git/GitHub configurées, mémoire, chargement de fiches, plan, et déploiement d'agents.
 fn orchestrator_tools(ctx: &AgentContext) -> Vec<ToolSpec> {
     let mut t = skills::all_tool_specs();
     t.extend(integrations::tool_definitions(&ctx.integ));
     t.extend(memory::tool_definitions());
     t.push(markdown_skill::tool_definition()); // Load_Skill toujours disponible
+    t.extend(plan_tools());
     t.push(spawn_agent_tool());
     t
 }
@@ -266,10 +353,13 @@ fn orchestrator_prompt(ctx: &AgentContext) -> String {
          # Boucle de travail : Perceive → Think → Act → Check (itère)\n\
          1. **Perceive** — rassemble le contexte : liste et lis les fichiers utiles, `Recall` la \
             mémoire, inspecte le workspace. Vérifie plutôt que supposer.\n\
-         2. **Think** — établis un plan court et explicite (étapes, découpage, quels sous-agents) et \
-            annonce-le brièvement.\n\
+         2. **Think** — établis un plan court et explicite (étapes, découpage, quels sous-agents). \
+            **Publie-le systématiquement via `Set_Plan`** (une étape = un titre court) : il s'affiche \
+            dans le panneau « Tâches » de l'interface. C'est ta feuille de route visible.\n\
          3. **Act** — exécute : toi-même pour le simple, `spawn_agent` pour le spécialisé ou le \
-            parallélisable. Fais des changements petits et sûrs.\n\
+            parallélisable. Fais des changements petits et sûrs. **Tiens le plan à jour** : marque \
+            l'étape en cours avec `Update_Step(step, \"running\")`, puis `\"done\"` (ou `\"failed\"`) \
+            une fois terminée. L'utilisateur suit ainsi l'avancement en direct.\n\
          4. **Check** — vérifie (relis les fichiers modifiés, lance les tests/commandes, confronte \
             aux critères). Si c'est incomplet ou faux, **repars en Perceive** et itère. Consigne les \
             décisions et l'avancement en mémoire (`Remember`).\n\n\
@@ -492,13 +582,16 @@ mod tests {
         let ctx = AgentContext::from_space(&tmp_space("tools"));
         let names: Vec<_> = orchestrator_tools(&ctx).into_iter().map(|t| t.name).collect();
         assert!(names.iter().any(|n| n == SPAWN_AGENT), "spawn_agent exposé");
+        assert!(names.iter().any(|n| n == SET_PLAN), "Set_Plan exposé");
+        assert!(names.iter().any(|n| n == UPDATE_STEP), "Update_Step exposé");
         assert!(names.iter().any(|n| n == skills::READ_FILE));
         assert!(names.iter().any(|n| n == skills::EXEC_COMMAND));
         assert!(names.iter().any(|n| n == memory::REMEMBER));
-        // Un sous-agent est outillé mais NE peut PAS spawner (pas de récursion).
+        // Un sous-agent est outillé mais NE peut PAS spawner ni piloter le plan (pas de récursion).
         let sub: Vec<_> = agent_tools(&ctx).into_iter().map(|t| t.name).collect();
         assert!(sub.iter().any(|n| n == skills::WRITE_FILE));
         assert!(!sub.iter().any(|n| n == SPAWN_AGENT));
+        assert!(!sub.iter().any(|n| n == SET_PLAN));
     }
 
     #[tokio::test]

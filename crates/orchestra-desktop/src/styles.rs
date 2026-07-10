@@ -85,9 +85,11 @@ pub const CSS: &str = r#"
     .messages, .centerbody, .taskrail, .termbody, .explorer, .pane { scroll-behavior: smooth; }
 
     /* ---- Barre supérieure ---- */
-    .topbar { display: flex; align-items: center; gap: .5rem; background: var(--bg-titlebar);
-              border-bottom: 1px solid var(--border); padding: 0 .8rem; min-height: 42px; }
-    .brand { font-weight: 700; white-space: nowrap; letter-spacing: .2px; margin-right: .4rem; color: var(--heading); }
+    .topbar { display: flex; align-items: center; gap: .55rem; background: var(--bg-titlebar);
+              border-bottom: 1px solid var(--border); padding: 0 .9rem; min-height: 44px; }
+    .logo { width: 16px; height: 16px; border-radius: 5px; flex: none;
+            background: linear-gradient(135deg, #56d364, var(--accent)); box-shadow: 0 0 8px rgba(63,185,80,.35); }
+    .brand { font-weight: 700; white-space: nowrap; letter-spacing: .2px; margin-right: .5rem; color: var(--heading); }
     .topspacer { flex: 1; }
     .tabadd { background: none; border: none; color: var(--text-dim); font-size: 1.15rem;
               cursor: pointer; padding: .1rem .55rem; border-radius: var(--radius); line-height: 1; }
@@ -160,33 +162,42 @@ pub const CSS: &str = r#"
     .agentchip.thinking { color: var(--amber); border-color: var(--amber); }
     .agentchip.working { color: var(--add); border-color: var(--add); }
     .agentchip.done { color: var(--text-mute); }
-    .hint { color: var(--text-mute); font-size: .85rem; padding: 1.2rem .8rem; }
-    .chatcol { flex: 1; min-height: 0; display: flex; padding: .2rem .8rem .7rem; }
+    .hint { color: var(--text-mute); font-size: .85rem; padding: 1.4rem 1.2rem; }
+    .chatcol { flex: 1; min-height: 0; display: flex; padding: .2rem 1.1rem .9rem; }
 
-    /* Chat */
-    .chat { display: flex; flex-direction: column; gap: .6rem; flex: 1; min-height: 0; }
-    .messages { display: flex; flex-direction: column; gap: .55rem; flex: 1; min-height: 120px;
-                overflow: auto; padding: .5rem .2rem; }
-    .bubble { max-width: 84%; padding: .55rem .75rem; border-radius: 12px; line-height: 1.45; }
-    .bubble .who { display: block; font-size: .72rem; color: var(--accent); margin-bottom: .15rem; font-weight: 600; }
+    /* Chat — aéré et épuré (façon template) : l'agent écrit en texte plein, l'utilisateur
+       dans une bulle arrondie discrète, pas de labels ni d'icônes. */
+    .chat { display: flex; flex-direction: column; gap: .8rem; flex: 1; min-height: 0; }
+    .messages { display: flex; flex-direction: column; gap: 1.3rem; flex: 1; min-height: 120px;
+                overflow: auto; padding: 1.1rem .4rem; }
     .bubble .text { white-space: pre-wrap; }
-    .bubble.user { align-self: flex-end; background: var(--bubble-user); color: var(--bubble-user-text);
-                   border-bottom-right-radius: 4px; }
-    .bubble.coord { align-self: flex-start; background: var(--bg-elev); border: 1px solid var(--border);
-                    border-left: 2px solid var(--accent); border-bottom-left-radius: 4px; }
-    .bubble.agent { align-self: flex-start; background: var(--bubble-agent); border: 1px solid var(--border); max-width: 92%; }
-    .bubble.agent .text { margin-top: .35rem; color: var(--text-dim);
-                          border-top: 1px dashed var(--border); padding-top: .35rem; }
-    .bubble.system { align-self: center; background: transparent; color: var(--text-mute); font-size: .8rem; }
-    .disclosure { background: none; border: none; cursor: pointer; color: var(--link); font: inherit; padding: 0; }
+    /* Orchestrateur : texte plein, large, aéré — aucune bulle, aucun label. */
+    .bubble.coord { align-self: stretch; max-width: 100%; background: transparent; border: none; padding: 0; }
+    .bubble.coord .who { display: none; }
+    .bubble.coord .text { line-height: 1.75; color: var(--text); }
+    /* Utilisateur : bulle arrondie discrète, alignée à droite. */
+    .bubble.user { align-self: flex-end; max-width: 78%; background: var(--bubble-user);
+                   color: var(--bubble-user-text); padding: .6rem .95rem; border-radius: 16px;
+                   border-bottom-right-radius: 6px; }
+    .bubble.user .who { display: none; }
+    /* Sous-agent : repli discret « pilule » façon “Thought for…”. */
+    .bubble.agent { align-self: stretch; max-width: 100%; background: transparent; border: none; padding: 0; }
+    .bubble.agent .who { display: none; }
+    .disclosure { background: var(--bg-elev); border: 1px solid var(--border); cursor: pointer;
+                  color: var(--text-dim); font: inherit; padding: .2rem .7rem; border-radius: 999px; font-size: .8rem; }
+    .disclosure:hover { border-color: var(--accent); color: var(--text); }
+    .bubble.agent .text { margin-top: .5rem; padding: .6rem .8rem; background: var(--bg-elev);
+                          border-radius: 10px; color: var(--text-dim); line-height: 1.6; }
+    .bubble.system { align-self: center; background: transparent; color: var(--text-mute); font-size: .78rem; }
+
     .composer { display: flex; gap: .5rem; align-items: flex-end; border: 1px solid var(--border);
-                border-radius: 12px; padding: .5rem; background: var(--bg-elev); }
-    .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--add-bg); }
-    .chatinput { flex: 1; resize: none; min-height: 2.4rem; max-height: 8rem; line-height: 1.4;
-                 border: none; background: transparent; padding: .2rem .3rem; }
+                border-radius: 16px; padding: .55rem .6rem; background: var(--bg-elev); }
+    .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--add-bg); }
+    .chatinput { flex: 1; resize: none; min-height: 2.4rem; max-height: 8rem; line-height: 1.45;
+                 border: none; background: transparent; padding: .25rem .4rem; }
     .chatinput:focus { border: none; }
     button.send { background: var(--accent); color: #08240d; border: none; border-radius: 50%;
-                  width: 34px; height: 34px; cursor: pointer; font-size: 1.05rem; font-weight: 700; flex: none; }
+                  width: 36px; height: 36px; cursor: pointer; font-size: 1.1rem; font-weight: 700; flex: none; }
     button.send:hover { background: var(--accent-hover); transform: translateY(-1px); }
 
     /* ---- Explorateur (« orchestre en verre ») ---- */
@@ -196,8 +207,15 @@ pub const CSS: &str = r#"
     .trow { display: flex; align-items: center; justify-content: space-between; gap: .4rem;
             padding: .12rem .5rem; border-left: 2px solid transparent; }
     .trow .tname { background: none; border: none; color: var(--text); padding: .05rem 0; text-align: left;
-                   cursor: default; font: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+                   cursor: default; font: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                   display: inline-flex; align-items: center; }
+    /* Marqueur typographique discret (pas d'emoji) : carré pour un dossier, point pour un fichier. */
+    .trow .tname::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: .5rem;
+                           flex: none; background: var(--text-mute); opacity: .5; }
+    .trow.dir .tname { color: var(--text-dim); font-weight: 600; }
+    .trow.dir .tname::before { border-radius: 2px; opacity: .7; }
     .trow.file .tname { cursor: pointer; }
+    .trow.file .tname::before { border-radius: 50%; }
     .trow.file:hover { background: var(--bg-hover); }
     .trow.on { background: var(--bg-sel); }
     .trow.act-read { border-left-color: var(--link); }
@@ -240,7 +258,10 @@ pub const CSS: &str = r#"
     .planicon { color: var(--text-mute); width: 1rem; display: inline-block; text-align: center; }
     .planrow.done .planicon { color: var(--add); }
     .planrow.done .planobj { text-decoration: line-through; color: var(--text-mute); }
-    .planrow.running .planicon { color: var(--accent); animation: spin 1.1s linear infinite; }
+    /* Étape « en cours » : vrai spinner (anneau tournant), contenu vide. */
+    .planrow.running .planicon { width: 13px; height: 13px; box-sizing: border-box;
+                                 border: 2px solid var(--border-strong); border-top-color: var(--accent);
+                                 border-radius: 50%; animation: spin .9s linear infinite; margin-top: 2px; }
     .planrow.failed .planicon { color: var(--del); }
     .plantext { display: flex; flex-direction: column; }
     .planobj { color: var(--text); font-size: .86rem; }
@@ -301,7 +322,10 @@ pub const CSS: &str = r#"
     .statusbar { position: fixed; left: 0; right: 0; bottom: 0; height: 26px;
                  background: var(--accent); color: #06210c; display: flex; align-items: center;
                  gap: 1rem; padding: 0 .8rem; font-size: 12px; font-weight: 600; }
-    .statusbar .sb-item { display: inline-flex; align-items: center; gap: .35rem; }
+    .statusbar .sb-item { display: inline-flex; align-items: center; gap: .4rem; }
+    .statusbar .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .statusbar .dot.ok { background: #06210c; box-shadow: 0 0 0 2px rgba(6,33,12,.25); }
+    .statusbar .dot.warn { background: #7a3b00; }
 
     /* ---- Diff ---- */
     .diff { font-family: var(--mono); font-size: .82rem; }

@@ -673,12 +673,14 @@ impl App {
         // Événements de plan d'orchestration : pilotent le panneau Plan, pas l'historique radar.
         match &ev {
             AgentEvent::PlanReady { tasks } => {
+                // Plan publié par l'Orchestrateur (rail Tâches) — pas d'approbation requise :
+                // il pilote lui-même l'avancement via Update_Step.
                 self.plan = tasks
                     .iter()
                     .cloned()
                     .map(|task| PlanRow { task, status: PlanStatus::Pending })
                     .collect();
-                self.pending_plan = true;
+                self.pending_plan = false;
                 return;
             }
             AgentEvent::TaskStarted { id, .. } => {
@@ -847,11 +849,10 @@ mod tests {
                 PlannedTask { id: "t2".into(), agent: "B".into(), objective: "y".into(), depends_on: vec!["t1".into()] },
             ],
         });
-        assert!(app.pending_plan);
-        assert_eq!(app.plan.len(), 2);
-
-        app.approve_plan();
+        // Le plan est publié dans le panneau sans exiger d'approbation (l'Orchestrateur pilote
+        // lui-même l'avancement).
         assert!(!app.pending_plan);
+        assert_eq!(app.plan.len(), 2);
 
         app.on_event(AgentEvent::TaskStarted { id: "t1".into(), agent: "A".into() });
         assert_eq!(app.plan[0].status, PlanStatus::Running);

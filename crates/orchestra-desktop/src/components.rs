@@ -174,12 +174,14 @@ pub fn TaskRail(
             ul { class: "plan",
                 for row in rows {
                     {
+                        // Icône typographique nette ; l'étape « en cours » utilise un vrai
+                        // spinner CSS (via la classe, contenu vide).
                         let (icon, cls) = if row.status.contains('✓') {
                             ("✓", "planrow done")
                         } else if row.status.contains("cours") {
-                            ("◐", "planrow running")
+                            ("", "planrow running")
                         } else if row.status.contains('✗') {
-                            ("✗", "planrow failed")
+                            ("✕", "planrow failed")
                         } else {
                             ("○", "planrow")
                         };
@@ -462,9 +464,8 @@ fn file_row(
     selected_rel: Option<String>,
     mut selected: Signal<Option<String>>,
 ) -> Element {
-    let pad = format!("padding-left: {}rem;", 0.4 + node.depth as f32 * 0.8);
+    let pad = format!("padding-left: {}rem;", 0.55 + node.depth as f32 * 0.85);
     let is_sel = selected_rel.as_deref() == Some(node.rel.as_str());
-    let icon = if node.is_dir { "📁" } else { "📄" };
     // Classe : dossier (non cliquable) ou fichier ; sélection ; activité (read/write).
     let mut cls = String::from(if node.is_dir { "trow dir" } else { "trow file" });
     if is_sel {
@@ -475,12 +476,13 @@ fn file_row(
         Some(_) => cls.push_str(" act-read"),
         None => {}
     }
-    // Badge d'activité pré-calculé (classe + texte) pour éviter le conditionnel en attribut.
+    // Badge d'activité : nom de l'agent, coloré (vert = écriture, bleu = lecture). Le liseré
+    // gauche renforce la distinction — pas d'icône.
     let badge = act.map(|a| {
         if a.write {
-            ("actbadge write", format!("✎ {}", a.agent))
+            ("actbadge write", a.agent)
         } else {
-            ("actbadge read", format!("👁 {}", a.agent))
+            ("actbadge read", a.agent)
         }
     });
     let rel = node.rel.clone();
@@ -490,9 +492,9 @@ fn file_row(
         li {
             div { class: "{cls}", style: "{pad}",
                 if is_dir {
-                    span { class: "tname", "{icon} {name}" }
+                    span { class: "tname", "{name}" }
                 } else {
-                    button { class: "tname", onclick: move |_| selected.set(Some(rel.clone())), "{icon} {name}" }
+                    button { class: "tname", onclick: move |_| selected.set(Some(rel.clone())), "{name}" }
                 }
                 if let Some((bcls, btxt)) = badge {
                     span { class: "{bcls}", "{btxt}" }

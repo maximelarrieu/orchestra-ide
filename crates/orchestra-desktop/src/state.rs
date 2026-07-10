@@ -206,8 +206,10 @@ fn apply_event(sess: &mut DesktopSession, ev: AgentEvent) {
             mark(sess, &agent, AgStatus::Done);
         }
         AgentEvent::PlanReady { tasks } => {
+            // L'Orchestrateur publie son plan (rail Tâches) sans exiger d'approbation : il pilote
+            // lui-même l'avancement via Update_Step.
             sess.plan = tasks.into_iter().map(plan_row).collect();
-            sess.pending = true;
+            sess.pending = false;
         }
         AgentEvent::TaskStarted { id, agent } => {
             set_status(sess, &id, "en cours");

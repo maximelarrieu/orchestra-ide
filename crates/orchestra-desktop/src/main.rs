@@ -113,7 +113,8 @@ fn app() -> Element {
         div { class: "{app_cls}",
             // --- Barre supérieure : onglets de session + « + » + réglages d'affichage ---
             div { class: "topbar",
-                span { class: "brand", "🎻 Orchestra" }
+                span { class: "logo" }
+                span { class: "brand", "Orchestra" }
                 { components::tabs_bar(sessions) }
                 button { class: "tabadd", title: "Ouvrir / créer un espace",
                     onclick: move |_| show_spacebar.set(!show_spacebar()), "+" }
@@ -136,7 +137,7 @@ fn app() -> Element {
                 if show_explorer() {
                     div { class: "pane explorerpane",
                         div { class: "panebar",
-                            span { class: "panetitle", "📂 {project}" }
+                            span { class: "panetitle", "{project}" }
                             button { class: "panebtn", title: "Masquer l'explorateur",
                                 onclick: move |_| show_explorer.set(false), "‹" }
                         }
@@ -145,7 +146,7 @@ fn app() -> Element {
                 } else {
                     div { class: "stub",
                         button { class: "stubbtn", title: "Afficher l'explorateur",
-                            onclick: move |_| show_explorer.set(true), "🗂" }
+                            onclick: move |_| show_explorer.set(true), "›" }
                     }
                 }
 
@@ -182,7 +183,7 @@ fn app() -> Element {
                 } else {
                     div { class: "stub",
                         button { class: "stubbtn", title: "Afficher le visualiseur",
-                            onclick: move |_| show_viewer.set(true), "📄" }
+                            onclick: move |_| show_viewer.set(true), "‹" }
                     }
                 }
 
@@ -192,12 +193,18 @@ fn app() -> Element {
             // --- Barre de statut ---
             div { class: "statusbar",
                 span { class: "sb-item",
-                    if has_session { "📁 {project}" } else { "Aucun espace" }
+                    if has_session { "{project}" } else { "Aucun espace" }
                 }
                 span { class: "sb-item",
-                    if let Some(p) = state::llm_status() { "🤖 {p}" } else { "⚠ mode simulé — clé API absente" }
+                    if let Some(p) = state::llm_status() {
+                        span { class: "dot ok" }
+                        "{p}"
+                    } else {
+                        span { class: "dot warn" }
+                        "mode simulé — clé API absente"
+                    }
                 }
-                span { class: "sb-item", "🎻 Orchestra IDE" }
+                span { class: "sb-item", "Orchestra IDE" }
             }
         }
     }
