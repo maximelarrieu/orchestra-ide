@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use dioxus::prelude::*;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime::QuickAction;
+use orchestra_core::session::Sessions;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::state::{self, AgStatus, ChatMsg, FileChange, KnownSpace, MsgKind, PlanRow, View};
+use crate::state::{self, AgStatus, ChatMsg, DesktopSession, FileChange, KnownSpace, MsgKind, PlanRow, View};
 
 /// Barre de navigation entre les vues.
 pub fn nav(mut view: Signal<View>) -> Element {
@@ -29,6 +30,31 @@ fn tab(cur: View, this: View) -> &'static str {
         "tab on"
     } else {
         "tab"
+    }
+}
+
+/// Barre d'**onglets** (sessions) : un onglet par session ouverte, l'active mise en évidence ;
+/// clic pour basculer, × pour fermer. N'apparaît qu'à partir de deux sessions.
+pub fn tabs_bar(mut sessions: Signal<Sessions<DesktopSession>>) -> Element {
+    let titles = sessions.read().titles();
+    let active = sessions.read().active_index();
+    if titles.len() < 2 {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "sessiontabs",
+            for (i, title) in titles.into_iter().enumerate() {
+                {
+                    let cls = if i == active { "stab on" } else { "stab" };
+                    rsx! {
+                        span { class: "{cls}",
+                            button { class: "stablabel", onclick: move |_| { sessions.write().switch_to(i); }, "{title}" }
+                            button { class: "stabx", onclick: move |_| { sessions.write().close(i); }, "×" }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -212,14 +238,13 @@ pub fn LiveChanges(changes: Signal<Vec<FileChange>>) -> Element {
 /// clic, sans retaper le chemin. Chaque entrée peut être retirée du suivi (×).
 #[component]
 pub fn SpaceBar(
-    space: Signal<Option<ContextSpace>>,
-    space_path: Signal<String>,
+    sessions: Signal<Sessions<DesktopSession>>,
     known: Signal<Vec<KnownSpace>>,
 ) -> Element {
     let mut browsing = use_signal(|| false);
     let mut browse_dir = use_signal(orchestra_core::browser::home_dir);
     let mut creating = use_signal(|| false);
-    let active = space().map(|s| s.config.project_name.clone());
+    let active = sessions.read().active().map(|s| s.space.config.project_name.clone());
 
     rsx! {
         div { class: "spaces",
@@ -237,15 +262,15 @@ pub fn SpaceBar(
 
             // Formulaire de création d'un nouvel espace.
             if creating() {
-                NewSpaceForm { space, space_path, known, creating }
+                NewSpaceForm { sessions, known, creating }
             }
 
-            // Espaces connus (récents) : rouvrir d'un clic.
+            // Espaces connus (récents) : rouvrir d'un clic (dans un onglet).
             if !known().is_empty() {
                 div { class: "chips",
                     span { class: "muted", "Récents :" }
                     for k in known() {
-                        { space_chip(k, space, space_path, known) }
+                        { space_chip(k, sessions, known) }
                     }
                 }
             }
@@ -271,7 +296,7 @@ pub fn SpaceBar(
                                     li { span { class: "muted", "(dossier vide)" } }
                                 }
                                 for e in entries {
-                                    { browse_row(e, space, space_path, known, browse_dir, browsing) }
+                                    { browse_row(e, sessions, known, browse_dir, browsing) }
                                 }
                             }
                         }
@@ -284,8 +309,7 @@ pub fn SpaceBar(
 
 fn browse_row(
     e: orchestra_core::browser::DirEntry,
-    space: Signal<Option<ContextSpace>>,
-    space_path: Signal<String>,
+    sessions: Signal<Sessions<DesktopSession>>,
     known: Signal<Vec<KnownSpace>>,
     mut browse_dir: Signal<std::path::PathBuf>,
     mut browsing: Signal<bool>,
@@ -299,7 +323,7 @@ fn browse_row(
                 span { class: "row", "🧩 {e.name}" }
                 button { class: "linklike",
                     onclick: move |_| {
-                        if state::open_space(space, space_path, known, &open.to_string_lossy()) {
+                        if state::open_space(sessions, known, &open.to_string_lossy()) {
                             browsing.set(false);
                         }
                     },
@@ -312,7 +336,7 @@ fn browse_row(
                 button { class: "row", onclick: move |_| browse_dir.set(nav.clone()), "📁 {e.name}" }
                 button { class: "linklike",
                     onclick: move |_| {
-                        if state::adopt_project(space, space_path, known, &adopt) {
+                        if state::adopt_project(sessions, known, &adopt) {
                             browsing.set(false);
                         }
                     },
@@ -326,8 +350,7 @@ fn browse_row(
 /// (l'Orchestrateur déploie ensuite sa propre équipe).
 #[component]
 fn NewSpaceForm(
-    space: Signal<Option<ContextSpace>>,
-    space_path: Signal<String>,
+    sessions: Signal<Sessions<DesktopSession>>,
     known: Signal<Vec<KnownSpace>>,
     mut creating: Signal<bool>,
 ) -> Element {
@@ -351,7 +374,7 @@ fn NewSpaceForm(
             div { class: "actions",
                 button { class: "go",
                     onclick: move |_| {
-                        match state::create_space(space, space_path, known, &parent(), &name(), &workspace(), &objectives()) {
+                        match state::create_space(sessions, known, &parent(), &name(), &workspace(), &objectives()) {
                             Ok(()) => creating.set(false),
                             Err(e) => err.set(e),
                         }
@@ -368,8 +391,7 @@ fn NewSpaceForm(
 
 fn space_chip(
     k: KnownSpace,
-    space: Signal<Option<ContextSpace>>,
-    space_path: Signal<String>,
+    sessions: Signal<Sessions<DesktopSession>>,
     known: Signal<Vec<KnownSpace>>,
 ) -> Element {
     let path_open = k.path.clone();
@@ -377,7 +399,7 @@ fn space_chip(
     rsx! {
         span { class: "chip",
             button { class: "chiplabel",
-                onclick: move |_| { state::open_space(space, space_path, known, &path_open.to_string_lossy()); },
+                onclick: move |_| { state::open_space(sessions, known, &path_open.to_string_lossy()); },
                 "{k.name}"
             }
             button { class: "chipx", onclick: move |_| state::forget_space_entry(known, &path_forget), "×" }

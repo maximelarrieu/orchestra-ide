@@ -8,10 +8,59 @@ use dioxus::prelude::*;
 use orchestra_core::events::AgentEvent;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime;
+use orchestra_core::session::{Sessions, Tabbed};
 use tokio::sync::mpsc::UnboundedSender;
 
 // Registre des espaces connus (récents) — partagé avec le TUI.
 pub use orchestra_core::registry::KnownSpace;
+
+/// État vivant d'une **session** (un onglet) : l'Espace + toute sa conversation. Chaque session
+/// garde **son propre contexte et son historique** ; on passe de l'une à l'autre sans rien
+/// perdre, et une session en arrière-plan continue de recevoir ses événements.
+pub struct DesktopSession {
+    pub space: ContextSpace,
+    pub messages: Vec<ChatMsg>,
+    pub thinking: bool,
+    pub plan: Vec<PlanRow>,
+    pub pending: bool,
+    pub changes: Vec<FileChange>,
+    pub status: HashMap<String, AgStatus>,
+    /// Brouillon de saisie propre à la session.
+    pub draft: String,
+    /// Canal d'envoi des messages au coordinateur (présent une fois la conversation démarrée).
+    pub user_tx: Option<UnboundedSender<String>>,
+    /// Canal d'approbation de plan.
+    pub approve_tx: Option<UnboundedSender<bool>>,
+    /// Vrai une fois la conversation lancée (évite de la relancer à chaque rendu).
+    pub started: bool,
+}
+
+impl DesktopSession {
+    pub fn new(space: ContextSpace) -> Self {
+        Self {
+            space,
+            messages: Vec::new(),
+            thinking: false,
+            plan: Vec::new(),
+            pending: false,
+            changes: Vec::new(),
+            status: HashMap::new(),
+            draft: String::new(),
+            user_tx: None,
+            approve_tx: None,
+            started: false,
+        }
+    }
+}
+
+impl Tabbed for DesktopSession {
+    fn title(&self) -> String {
+        self.space.config.project_name.clone()
+    }
+    fn root(&self) -> &Path {
+        &self.space.root
+    }
+}
 
 /// Vue centrale courante (équivalent des touches du TUI).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,12 +134,11 @@ impl AgStatus {
     }
 }
 
-/// Met à jour le statut live d'un agent (ignore l'écho utilisateur « Vous »).
-fn mark(status: &mut Signal<HashMap<String, AgStatus>>, name: &str, st: AgStatus) {
-    if name == "Vous" {
-        return;
+/// Met à jour le statut live d'un agent d'une session (ignore l'écho utilisateur « Vous »).
+fn mark(sess: &mut DesktopSession, name: &str, st: AgStatus) {
+    if name != "Vous" {
+        sess.status.insert(name.to_string(), st);
     }
-    status.write().insert(name.to_string(), st);
 }
 
 /// Convertit une tâche planifiée (cœur) en ligne de plan affichable.
@@ -104,83 +152,103 @@ fn plan_row(t: orchestra_core::events::PlannedTask) -> PlanRow {
     }
 }
 
-fn set_status(plan: &mut Signal<Vec<PlanRow>>, id: &str, status: &str) {
-    let mut rows = plan.write();
-    if let Some(row) = rows.iter_mut().find(|r| r.id == id) {
+fn set_status(sess: &mut DesktopSession, id: &str, status: &str) {
+    if let Some(row) = sess.plan.iter_mut().find(|r| r.id == id) {
         row.status = status.to_string();
     }
 }
 
-/// Démarre une **conversation avec le coordinateur** (équivalent `[5]` du TUI) : ouvre le
-/// canal bidirectionnel du cœur, mémorise les `Sender` (messages utilisateur + approbation de
-/// plan) et **streame les événements** dans les signaux du chat. Un plan proposé en cours de
-/// conversation passe par `plan`/`pending` (mêmes signaux que l'orchestration directe).
-#[allow(clippy::too_many_arguments)]
-pub fn start_chat(
-    space: ContextSpace,
-    mut user_tx: Signal<Option<UnboundedSender<String>>>,
-    mut messages: Signal<Vec<ChatMsg>>,
-    mut thinking: Signal<bool>,
-    mut plan: Signal<Vec<PlanRow>>,
-    mut pending: Signal<bool>,
-    mut approve_tx: Signal<Option<UnboundedSender<bool>>>,
-    mut status: Signal<HashMap<String, AgStatus>>,
-    mut changes: Signal<Vec<FileChange>>,
-) {
-    messages.set(Vec::new());
-    plan.set(Vec::new());
-    pending.set(false);
-    thinking.set(false);
-    status.set(HashMap::new());
-    changes.set(Vec::new());
+/// Applique un événement du runtime à l'état d'**une** session (celle qui l'a émis).
+fn apply_event(sess: &mut DesktopSession, ev: AgentEvent) {
+    match ev {
+        AgentEvent::Thinking { agent } => {
+            sess.thinking = true;
+            mark(sess, &agent, AgStatus::Thinking);
+        }
+        AgentEvent::Log { agent, msg } => {
+            sess.thinking = false;
+            mark(sess, &agent, AgStatus::Working);
+            let kind = if agent == "Vous" {
+                MsgKind::User
+            } else if agent == runtime::COORDINATOR {
+                MsgKind::Coordinator
+            } else {
+                MsgKind::Agent
+            };
+            sess.messages.push(ChatMsg { who: agent, text: msg, kind });
+        }
+        AgentEvent::Started { agent } => {
+            mark(sess, &agent, AgStatus::Working);
+            sess.messages.push(ChatMsg {
+                who: agent,
+                text: "rejoint la conversation".into(),
+                kind: MsgKind::System,
+            });
+        }
+        AgentEvent::Done { agent } => {
+            sess.thinking = false;
+            mark(sess, &agent, AgStatus::Done);
+        }
+        AgentEvent::PlanReady { tasks } => {
+            sess.plan = tasks.into_iter().map(plan_row).collect();
+            sess.pending = true;
+        }
+        AgentEvent::TaskStarted { id, agent } => {
+            set_status(sess, &id, "en cours");
+            mark(sess, &agent, AgStatus::Working);
+        }
+        AgentEvent::TaskDone { id } => set_status(sess, &id, "fait ✓"),
+        AgentEvent::TaskFailed { id, .. } => set_status(sess, &id, "échec ✗"),
+        AgentEvent::FileChanged { path, added, removed, diff } => {
+            sess.changes.push(FileChange { path, added, removed, diff });
+        }
+    }
+}
 
+/// Démarre la **conversation avec le coordinateur** (équivalent `[5]` du TUI) pour la session
+/// d'index `index` : ouvre le canal du cœur, mémorise les `Sender` **dans la session**, et
+/// **streame les événements dans cette session** (repérée par sa racine). Les autres onglets ne
+/// sont pas touchés ; une session en arrière-plan continue donc de vivre.
+pub fn start_session_chat(mut sessions: Signal<Sessions<DesktopSession>>, index: usize) {
+    // Espace de la session ciblée (clone pour lancer le runtime hors du verrou).
+    let space = {
+        let s = sessions.read();
+        match s.get(index) {
+            Some(sess) => sess.space.clone(),
+            None => return,
+        }
+    };
+    let root = space.root.clone();
     let handle = runtime::start_conversation(&space);
-    user_tx.set(Some(handle.user));
-    approve_tx.set(Some(handle.approve));
-    let mut events = handle.events;
 
+    // (Re)démarre proprement le contexte de la session + mémorise ses canaux.
+    {
+        let mut s = sessions.write();
+        if let Some(sess) = s.get_mut(index) {
+            sess.messages.clear();
+            sess.plan.clear();
+            sess.pending = false;
+            sess.thinking = false;
+            sess.status.clear();
+            sess.changes.clear();
+            sess.user_tx = Some(handle.user);
+            sess.approve_tx = Some(handle.approve);
+            sess.started = true;
+        }
+    }
+
+    let mut events = handle.events;
     spawn(async move {
         while let Some(ev) = events.recv().await {
-            match ev {
-                AgentEvent::Thinking { agent } => {
-                    thinking.set(true);
-                    mark(&mut status, &agent, AgStatus::Thinking);
+            let mut s = sessions.write();
+            // La session peut avoir été fermée entre-temps : on la retrouve par sa racine.
+            match s.index_of(&root) {
+                Some(i) => {
+                    if let Some(sess) = s.get_mut(i) {
+                        apply_event(sess, ev);
+                    }
                 }
-                AgentEvent::Log { agent, msg } => {
-                    thinking.set(false);
-                    mark(&mut status, &agent, AgStatus::Working);
-                    let kind = if agent == "Vous" {
-                        MsgKind::User
-                    } else if agent == runtime::COORDINATOR {
-                        MsgKind::Coordinator
-                    } else {
-                        MsgKind::Agent
-                    };
-                    messages.write().push(ChatMsg { who: agent, text: msg, kind });
-                }
-                AgentEvent::Started { agent } => {
-                    mark(&mut status, &agent, AgStatus::Working);
-                    messages
-                        .write()
-                        .push(ChatMsg { who: agent, text: "rejoint la conversation".into(), kind: MsgKind::System });
-                }
-                AgentEvent::Done { agent } => {
-                    thinking.set(false);
-                    mark(&mut status, &agent, AgStatus::Done);
-                }
-                AgentEvent::PlanReady { tasks } => {
-                    plan.set(tasks.into_iter().map(plan_row).collect());
-                    pending.set(true);
-                }
-                AgentEvent::TaskStarted { id, agent } => {
-                    set_status(&mut plan, &id, "en cours");
-                    mark(&mut status, &agent, AgStatus::Working);
-                }
-                AgentEvent::TaskDone { id } => set_status(&mut plan, &id, "fait ✓"),
-                AgentEvent::TaskFailed { id, .. } => set_status(&mut plan, &id, "échec ✗"),
-                AgentEvent::FileChanged { path, added, removed, diff } => {
-                    changes.write().push(FileChange { path, added, removed, diff });
-                }
+                None => break,
             }
         }
     });
@@ -198,19 +266,18 @@ pub fn known_spaces() -> Vec<KnownSpace> {
     orchestra_core::registry::known_spaces()
 }
 
-/// Ouvre un espace depuis un chemin : charge, met à jour les signaux, **mémorise** dans le
-/// registre et rafraîchit la liste des espaces connus. Renvoie `true` si chargé.
+/// Ouvre un espace depuis un chemin **dans un onglet** (ou réactive le sien s'il est déjà
+/// ouvert) : charge, ouvre la session, **mémorise** dans le registre et rafraîchit la liste des
+/// espaces connus. Renvoie `true` si chargé.
 pub fn open_space(
-    mut space: Signal<Option<ContextSpace>>,
-    mut space_path: Signal<String>,
+    mut sessions: Signal<Sessions<DesktopSession>>,
     mut known: Signal<Vec<KnownSpace>>,
     path: &str,
 ) -> bool {
     let pb = PathBuf::from(path);
     match ContextSpace::load(&pb) {
         Ok(sp) => {
-            space.set(Some(sp));
-            space_path.set(path.to_string());
+            sessions.write().open(DesktopSession::new(sp));
             let _ = orchestra_core::registry::remember_space(&pb);
             known.set(orchestra_core::registry::known_spaces());
             true
@@ -226,18 +293,16 @@ pub fn forget_space_entry(mut known: Signal<Vec<KnownSpace>>, path: &Path) {
 }
 
 /// **Reprend un projet existant** (`path`) : initialise `.orchestra` dedans (workspace = `path`),
-/// l'ouvre et le mémorise. `true` si réussi.
+/// l'ouvre **dans un onglet** et le mémorise. `true` si réussi.
 pub fn adopt_project(
-    mut space: Signal<Option<ContextSpace>>,
-    mut space_path: Signal<String>,
+    mut sessions: Signal<Sessions<DesktopSession>>,
     mut known: Signal<Vec<KnownSpace>>,
     path: &Path,
 ) -> bool {
     match orchestra_core::scaffold::adopt_project(path) {
         Ok(sp) => {
             let _ = orchestra_core::registry::remember_space(path);
-            space.set(Some(sp));
-            space_path.set(path.to_string_lossy().to_string());
+            sessions.write().open(DesktopSession::new(sp));
             known.set(orchestra_core::registry::known_spaces());
             true
         }
@@ -257,11 +322,10 @@ fn slug(name: &str) -> String {
     if s.is_empty() { "espace".to_string() } else { s }
 }
 
-/// Crée un nouvel espace (`parent/<slug(nom)>`) via le cœur, l'ouvre et le mémorise.
-#[allow(clippy::too_many_arguments)]
+/// Crée un nouvel espace (`parent/<slug(nom)>`) via le cœur, l'ouvre **dans un onglet** et le
+/// mémorise.
 pub fn create_space(
-    mut space: Signal<Option<ContextSpace>>,
-    mut space_path: Signal<String>,
+    mut sessions: Signal<Sessions<DesktopSession>>,
     mut known: Signal<Vec<KnownSpace>>,
     parent: &str,
     name: &str,
@@ -287,8 +351,7 @@ pub fn create_space(
     match orchestra_core::scaffold_space(&root, opts) {
         Ok(sp) => {
             let _ = orchestra_core::registry::remember_space(&root);
-            space.set(Some(sp));
-            space_path.set(root.to_string_lossy().to_string());
+            sessions.write().open(DesktopSession::new(sp));
             known.set(orchestra_core::registry::known_spaces());
             Ok(())
         }

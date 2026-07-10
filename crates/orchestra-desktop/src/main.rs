@@ -16,10 +16,12 @@ mod styles;
 
 use dioxus::prelude::*;
 use orchestra_core::model::ContextSpace;
+use orchestra_core::session::Sessions;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
-use state::{ChatMsg, PlanRow, View};
+use state::{ChatMsg, DesktopSession, PlanRow, View};
 
 /// Espace ouvert au démarrage.
 const DEFAULT_SPACE: &str = "examples/apprentissage-espagnol";
@@ -29,65 +31,84 @@ fn main() {
 }
 
 fn app() -> Element {
-    let space = use_signal(|| ContextSpace::load(&PathBuf::from(DEFAULT_SPACE)).ok());
-    let space_path = use_signal(|| DEFAULT_SPACE.to_string());
-    // Espaces connus (récents) : mémorise l'espace d'ouverture puis liste le registre.
-    let known = use_signal(|| {
-        let _ = orchestra_core::registry::remember_space(&PathBuf::from(DEFAULT_SPACE));
-        state::known_spaces()
+    // Sessions (onglets) : une par Espace ouvert, chacune avec son propre contexte et son
+    // historique. Une seule au démarrage ; l'utilisateur en ouvre d'autres via la barre d'espaces.
+    let mut sessions = use_signal(|| {
+        let mut s = Sessions::<DesktopSession>::new();
+        if let Ok(sp) = ContextSpace::load(&PathBuf::from(DEFAULT_SPACE)) {
+            let _ = orchestra_core::registry::remember_space(&PathBuf::from(DEFAULT_SPACE));
+            s.open(DesktopSession::new(sp));
+        }
+        s
     });
-    // Vue unique de travail : l'Assistant (conversation). Les autres vues sont Documents,
-    // Agents & skills, Modifications.
+    // Espaces connus (récents).
+    let known = use_signal(state::known_spaces);
+    // Vue centrale : Assistant / Documents / Modifications.
     let view = use_signal(|| View::Chat);
 
-    // État du plan (panneau + approbation inline dans la conversation).
-    let plan = use_signal(Vec::<PlanRow>::new);
-    let pending = use_signal(|| false);
-    let approve_tx = use_signal(|| None::<UnboundedSender<bool>>);
-
-    // État de la vue Documents.
+    // Projections « à plat » de la session ACTIVE : les composants d'affichage lisent ces
+    // signaux (inchangés). Ils sont rafraîchis par l'effet ci-dessous à chaque mutation du store
+    // (événement d'agent, changement d'onglet). Les sessions en arrière-plan accumulent leur
+    // état dans le store sans perturber l'affichage.
+    let mut space = use_signal(|| None::<ContextSpace>);
+    let mut messages = use_signal(Vec::<ChatMsg>::new);
+    let mut thinking = use_signal(|| false);
+    let mut plan = use_signal(Vec::<PlanRow>::new);
+    let mut pending = use_signal(|| false);
+    let mut approve_tx = use_signal(|| None::<UnboundedSender<bool>>);
+    let mut user_tx = use_signal(|| None::<UnboundedSender<String>>);
+    let mut agents_status = use_signal(HashMap::<String, state::AgStatus>::new);
+    let mut changes = use_signal(Vec::<state::FileChange>::new);
+    let draft = use_signal(String::new);
     let doc_content = use_signal(String::new);
 
-    // État de la conversation.
-    let messages = use_signal(Vec::<ChatMsg>::new);
-    let thinking = use_signal(|| false);
-    let mut draft = use_signal(String::new);
-    let user_tx = use_signal(|| None::<UnboundedSender<String>>);
-    // Statut live des agents (encart « squad »).
-    let agents_status = use_signal(std::collections::HashMap::<String, state::AgStatus>::new);
-    // Fichiers modifiés par les agents (vue Modifications).
-    let changes = use_signal(Vec::<state::FileChange>::new);
-    // Racine de l'espace de la conversation en cours (pour la redémarrer au changement d'espace).
-    let mut chat_root = use_signal(|| None::<PathBuf>);
-
-    let start_chat = move |_| {
-        if let Some(sp) = space() {
-            let root = sp.root.clone();
-            state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx, agents_status, changes);
-            chat_root.set(Some(root));
-        }
-    };
-
-    // Auto-démarrage : à l'entrée de l'onglet Chat, la conversation s'ouvre directement (pas de
-    // bouton intermédiaire) ; elle **redémarre si l'espace actif a changé** (squad à jour).
+    // Projection : synchronise les signaux plats avec la session active. Les signaux sont `Copy`,
+    // donc les capturer ici (par copie) n'empêche pas de les repasser aux composants plus bas.
     use_effect(move || {
-        let current_root = space().map(|s| s.root.clone());
-        if view() == View::Chat && (user_tx().is_none() || chat_root() != current_root) {
-            if let Some(sp) = space() {
-                let root = sp.root.clone();
-                state::start_chat(sp, user_tx, messages, thinking, plan, pending, approve_tx, agents_status, changes);
-                chat_root.set(Some(root));
+        let s = sessions.read();
+        match s.active() {
+            Some(a) => {
+                space.set(Some(a.space.clone()));
+                messages.set(a.messages.clone());
+                thinking.set(a.thinking);
+                plan.set(a.plan.clone());
+                pending.set(a.pending);
+                approve_tx.set(a.approve_tx.clone());
+                user_tx.set(a.user_tx.clone());
+                agents_status.set(a.status.clone());
+                changes.set(a.changes.clone());
             }
+            None => space.set(None),
         }
     });
+
+    // Auto-démarrage : la session active ouvre sa conversation dès qu'on est sur l'Assistant.
+    use_effect(move || {
+        let (idx, need) = {
+            let s = sessions.read();
+            (s.active_index(), s.active().map(|a| !a.started).unwrap_or(false))
+        };
+        if need && view() == View::Chat {
+            state::start_session_chat(sessions, idx);
+        }
+    });
+
+    // « Nouvelle conversation » : relance la session active (contexte remis à zéro).
+    let start_chat = move |_| {
+        let idx = sessions.read().active_index();
+        state::start_session_chat(sessions, idx);
+    };
 
     rsx! {
         style { {styles::CSS} }
         div { class: "app",
             h1 { "🎻 Orchestra IDE" }
 
-            // Sélecteur d'espaces : chemin + espaces connus (récents) — équivalent [3] du TUI.
-            components::SpaceBar { space, space_path, known }
+            // Sélecteur d'espaces : ouvre chaque espace dans un onglet.
+            components::SpaceBar { sessions, known }
+
+            // Barre d'onglets (sessions) — n'apparaît qu'à partir de deux sessions.
+            { components::tabs_bar(sessions) }
 
             {components::nav(view)}
 

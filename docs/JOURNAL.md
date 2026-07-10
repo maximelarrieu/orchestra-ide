@@ -452,7 +452,27 @@ Suppression de tout ce qui pré-câblait l'orchestre : l'Orchestrateur compose d
   formulaires « nouvel espace » (TUI + desktop) réduits aux champs utiles ; `SquadPanel`/sidebar
   affichent l'Orchestrateur + les sous-agents **apparus à la volée** (plus de roster figé).
 - Parité TUI ⇄ GUI respectée ; `orchestra-core` + `orchestra-tui` verts, `clippy` sans warning.
-- **Suite** : Phase 3 (refonte UI façon Cursor) et les sessions/onglets.
+- **Suite** : Phase 3 (refonte UI façon Cursor).
+
+## Refonte — Phase 2 (suite) : sessions en onglets ✅
+
+Les Espaces s'ouvrent désormais comme des **onglets** : plusieurs sessions ouvertes en même
+temps, chacune avec **son propre contexte et son historique**, et on **bascule** de l'une à
+l'autre sans rien perdre.
+- **Cœur** — module `session::Sessions<T>`, générique sur un trait `Tabbed` (titre + racine) :
+  mécanique d'onglets **testée** (ouvrir/dédup par racine/activer/fermer/cycler/`index_of`),
+  agnostique de l'affichage. Rouvrir un Espace déjà ouvert **réactive** son onglet (historique
+  préservé, pas de doublon).
+- **TUI** — la boucle gère N sessions. Chaque onglet garde son `App` et ses canaux ; une session
+  en arrière-plan continue de tourner (ses événements s'empilent dans son `rx`). Barre d'onglets
+  en tête (dès 2 sessions), **Tab / Maj+Tab** pour circuler, **Ctrl+W** pour fermer. Ouvrir un
+  Espace (sélecteur / navigateur / saisie / création) ouvre un onglet.
+- **Desktop** — même modèle via `Sessions<DesktopSession>` dans un `Signal` : l'état vivant de
+  chaque session (messages, plan, modifs, statuts, canaux) vit dans le store ; les composants
+  lisent une **projection** de la session active. Les flux d'événements écrivent dans **leur**
+  session (repérée par sa racine), donc une session en arrière-plan n'altère jamais l'affichage
+  courant. Barre d'onglets cliquable (basculer / fermer).
+- **Suite** : Phase 3 (refonte UI façon Cursor : explorateur · centre code/diff · chat).
 
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 

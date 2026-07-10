@@ -71,6 +71,12 @@ impl<T> Sessions<T> {
         self.tabs.get(index)
     }
 
+    /// Onglet par index, en écriture (utile pour muter une session **non active** — p.ex. quand
+    /// un flux d'événements arrive pour une session en arrière-plan).
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        self.tabs.get_mut(index)
+    }
+
     /// Itère sur les onglets, dans l'ordre (pour dessiner la barre d'onglets).
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.tabs.iter()
@@ -134,6 +140,11 @@ impl<T: Tabbed> Sessions<T> {
     /// Titres d'affichage, dans l'ordre.
     pub fn titles(&self) -> Vec<String> {
         self.tabs.iter().map(|t| t.title()).collect()
+    }
+
+    /// Index de l'onglet ayant cette racine, s'il existe.
+    pub fn index_of(&self, root: &Path) -> Option<usize> {
+        self.tabs.iter().position(|t| t.root() == root)
     }
 }
 

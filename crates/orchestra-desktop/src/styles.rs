@@ -100,6 +100,17 @@ pub const CSS: &str = r#"
     .chiplabel:hover { color: #fff; background: var(--bg-hover); }
     .chipx { color: var(--text-mute); padding: .2rem .5rem; }
     .chipx:hover { color: var(--del); }
+    /* Barre d'onglets (sessions) */
+    .sessiontabs { display: flex; flex-wrap: wrap; gap: .3rem; padding: .3rem 1rem 0; }
+    .stab { display: inline-flex; align-items: center; background: var(--bg-elev);
+            border: 1px solid var(--border); border-bottom: none;
+            border-radius: 8px 8px 0 0; overflow: hidden; }
+    .stab.on { background: var(--bg); border-top: 2px solid var(--focus); }
+    .stablabel { color: var(--text-mute); padding: .25rem .7rem; }
+    .stab.on .stablabel { color: #fff; }
+    .stablabel:hover { color: #fff; background: var(--bg-hover); }
+    .stabx { color: var(--text-mute); padding: .25rem .5rem; }
+    .stabx:hover { color: var(--del); }
     .newspace { display: flex; flex-direction: column; gap: .5rem; background: var(--bg-elev);
                 border: 1px solid var(--border); border-radius: var(--radius); padding: .8rem; margin-top: .5rem; }
     .types { display: flex; gap: .4rem; flex-wrap: wrap; }
