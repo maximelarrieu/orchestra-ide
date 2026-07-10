@@ -694,7 +694,7 @@ impl App {
                 self.set_task_status(id, PlanStatus::Failed);
                 return;
             }
-            AgentEvent::FileChanged { path, added, removed, diff } => {
+            AgentEvent::FileChanged { path, added, removed, diff, .. } => {
                 self.changes.push(FileChange {
                     path: path.clone(),
                     added: *added,

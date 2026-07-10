@@ -34,7 +34,60 @@ pub const CSS: &str = r#"
 
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); }
-    .app { font-family: var(--font); font-size: 13px; min-height: 100vh; padding: 0 0 28px; }
+    /* Coquille plein écran : en-tête + shell 3 panneaux + barre de statut fixe (26px). */
+    .app { font-family: var(--font); font-size: 13px; height: calc(100vh - 26px);
+           display: flex; flex-direction: column; overflow: hidden; }
+
+    /* En-tête compact : marque + barre d'espaces */
+    .topbar { display: flex; align-items: center; gap: 1rem; background: var(--bg-titlebar);
+              border-bottom: 1px solid #1b1b1b; padding: 0 1rem; }
+    .brand { font-weight: 600; color: #e7e7e7; white-space: nowrap; letter-spacing: .2px; }
+    .topbar .spaces { flex: 1; border-bottom: none; background: transparent; padding: .45rem 0; }
+
+    /* Shell 3 panneaux (façon Cursor) */
+    .ide { flex: 1; min-height: 0; display: flex; }
+    .pane { overflow: auto; }
+    .pane.left { width: 260px; flex: none; border-right: 1px solid var(--border); background: var(--bg-elev); }
+    .pane.center { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+    .pane.right { width: 400px; flex: none; border-left: 1px solid var(--border);
+                  background: var(--bg-elev); display: flex; flex-direction: column; padding: 0 .8rem .6rem; }
+    .righthead { display: flex; align-items: center; justify-content: space-between;
+                 padding: .5rem 0 .3rem; font-weight: 600; color: var(--text-dim);
+                 text-transform: uppercase; font-size: .78rem; letter-spacing: .4px; }
+    button.ghost { background: none; color: #4fc1ff; padding: .2rem .4rem; }
+    button.ghost:hover { background: var(--bg-hover); }
+
+    /* Explorateur (panneau gauche) — arborescence annotée « orchestre en verre » */
+    .explorer { padding: .3rem 0; }
+    .explorerhead { padding: .4rem .6rem; font-weight: 600; color: var(--text-dim);
+                    text-transform: uppercase; font-size: .76rem; letter-spacing: .4px;
+                    position: sticky; top: 0; background: var(--bg-elev); }
+    .tree { list-style: none; margin: 0; padding: 0; }
+    .tree li { margin: 0; }
+    .trow { display: flex; align-items: center; justify-content: space-between; gap: .4rem;
+            padding: .12rem .5rem; border-left: 2px solid transparent; }
+    .trow .tname { background: none; border: none; color: var(--text); padding: 0; text-align: left;
+                   cursor: default; font: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .trow.file .tname { cursor: pointer; }
+    .trow.file:hover { background: var(--bg-hover); }
+    .trow.on { background: var(--bg-sel); }
+    .trow.act-read { border-left-color: #4fc1ff; }
+    .trow.act-write { border-left-color: var(--add); }
+    .actbadge { font-size: .68rem; padding: 0 .3rem; border-radius: 8px; white-space: nowrap; }
+    .actbadge.read { color: #4fc1ff; background: rgba(79,193,255,.12); }
+    .actbadge.write { color: var(--add); background: rgba(137,209,133,.14); }
+
+    /* Panneau central : en-tête (chemin + éditer) + corps (rendu/diff/texte) */
+    .center .centerhead { display: flex; align-items: center; gap: .6rem; padding: .45rem .8rem;
+                          border-bottom: 1px solid var(--border); background: var(--bg-elev); }
+    .center .centerhead .path { flex: 1; font-family: var(--mono); font-size: .82rem; color: var(--text-dim);
+                                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .centerbody { flex: 1; min-height: 0; overflow: auto; padding: .6rem .8rem; }
+    .center .welcome { padding: 2rem; text-align: center; margin: auto; max-width: 520px; }
+    .codeview { font-family: var(--mono); font-size: .84rem; white-space: pre-wrap;
+                margin: 0; color: var(--text); }
+    .editor { width: 100%; height: 100%; min-height: 60vh; resize: none; font-family: var(--mono);
+              font-size: .84rem; line-height: 1.5; }
 
     /* Barre de titre + barre de statut */
     h1 { font-size: 13px; font-weight: 600; color: #e7e7e7; margin: 0;
@@ -185,16 +238,12 @@ pub const CSS: &str = r#"
     .markdown .mermaid { background: #fff; padding: .8rem; border-radius: var(--radius); text-align: center; }
 
     /* Espace de travail : conversation (gauche) + Modifications en direct (droite) */
-    .worksplit { display: flex; gap: 1rem; align-items: stretch; }
-    .chatcol { flex: 1; min-width: 0; }
-    .sidecol { width: 380px; flex: none; border-left: 1px solid var(--border); padding-left: .8rem;
-               max-height: 72vh; overflow: auto; }
-    .livechanges .list { min-width: 0; }
-    .livechanges .diff { margin-top: .5rem; max-height: 40vh; }
+    /* Colonne de conversation dans le panneau droit : remplit la hauteur, le fil défile. */
+    .chatcol { flex: 1; min-height: 0; display: flex; }
 
     /* Chat */
-    .chat { display: flex; flex-direction: column; gap: .6rem; }
-    .messages { display: flex; flex-direction: column; gap: .5rem; height: 62vh; min-height: 320px;
+    .chat { display: flex; flex-direction: column; gap: .6rem; flex: 1; min-height: 0; }
+    .messages { display: flex; flex-direction: column; gap: .5rem; flex: 1; min-height: 120px;
                 overflow: auto; padding: .6rem; background: var(--bg); border: 1px solid var(--border);
                 border-radius: var(--radius); }
     .bubble { max-width: 80%; padding: .5rem .7rem; border-radius: 8px; }

@@ -9,6 +9,7 @@ pub mod browser;
 pub mod diff;
 pub mod error;
 pub mod events;
+pub mod explorer;
 pub mod integrations;
 pub mod llm;
 pub mod markdown_skill;

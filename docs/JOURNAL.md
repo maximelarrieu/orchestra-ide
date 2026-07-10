@@ -474,6 +474,27 @@ l'autre sans rien perdre.
   courant. Barre d'onglets cliquable (basculer / fermer).
 - **Suite** : Phase 3 (refonte UI façon Cursor : explorateur · centre code/diff · chat).
 
+## Refonte — Phase 3 : shell « Cursor » + « orchestre en verre » 🚧 (desktop)
+
+Refonte de l'UI desktop en **3 panneaux** (façon Cursor / Claude desktop) et introduction de
+l'axe innovant **« orchestre en verre »** : on *voit* l'équipe d'agents travailler dans le code.
+- **Ménage** : suppression des projets d'exemple (espagnol…) et des boutons « parasites » —
+  fini le sélecteur de vues (Assistant/Documents/Modifications) et le panneau latéral redondant.
+- **Cœur** — l'activité fichier est désormais **attribuée à l'agent** : `AgentEvent::FileChanged`
+  porte `agent`, et un nouvel `AgentEvent::FileRead { agent, path }` signale les lectures. Nouveau
+  module testé `explorer` (arborescence du workspace à plat, dossiers bruyants ignorés, bornée).
+- **Desktop** — shell `explorateur · centre · conversation` :
+  - **Explorateur** (gauche) **annoté en temps réel** : chaque fichier s'illumine selon l'agent
+    qui le **lit** (👁, liseré bleu) ou l'**écrit** (✎, liseré vert). C'est le « verre » posé sur
+    l'orchestre : on suit l'équipe qui parcourt et modifie le code, en direct.
+  - **Centre** : le fichier sélectionné — **diff** coloré s'il a été modifié par un agent dans la
+    session, sinon Markdown **rendu** (+ Mermaid) ou texte, avec édition/enregistrement.
+  - **Droite** : l'Orchestrateur (squad live + conversation + actions rapides).
+- **Parité** : périmètre desktop d'abord (choix utilisateur) ; le TUI conserve ses capacités
+  (il ignore `FileRead` pour l'instant) et sera aligné ensuite (explorateur annoté côté ratatui).
+- `orchestra-core` + `orchestra-tui` verts, `clippy` sans warning ; desktop à vérifier au build
+  local (webview absente en cloud).
+
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
 - Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts

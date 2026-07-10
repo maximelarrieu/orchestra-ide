@@ -14,6 +14,14 @@ use tokio::sync::mpsc::UnboundedSender;
 // Registre des espaces connus (récents) — partagé avec le TUI.
 pub use orchestra_core::registry::KnownSpace;
 
+/// Activité d'un agent sur un fichier (« orchestre en verre ») : qui l'a touché en dernier, et
+/// si c'était une écriture (sinon une lecture). Sert à annoter l'explorateur en temps réel.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FileActivity {
+    pub agent: String,
+    pub write: bool,
+}
+
 /// État vivant d'une **session** (un onglet) : l'Espace + toute sa conversation. Chaque session
 /// garde **son propre contexte et son historique** ; on passe de l'une à l'autre sans rien
 /// perdre, et une session en arrière-plan continue de recevoir ses événements.
@@ -25,6 +33,8 @@ pub struct DesktopSession {
     pub pending: bool,
     pub changes: Vec<FileChange>,
     pub status: HashMap<String, AgStatus>,
+    /// Activité live des agents par fichier (chemin relatif → dernier accès). Annote l'explorateur.
+    pub activity: HashMap<String, FileActivity>,
     /// Brouillon de saisie propre à la session.
     pub draft: String,
     /// Canal d'envoi des messages au coordinateur (présent une fois la conversation démarrée).
@@ -45,11 +55,18 @@ impl DesktopSession {
             pending: false,
             changes: Vec::new(),
             status: HashMap::new(),
+            activity: HashMap::new(),
             draft: String::new(),
             user_tx: None,
             approve_tx: None,
             started: false,
         }
+    }
+
+    /// Racine de travail (workspace de code si défini, sinon la racine de l'espace) — base de
+    /// l'arborescence de l'explorateur.
+    pub fn workspace_root(&self) -> &std::path::Path {
+        self.space.config.workspace_path.as_deref().unwrap_or(&self.space.root)
     }
 }
 
@@ -60,14 +77,6 @@ impl Tabbed for DesktopSession {
     fn root(&self) -> &Path {
         &self.space.root
     }
-}
-
-/// Vue centrale courante (équivalent des touches du TUI).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View {
-    Chat,
-    Documents,
-    Changes,
 }
 
 /// Nature d'un message de chat (pour le style de bulle).
@@ -199,7 +208,13 @@ fn apply_event(sess: &mut DesktopSession, ev: AgentEvent) {
         }
         AgentEvent::TaskDone { id } => set_status(sess, &id, "fait ✓"),
         AgentEvent::TaskFailed { id, .. } => set_status(sess, &id, "échec ✗"),
-        AgentEvent::FileChanged { path, added, removed, diff } => {
+        AgentEvent::FileRead { agent, path } => {
+            mark(sess, &agent, AgStatus::Working);
+            sess.activity.insert(path, FileActivity { agent, write: false });
+        }
+        AgentEvent::FileChanged { agent, path, added, removed, diff } => {
+            mark(sess, &agent, AgStatus::Working);
+            sess.activity.insert(path.clone(), FileActivity { agent, write: true });
             sess.changes.push(FileChange { path, added, removed, diff });
         }
     }
@@ -231,6 +246,7 @@ pub fn start_session_chat(mut sessions: Signal<Sessions<DesktopSession>>, index:
             sess.thinking = false;
             sess.status.clear();
             sess.changes.clear();
+            sess.activity.clear();
             sess.user_tx = Some(handle.user);
             sess.approve_tx = Some(handle.approve);
             sess.started = true;
@@ -257,6 +273,12 @@ pub fn start_session_chat(mut sessions: Signal<Sessions<DesktopSession>>, index:
 /// Enregistre un document quelconque de l'espace (persona, memory, ADR, `.md`) via le cœur.
 pub fn save_document(path: &Path, content: &str) -> bool {
     orchestra_core::model::save_document(path, content).is_ok()
+}
+
+/// Lit un fichier du workspace (`root` + chemin relatif) en UTF-8. `None` si illisible ou binaire.
+/// Alimente le panneau central de l'explorateur.
+pub fn read_file_rel(root: &Path, rel: &str) -> Option<String> {
+    std::fs::read_to_string(root.join(rel)).ok()
 }
 
 // --- Espaces : registre des espaces connus (récents) ---------------------------------------

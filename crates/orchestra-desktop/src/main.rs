@@ -20,7 +20,7 @@ use orchestra_core::session::Sessions;
 use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
 
-use state::{ChatMsg, DesktopSession, PlanRow, View};
+use state::{ChatMsg, DesktopSession, PlanRow};
 
 fn main() {
     dioxus::launch(app);
@@ -33,13 +33,12 @@ fn app() -> Element {
     let sessions = use_signal(Sessions::<DesktopSession>::new);
     // Espaces connus (récents).
     let known = use_signal(state::known_spaces);
-    // Vue centrale : Assistant / Documents / Modifications.
-    let view = use_signal(|| View::Chat);
+    // Fichier ouvert au centre (chemin relatif au workspace de la session active).
+    let selected = use_signal(|| None::<String>);
 
-    // Projections « à plat » de la session ACTIVE : les composants d'affichage lisent ces
-    // signaux (inchangés). Ils sont rafraîchis par l'effet ci-dessous à chaque mutation du store
-    // (événement d'agent, changement d'onglet). Les sessions en arrière-plan accumulent leur
-    // état dans le store sans perturber l'affichage.
+    // Projections « à plat » de la session ACTIVE pour le panneau de conversation. Rafraîchies à
+    // chaque mutation du store (événement d'agent, changement d'onglet). Les sessions en
+    // arrière-plan accumulent leur état dans le store sans perturber l'affichage courant.
     let mut space = use_signal(|| None::<ContextSpace>);
     let mut messages = use_signal(Vec::<ChatMsg>::new);
     let mut thinking = use_signal(|| false);
@@ -48,9 +47,7 @@ fn app() -> Element {
     let mut approve_tx = use_signal(|| None::<UnboundedSender<bool>>);
     let mut user_tx = use_signal(|| None::<UnboundedSender<String>>);
     let mut agents_status = use_signal(HashMap::<String, state::AgStatus>::new);
-    let mut changes = use_signal(Vec::<state::FileChange>::new);
     let draft = use_signal(String::new);
-    let doc_content = use_signal(String::new);
 
     // Projection : synchronise les signaux plats avec la session active. Les signaux sont `Copy`,
     // donc les capturer ici (par copie) n'empêche pas de les repasser aux composants plus bas.
@@ -66,19 +63,18 @@ fn app() -> Element {
                 approve_tx.set(a.approve_tx.clone());
                 user_tx.set(a.user_tx.clone());
                 agents_status.set(a.status.clone());
-                changes.set(a.changes.clone());
             }
             None => space.set(None),
         }
     });
 
-    // Auto-démarrage : la session active ouvre sa conversation dès qu'on est sur l'Assistant.
+    // Auto-démarrage : la session active ouvre sa conversation dès qu'elle existe.
     use_effect(move || {
         let (idx, need) = {
             let s = sessions.read();
             (s.active_index(), s.active().map(|a| !a.started).unwrap_or(false))
         };
-        if need && view() == View::Chat {
+        if need {
             state::start_session_chat(sessions, idx);
         }
     });
@@ -89,46 +85,47 @@ fn app() -> Element {
         state::start_session_chat(sessions, idx);
     };
 
+    let has_session = space().is_some();
+
     rsx! {
         style { {styles::CSS} }
         div { class: "app",
-            h1 { "🎻 Orchestra IDE" }
-
-            // Sélecteur d'espaces : ouvre chaque espace dans un onglet.
-            components::SpaceBar { sessions, known }
-
-            // Barre d'onglets (sessions) — n'apparaît qu'à partir de deux sessions.
+            // En-tête compact : titre + barre d'espaces (ouvrir/créer) + onglets.
+            div { class: "topbar",
+                span { class: "brand", "🎻 Orchestra IDE" }
+                components::SpaceBar { sessions, known }
+            }
             { components::tabs_bar(sessions) }
 
-            {components::nav(view)}
-
-            match view() {
-                View::Chat => rsx! {
-                    div { class: "chatwrap",
+            // Shell 3 panneaux (façon Cursor) : explorateur · centre · conversation.
+            div { class: "ide",
+                div { class: "pane left",
+                    components::FileExplorer { sessions, selected }
+                }
+                div { class: "pane center",
+                    components::CenterPane { sessions, selected }
+                }
+                div { class: "pane right",
+                    div { class: "righthead",
+                        span { "Orchestrateur" }
+                        button { class: "ghost", onclick: start_chat, "↻ Nouvelle conversation" }
+                    }
+                    components::SquadPanel { status: agents_status }
+                    if has_session {
                         div { class: "actions",
-                            button { onclick: start_chat, "↻ Nouvelle conversation" }
                             for a in orchestra_core::runtime::quick_actions() {
                                 { components::action_button(a, user_tx, draft) }
                             }
                         }
-                        p { class: "hint",
-                            "Décris ton besoin dans la zone de saisie, ou utilise une action ci-dessus — tu peux aussi simplement discuter avec le coordinateur."
-                        }
-                        components::SquadPanel { status: agents_status }
-                        div { class: "worksplit",
-                            div { class: "chatcol",
-                                if user_tx().is_some() {
-                                    {components::chat_view(messages, thinking, draft, user_tx, plan, pending, approve_tx)}
-                                }
-                            }
-                            div { class: "sidecol",
-                                components::LiveChanges { changes }
+                        div { class: "chatcol",
+                            if user_tx().is_some() {
+                                {components::chat_view(messages, thinking, draft, user_tx, plan, pending, approve_tx)}
                             }
                         }
+                    } else {
+                        p { class: "hint", "Ouvre ou crée un espace pour discuter avec l'Orchestrateur." }
                     }
-                },
-                View::Documents => rsx! { components::DocumentsView { space, content: doc_content } },
-                View::Changes => rsx! { components::ChangesView { changes } },
+                }
             }
 
             // Barre de statut (façon VS Code).

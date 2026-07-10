@@ -131,9 +131,24 @@ async fn run_agent_turn(
                 if !outcome.is_error {
                     let after = std::fs::read_to_string(&abs).unwrap_or_default();
                     let (added, removed, diff) = crate::diff::summarize(&before, &after);
-                    let _ = tx.send(AgentEvent::FileChanged { path: rel, added, removed, diff });
+                    let _ = tx.send(AgentEvent::FileChanged {
+                        agent: label.to_string(),
+                        path: rel,
+                        added,
+                        removed,
+                        diff,
+                    });
                 }
                 outcome
+            } else if name == skills::READ_FILE {
+                // Lecture : on signale quel agent explore quel fichier (« orchestre en verre »).
+                if let Some(rel) = input.get("path").and_then(Value::as_str) {
+                    let _ = tx.send(AgentEvent::FileRead {
+                        agent: label.to_string(),
+                        path: rel.to_string(),
+                    });
+                }
+                skills::execute_skill(&name, &input, &ctx.workspace).await
             } else if name == SPAWN_AGENT {
                 // L'Orchestrateur déploie un sous-agent ad hoc (seul lui a cet outil → pas de récursion).
                 let role = input.get("role").and_then(Value::as_str).unwrap_or("Agent").trim().to_string();

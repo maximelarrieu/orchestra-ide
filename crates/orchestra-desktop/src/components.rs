@@ -2,36 +2,14 @@
 //! elles lisent des signaux et déclenchent les ponts de [`crate::state`].
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use dioxus::prelude::*;
-use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime::QuickAction;
 use orchestra_core::session::Sessions;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::state::{self, AgStatus, ChatMsg, DesktopSession, FileChange, KnownSpace, MsgKind, PlanRow, View};
-
-/// Barre de navigation entre les vues.
-pub fn nav(mut view: Signal<View>) -> Element {
-    let cur = view();
-    rsx! {
-        div { class: "nav",
-            button { class: "{tab(cur, View::Chat)}", onclick: move |_| view.set(View::Chat), "Assistant" }
-            button { class: "{tab(cur, View::Documents)}", onclick: move |_| view.set(View::Documents), "Documents" }
-            button { class: "{tab(cur, View::Changes)}", onclick: move |_| view.set(View::Changes), "Modifications" }
-        }
-    }
-}
-
-fn tab(cur: View, this: View) -> &'static str {
-    if cur == this {
-        "tab on"
-    } else {
-        "tab"
-    }
-}
+use crate::state::{self, AgStatus, ChatMsg, DesktopSession, FileActivity, KnownSpace, MsgKind, PlanRow};
 
 /// Barre d'**onglets** (sessions) : un onglet par session ouverte, l'active mise en évidence ;
 /// clic pour basculer, × pour fermer. N'apparaît qu'à partir de deux sessions.
@@ -116,56 +94,7 @@ pub fn plan_panel(rows: &[PlanRow]) -> Element {
     }
 }
 
-/// Vue Modifications : fichiers changés par les agents (liste) + diff coloré du fichier choisi.
-#[component]
-pub fn ChangesView(changes: Signal<Vec<FileChange>>) -> Element {
-    let sel = use_signal(|| 0usize);
-    let list = changes();
-    if list.is_empty() {
-        return rsx! {
-            p { class: "muted", "Aucune modification — les écritures des agents apparaîtront ici." }
-        };
-    }
-    let idx = sel().min(list.len() - 1);
-    let diff = list[idx].diff.clone();
-    rsx! {
-        div { class: "cols",
-            ul { class: "list",
-                for (i, c) in list.iter().enumerate() {
-                    { change_item(i, c.path.clone(), c.added, c.removed, i == idx, sel) }
-                }
-            }
-            div { class: "viewer",
-                div { class: "diff",
-                    for line in diff.lines() {
-                        {
-                            let cls = if line.starts_with("+ ") {
-                                "dl add"
-                            } else if line.starts_with("- ") {
-                                "dl del"
-                            } else {
-                                "dl ctx"
-                            };
-                            rsx! { div { class: "{cls}", "{line}" } }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn change_item(index: usize, path: String, added: usize, removed: usize, active: bool, mut sel: Signal<usize>) -> Element {
-    let cls = if active { "row on" } else { "row" };
-    rsx! {
-        li {
-            button { class: "{cls}", onclick: move |_| sel.set(index),
-                "{path}  +{added} -{removed}" }
-        }
-    }
-}
-
-/// Bouton d'action rapide de l'Assistant (propre au type de projet) : envoie le message
+/// Bouton d'action rapide de l'Assistant : envoie le message
 /// correspondant au coordinateur. La saisie courante sert d'entrée si l'action l'utilise.
 pub fn action_button(
     a: QuickAction,
@@ -187,50 +116,6 @@ pub fn action_button(
                 }
             },
             "{label}" }
-    }
-}
-
-/// Panneau **Modifications en direct** (à côté de la conversation) : liste des fichiers changés
-/// par les agents + diff du fichier cliqué. Affiche l'historique du run en cours.
-#[component]
-pub fn LiveChanges(changes: Signal<Vec<FileChange>>) -> Element {
-    let mut sel = use_signal(|| None::<usize>);
-    let list = changes();
-    rsx! {
-        div { class: "livechanges",
-            h3 { "Modifications ({list.len()})" }
-            if list.is_empty() {
-                p { class: "muted", "Les fichiers modifiés par les agents apparaîtront ici, en direct." }
-            } else {
-                ul { class: "list",
-                    for (i, c) in list.iter().enumerate() {
-                        {
-                            let path = c.path.clone();
-                            rsx! {
-                                li {
-                                    button { class: "row", onclick: move |_| sel.set(Some(i)),
-                                        "{path}  +{c.added} -{c.removed}" }
-                                }
-                            }
-                        }
-                    }
-                }
-                if let Some(i) = sel() {
-                    if let Some(c) = list.get(i) {
-                        div { class: "diff",
-                            for line in c.diff.lines() {
-                                {
-                                    let cls = if line.starts_with("+ ") { "dl add" }
-                                        else if line.starts_with("- ") { "dl del" }
-                                        else { "dl ctx" };
-                                    rsx! { div { class: "{cls}", "{line}" } }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -427,81 +312,180 @@ const MERMAID_BOOT: &str = r#"
 })();
 "#;
 
-/// Vue Documents : liste des documents + visualiseur **Markdown rendu** (titres, listes, code,
-/// tableaux) et **diagrammes Mermaid**, avec **édition** du document affiché (persona, memory…).
+/// **Explorateur** (panneau gauche) : arborescence du workspace de la session active, **annotée
+/// en temps réel** par l'activité des agents (« orchestre en verre ») — un liseré et un badge
+/// indiquent quel agent **lit** (👁) ou **écrit** (✎) chaque fichier. Cliquer un fichier l'ouvre
+/// au centre.
 #[component]
-pub fn DocumentsView(space: Signal<Option<ContextSpace>>, content: Signal<String>) -> Element {
-    let docs = space().map(|s| s.documents()).unwrap_or_default();
-    let html = state::render_markdown_html(&content());
-
-    // Chemin du document affiché + état d'édition (textarea) + brouillon.
-    let sel_path = use_signal(|| None::<PathBuf>);
-    let mut editing = use_signal(|| false);
-    let mut draft = use_signal(String::new);
-
-    // Après chaque changement de document, (re)rend les diagrammes Mermaid dans la webview.
-    use_effect(move || {
-        let _ = content(); // dépendance réactive : re-déclenche au changement de contenu
-        spawn(async move {
-            let _ = dioxus::document::eval(MERMAID_BOOT).await;
-        });
-    });
-
+pub fn FileExplorer(
+    sessions: Signal<Sessions<DesktopSession>>,
+    selected: Signal<Option<String>>,
+) -> Element {
+    let s = sessions.read();
+    let Some(sess) = s.active() else {
+        return rsx! { div { class: "explorer", p { class: "muted", "Aucune session ouverte." } } };
+    };
+    let tree = orchestra_core::explorer::tree(sess.workspace_root());
+    let activity = sess.activity.clone();
+    let cur = selected();
     rsx! {
-        div { class: "cols",
-            ul { class: "list",
-                for d in docs {
-                    { doc_item(d.label.clone(), d.path.clone(), content, sel_path, editing) }
+        div { class: "explorer",
+            div { class: "explorerhead", "📂 {sess.space.config.project_name}" }
+            ul { class: "tree",
+                if tree.nodes.is_empty() {
+                    li { span { class: "muted", "(workspace vide ou introuvable)" } }
                 }
-            }
-            div { class: "viewerpane",
-                // Barre d'actions : éditer / enregistrer / annuler.
-                div { class: "docactions",
-                    if editing() {
-                        button { class: "go",
-                            onclick: move |_| {
-                                if let Some(p) = sel_path() {
-                                    if state::save_document(&p, &draft()) { content.set(draft()); }
-                                }
-                                editing.set(false);
-                            },
-                            "💾 Enregistrer" }
-                        button { onclick: move |_| editing.set(false), "Annuler" }
-                    } else if sel_path().is_some() {
-                        button { onclick: move |_| { draft.set(content()); editing.set(true); }, "✏ Éditer" }
-                    }
+                for node in tree.nodes {
+                    { file_row(node.clone(), activity.get(&node.rel).cloned(), cur.clone(), selected) }
                 }
-
-                if editing() {
-                    textarea { class: "fichearea", value: "{draft}",
-                        oninput: move |e| draft.set(e.value()) }
-                } else if content().is_empty() {
-                    div { class: "viewer markdown", p { class: "muted", "Sélectionne un document à gauche." } }
-                } else {
-                    div { class: "viewer markdown", dangerous_inner_html: html }
+                if tree.truncated {
+                    li { span { class: "muted", "… (arborescence tronquée)" } }
                 }
             }
         }
     }
 }
 
-fn doc_item(
-    label: String,
-    path: PathBuf,
-    mut content: Signal<String>,
-    mut sel_path: Signal<Option<PathBuf>>,
-    mut editing: Signal<bool>,
+/// Une ligne de l'explorateur (fichier ou dossier), indentée selon la profondeur et annotée de
+/// l'activité agent éventuelle.
+fn file_row(
+    node: orchestra_core::explorer::FileNode,
+    act: Option<FileActivity>,
+    selected_rel: Option<String>,
+    mut selected: Signal<Option<String>>,
 ) -> Element {
+    let pad = format!("padding-left: {}rem;", 0.4 + node.depth as f32 * 0.8);
+    let is_sel = selected_rel.as_deref() == Some(node.rel.as_str());
+    let icon = if node.is_dir { "📁" } else { "📄" };
+    // Classe : dossier (non cliquable) ou fichier ; sélection ; activité (read/write).
+    let mut cls = String::from(if node.is_dir { "trow dir" } else { "trow file" });
+    if is_sel {
+        cls.push_str(" on");
+    }
+    match &act {
+        Some(a) if a.write => cls.push_str(" act-write"),
+        Some(_) => cls.push_str(" act-read"),
+        None => {}
+    }
+    // Badge d'activité pré-calculé (classe + texte) pour éviter le conditionnel en attribut.
+    let badge = act.map(|a| {
+        if a.write {
+            ("actbadge write", format!("✎ {}", a.agent))
+        } else {
+            ("actbadge read", format!("👁 {}", a.agent))
+        }
+    });
+    let rel = node.rel.clone();
+    let name = node.name.clone();
+    let is_dir = node.is_dir;
     rsx! {
         li {
-            button { class: "row", onclick: move |_| {
-                    if let Ok(text) = orchestra_core::model::load_document(&path) {
-                        content.set(text);
-                        sel_path.set(Some(path.clone()));
-                        editing.set(false); // on quitte l'édition en changeant de document
+            div { class: "{cls}", style: "{pad}",
+                if is_dir {
+                    span { class: "tname", "{icon} {name}" }
+                } else {
+                    button { class: "tname", onclick: move |_| selected.set(Some(rel.clone())), "{icon} {name}" }
+                }
+                if let Some((bcls, btxt)) = badge {
+                    span { class: "{bcls}", "{btxt}" }
+                }
+            }
+        }
+    }
+}
+
+/// **Panneau central** : contenu du fichier sélectionné. Si un agent l'a modifié pendant la
+/// session, on montre son **diff**. Sinon, on affiche le fichier — Markdown **rendu** (avec
+/// diagrammes Mermaid) pour les `.md`, texte brut sinon — et on peut l'**éditer/enregistrer**.
+#[component]
+pub fn CenterPane(
+    sessions: Signal<Sessions<DesktopSession>>,
+    selected: Signal<Option<String>>,
+) -> Element {
+    // Hooks EN PREMIER (règle des hooks Dioxus : toujours appelés, même hors sélection).
+    let mut editing = use_signal(|| false);
+    let mut draft = use_signal(String::new);
+    // (Re)rend les diagrammes Mermaid quand la sélection change (Markdown).
+    use_effect(move || {
+        let _ = selected();
+        spawn(async move {
+            let _ = dioxus::document::eval(MERMAID_BOOT).await;
+        });
+    });
+
+    // Données de la session active, extraites sous le verrou de lecture puis relâchées.
+    let (project, root, sel, diff, content) = {
+        let s = sessions.read();
+        let Some(sess) = s.active() else {
+            return rsx! { div { class: "center", div { class: "welcome",
+                h2 { "Orchestra IDE" }
+                p { class: "muted", "Ouvre ou crée un espace pour commencer." }
+            } } };
+        };
+        let project = sess.space.config.project_name.clone();
+        let root = sess.workspace_root().to_path_buf();
+        let sel = selected();
+        let diff = sel.as_ref().and_then(|rel| {
+            sess.changes.iter().rev().find(|c| &c.path == rel).map(|c| c.diff.clone())
+        });
+        let content = sel.as_ref().and_then(|rel| state::read_file_rel(&root, rel));
+        (project, root, sel, diff, content)
+    };
+
+    let Some(rel) = sel else {
+        return rsx! { div { class: "center", div { class: "welcome",
+            h2 { "🎻 {project}" }
+            p { class: "muted", "Sélectionne un fichier à gauche, ou discute avec l'Orchestrateur à droite. Les fichiers que les agents lisent et modifient s'illuminent dans l'explorateur en temps réel." }
+        } } };
+    };
+
+    let is_md = rel.ends_with(".md");
+    let abs = root.join(&rel);
+
+    let html = content.as_deref().map(state::render_markdown_html).unwrap_or_default();
+    let raw = content.clone().unwrap_or_default();
+    let raw_for_edit = raw.clone(); // capture séparée pour le bouton « Éditer » (raw sert aussi au rendu)
+
+    rsx! {
+        div { class: "center",
+            div { class: "centerhead",
+                span { class: "path", "{rel}" }
+                if diff.is_none() {
+                    if editing() {
+                        button { class: "go",
+                            onclick: move |_| {
+                                if state::save_document(&abs, &draft()) { editing.set(false); }
+                            },
+                            "💾 Enregistrer" }
+                        button { onclick: move |_| editing.set(false), "Annuler" }
+                    } else {
+                        button { onclick: move |_| { draft.set(raw_for_edit.clone()); editing.set(true); }, "✏ Éditer" }
                     }
-                },
-                "{label}"
+                }
+            }
+            div { class: "centerbody",
+                if let Some(d) = diff {
+                    // Fichier touché par un agent → on montre le diff coloré.
+                    div { class: "diff",
+                        for line in d.lines() {
+                            {
+                                let cls = if line.starts_with("+ ") { "dl add" }
+                                    else if line.starts_with("- ") { "dl del" }
+                                    else { "dl ctx" };
+                                rsx! { div { class: "{cls}", "{line}" } }
+                            }
+                        }
+                    }
+                } else if editing() {
+                    textarea { class: "editor", value: "{draft}",
+                        oninput: move |e| draft.set(e.value()) }
+                } else if content.is_none() {
+                    p { class: "muted", "Fichier binaire ou illisible." }
+                } else if is_md {
+                    div { class: "viewer markdown", dangerous_inner_html: html }
+                } else {
+                    pre { class: "codeview", "{raw}" }
+                }
             }
         }
     }

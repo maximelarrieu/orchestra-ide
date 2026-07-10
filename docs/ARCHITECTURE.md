@@ -54,7 +54,7 @@ crates/
 ├─ orchestra-core/src/
 │  ├─ lib.rs            # ré-exports publics
 │  ├─ error.rs          # OrchestraError (type d'erreur unique)
-│  ├─ events.rs         # AgentEvent — contrat cœur ↔ UI
+│  ├─ events.rs         # AgentEvent — contrat cœur ↔ UI (activité fichier attribuée à l'agent)
 │  ├─ runtime.rs        # Orchestrateur PTAC : conversation + spawn_agent (boucle LLM ou simulée)
 │  ├─ llm.rs            # LlmClient : Claude/Gemini au choix, en HTTP (Phase 4a) + prompt caching
 │  ├─ skills.rs         # primitives exécutables via tool use — registre (Phase 4a, +Web_Fetch)
@@ -63,21 +63,24 @@ crates/
 │  ├─ orchestration.rs  # modèle de plan (Task/Plan, tri topo, validation, repli)
 │  ├─ integrations.rs   # Skills Git (local) + GitHub (REST) (Phase 4b)
 │  ├─ registry.rs       # registre global des espaces connus (récents) — partagé TUI/GUI
+│  ├─ session.rs        # Sessions<T> : mécanique d'onglets (ouvrir/activer/fermer) — partagé TUI/GUI
+│  ├─ explorer.rs       # arborescence de fichiers du workspace (panneau explorateur) — testé
+│  ├─ browser.rs        # navigateur de dossiers (découvrir un espace sans taper de chemin)
 │  ├─ scaffold.rs       # scaffold_space() : crée un Espace (Phase 2)
 │  └─ model/
 │     ├─ config.rs        # ProjectConfig + Integrations
 │     └─ space.rs         # ContextSpace (+ Adr)
 ├─ orchestra-tui/src/
-│  ├─ main.rs           # dispatch CLI + boucle async tokio::select!
+│  ├─ main.rs           # dispatch CLI + boucle async tokio::select! (multi-sessions/onglets)
 │  ├─ app.rs            # App : état agrégé du dashboard (sans ratatui)
-│  ├─ dashboard.rs      # rendu des zones (en-tête / radar / docs / agents / menu)
-│  ├─ editor.rs         # mini-éditeur texte (persona & fiches de skill)
+│  ├─ dashboard.rs      # rendu des zones (onglets / en-tête / radar / docs / menu)
+│  ├─ editor.rs         # mini-éditeur texte (persona & documents)
 │  ├─ markdown.rs       # rendu Markdown → lignes ratatui (visualiseur)
 │  └─ wizard.rs         # assistant interactif `orchestra init`
-└─ orchestra-desktop/src/   # GUI bureau Dioxus (tout-Rust)
-   ├─ main.rs           # launch + composant racine (composition + signaux)
-   ├─ state.rs          # état + pont vers le cœur (drive_orchestration, PlanRow)
-   ├─ components.rs     # composants de rendu (header / plan_panel / radar)
+└─ orchestra-desktop/src/   # GUI bureau Dioxus (tout-Rust) — shell 3 panneaux façon Cursor
+   ├─ main.rs           # launch + racine : topbar · explorateur · centre · conversation
+   ├─ state.rs          # état + pont vers le cœur (Sessions<DesktopSession>, activité fichier)
+   ├─ components.rs     # FileExplorer (annoté) / CenterPane / SquadPanel / chat_view / SpaceBar
    └─ styles.rs         # CSS de la fenêtre
 ```
 
