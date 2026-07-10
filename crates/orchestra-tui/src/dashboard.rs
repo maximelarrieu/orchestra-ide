@@ -707,19 +707,6 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             "(Entrée envoyer · Maj/Alt+Entrée nouvelle ligne · Échap quitter)",
             Style::new().dark_gray(),
         )));
-        // Actions rapides de l'Assistant (F1..Fn).
-        if app.space.is_some() {
-            let actions = orchestra_core::runtime::quick_actions();
-            if !actions.is_empty() {
-                let hint = actions
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| format!("F{} {}", i + 1, a.label))
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                lines.push(Line::from(Span::styled(format!("Actions : {hint}"), Style::new().cyan())));
-            }
-        }
         lines
     } else if let Some(buf) = &app.intention {
         vec![Line::from(vec![

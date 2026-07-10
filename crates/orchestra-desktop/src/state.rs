@@ -299,6 +299,21 @@ pub fn memory_entries(root: &Path) -> Vec<String> {
     orchestra_core::memory::entries(root)
 }
 
+/// Fournisseur LLM détecté à partir des variables d'environnement (lues au lancement) : le nom
+/// à afficher dans la barre de statut. `None` ⇒ mode simulé (aucune clé), l'agent répond en local.
+pub fn llm_status() -> Option<&'static str> {
+    let has = |k: &str| std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
+    if has("ANTHROPIC_API_KEY") && has("GEMINI_API_KEY") {
+        Some("Claude + Gemini")
+    } else if has("ANTHROPIC_API_KEY") {
+        Some("Claude")
+    } else if has("GEMINI_API_KEY") {
+        Some("Gemini")
+    } else {
+        None
+    }
+}
+
 // --- Espaces : registre des espaces connus (récents) ---------------------------------------
 
 /// Espaces connus (récents d'abord), depuis le registre global.

@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 
 use dioxus::prelude::*;
-use orchestra_core::runtime::QuickAction;
 use orchestra_core::session::Sessions;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -229,31 +228,6 @@ pub fn TaskRail(
     }
 }
 
-/// Bouton d'action rapide de l'Assistant : envoie le message
-/// correspondant au coordinateur. La saisie courante sert d'entrée si l'action l'utilise.
-pub fn action_button(
-    a: QuickAction,
-    user_tx: Signal<Option<UnboundedSender<String>>>,
-    mut draft: Signal<String>,
-) -> Element {
-    let cls = if a.primary { "go" } else { "" };
-    let build = a.build;
-    let uses = a.uses_input;
-    let label = a.label;
-    rsx! {
-        button { class: "{cls}",
-            onclick: move |_| {
-                if let Some(tx) = user_tx() {
-                    let _ = tx.send(build(&draft()));
-                    if uses {
-                        draft.set(String::new());
-                    }
-                }
-            },
-            "{label}" }
-    }
-}
-
 /// Barre d'espaces : saisie d'un chemin + **liste des espaces connus** (récents) à rouvrir d'un
 /// clic, sans retaper le chemin. Chaque entrée peut être retirée du suivi (×).
 #[component]
@@ -465,7 +439,6 @@ pub fn FileExplorer(
     let cur = selected();
     rsx! {
         div { class: "explorer",
-            div { class: "explorerhead", "📂 {sess.space.config.project_name}" }
             ul { class: "tree",
                 if tree.nodes.is_empty() {
                     li { span { class: "muted", "(workspace vide ou introuvable)" } }

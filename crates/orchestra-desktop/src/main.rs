@@ -98,7 +98,7 @@ fn app() -> Element {
     // État d'affichage : panneaux repliables + thème.
     let mut show_explorer = use_signal(|| true);
     let mut show_viewer = use_signal(|| true);
-    let mut dark = use_signal(|| false); // thème clair par défaut
+    let mut dark = use_signal(|| true); // thème sombre par défaut (comme le template)
     let mut show_spacebar = use_signal(|| false);
 
     let has_session = space().is_some();
@@ -119,14 +119,6 @@ fn app() -> Element {
                     onclick: move |_| show_spacebar.set(!show_spacebar()), "+" }
                 div { class: "topspacer" }
                 button { class: "icontoggle",
-                    title: "Explorateur de fichiers",
-                    onclick: move |_| show_explorer.set(!show_explorer()),
-                    "🗂" }
-                button { class: "icontoggle",
-                    title: "Visualiseur de fichier",
-                    onclick: move |_| show_viewer.set(!show_viewer()),
-                    "📄" }
-                button { class: "icontoggle",
                     title: "Thème clair / sombre",
                     onclick: move |_| dark.set(!dark()),
                     if dark() { "☀" } else { "☾" } }
@@ -143,7 +135,17 @@ fn app() -> Element {
 
                 if show_explorer() {
                     div { class: "pane explorerpane",
+                        div { class: "panebar",
+                            span { class: "panetitle", "📂 {project}" }
+                            button { class: "panebtn", title: "Masquer l'explorateur",
+                                onclick: move |_| show_explorer.set(false), "‹" }
+                        }
                         components::FileExplorer { sessions, selected }
+                    }
+                } else {
+                    div { class: "stub",
+                        button { class: "stubbtn", title: "Afficher l'explorateur",
+                            onclick: move |_| show_explorer.set(true), "🗂" }
                     }
                 }
 
@@ -156,11 +158,6 @@ fn app() -> Element {
                     }
                     components::SquadPanel { status: agents_status }
                     if has_session {
-                        div { class: "actions",
-                            for a in orchestra_core::runtime::quick_actions() {
-                                { components::action_button(a, user_tx, draft) }
-                            }
-                        }
                         div { class: "chatcol",
                             if user_tx().is_some() {
                                 {components::chat_view(messages, thinking, draft, user_tx)}
@@ -173,8 +170,19 @@ fn app() -> Element {
 
                 if show_viewer() {
                     div { class: "pane viewer",
+                        div { class: "panebar",
+                            span { class: "panetitle", "FICHIER" }
+                            div { class: "topspacer" }
+                            button { class: "panebtn", title: "Masquer le visualiseur",
+                                onclick: move |_| show_viewer.set(false), "›" }
+                        }
                         components::CenterPane { sessions, selected }
                         { components::terminal_panel(sessions) }
+                    }
+                } else {
+                    div { class: "stub",
+                        button { class: "stubbtn", title: "Afficher le visualiseur",
+                            onclick: move |_| show_viewer.set(true), "📄" }
                     }
                 }
 
@@ -185,6 +193,9 @@ fn app() -> Element {
             div { class: "statusbar",
                 span { class: "sb-item",
                     if has_session { "📁 {project}" } else { "Aucun espace" }
+                }
+                span { class: "sb-item",
+                    if let Some(p) = state::llm_status() { "🤖 {p}" } else { "⚠ mode simulé — clé API absente" }
                 }
                 span { class: "sb-item", "🎻 Orchestra IDE" }
             }

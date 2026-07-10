@@ -388,19 +388,6 @@ async fn event_loop(
                                         }
                                     }
                                 }
-                                // F1..Fn : actions rapides de l'Assistant (cf. quick_actions).
-                                KeyCode::F(n) => {
-                                    if app.space.is_some() {
-                                        let actions = orchestra_core::runtime::quick_actions();
-                                        if let Some(a) = actions.get((n as usize).saturating_sub(1)) {
-                                            let (build, uses) = (a.build, a.uses_input);
-                                            let input = if uses { app.chat_submit().unwrap_or_default() } else { String::new() };
-                                            if let Some(tx) = chat_tx.as_ref() {
-                                                let _ = tx.send(build(&input));
-                                            }
-                                        }
-                                    }
-                                }
                                 KeyCode::PageUp => app.radar_scroll_by(10),
                                 KeyCode::PageDown => app.radar_scroll_by(-10),
                                 KeyCode::Up => app.radar_scroll_by(3),

@@ -199,77 +199,6 @@ pub fn start_conversation(space: &ContextSpace) -> ChatHandle {
     start_conversation_inner(space, LlmClient::from_env().map(Arc::new))
 }
 
-/// Message d'**objectif rapide** : demande au coordinateur d'orchestrer directement un objectif
-/// (plan → validation → exécution) sans phase de discussion. Partagé TUI ⇄ GUI.
-pub fn orchestrate_message(objective: &str) -> String {
-    let o = objective.trim();
-    if o.is_empty() {
-        "Orchestre la prochaine étape utile du projet : établis un plan, fais-le valider, puis exécute-le."
-            .to_string()
-    } else {
-        format!(
-            "Orchestre cet objectif : {o}\n\
-             Établis un plan, fais-le valider, puis exécute-le avec les agents."
-        )
-    }
-}
-
-/// Message de **compréhension** d'un projet existant : à envoyer en premier après avoir repris
-/// un projet, pour que les agents scannent le code, documentent et posent leurs questions
-/// **avant** toute évolution. Partagé TUI ⇄ GUI.
-pub fn comprehension_message() -> String {
-    "Ce projet existe déjà. Avant toute évolution, mène une PHASE DE COMPRÉHENSION, étape par étape :\n\
-     1. Explore le code avec tes outils : liste les fichiers (`ls -R` / `find`), puis lis les \
-        fichiers clés (README, manifestes de dépendances, points d'entrée, configuration).\n\
-     2. Fais rédiger une doc de compréhension dans `docs/comprehension.md` : but du projet, stack, \
-        architecture, modules principaux, conventions, points d'attention.\n\
-     3. Pose-moi les questions qui subsistent pour bien cerner le projet.\n\
-     Ensuite seulement, invite-moi à décrire les évolutions souhaitées ; tu les implémenteras en \
-     tenant la documentation et le suivi des modifications à jour."
-        .to_string()
-}
-
-/// Une **action rapide** proposée dans l'Assistant. Data-driven et partagée TUI ⇄ GUI :
-/// les deux interfaces affichent les mêmes actions.
-pub struct QuickAction {
-    /// Libellé du bouton / de l'entrée.
-    pub label: &'static str,
-    /// Action mise en avant (style primaire).
-    pub primary: bool,
-    /// Si vrai, la saisie de l'utilisateur (objectif/idée) est intégrée au message.
-    pub uses_input: bool,
-    /// Construit le message envoyé au coordinateur (reçoit la saisie, vide si inutilisée).
-    pub build: fn(&str) -> String,
-}
-
-/// Actions rapides de l'Assistant — identiques pour tout espace.
-pub fn quick_actions() -> Vec<QuickAction> {
-    vec![
-        QuickAction { label: "▶ Objectif rapide", primary: true, uses_input: true, build: orchestrate_message },
-        QuickAction { label: "🧭 Cadrer le projet", primary: false, uses_input: true, build: cadrage_message },
-        QuickAction { label: "🔎 Analyser le projet", primary: false, uses_input: false, build: |_| comprehension_message() },
-    ]
-}
-
-/// Message de **cadrage** : transforme une idée en brief documenté **avant** de coder. À envoyer
-/// comme premier message d'une conversation — le coordinateur interviewe l'utilisateur puis fait
-/// rédiger les specs. Partagé TUI ⇄ GUI pour un comportement identique.
-pub fn cadrage_message(idea: &str) -> String {
-    let idea = idea.trim();
-    let idea = if idea.is_empty() { "(idée à préciser ensemble)" } else { idea };
-    format!(
-        "Voici mon idée de projet :\n\n{idea}\n\n\
-         Avant d'écrire la moindre ligne de code, mène un CADRAGE, étape par étape :\n\
-         1. Pose-moi des questions ciblées, **une à deux à la fois** (pas un mur de questions) \
-            pour clarifier : utilisateurs visés, fonctionnalités clés, périmètre du MVP, \
-            stack/contraintes techniques, design/UX, critères de réussite.\n\
-         2. Quand tu as assez d'éléments, fais **rédiger un brief** clair dans `docs/brief.md` \
-            (objectifs, périmètre, stack retenue, découpage en étapes) via l'agent adéquat.\n\
-         3. Résume-moi le brief et **demande validation**.\n\
-         Ne propose un plan d'implémentation et ne code **qu'après** validation du brief."
-    )
-}
-
 /// Cœur testable : client LLM injecté (les tests passent `None`).
 fn start_conversation_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>) -> ChatHandle {
     let (user_tx, user_rx) = mpsc::unbounded_channel();
@@ -586,10 +515,5 @@ mod tests {
         }
         assert!(started && done);
         let _ = std::fs::remove_dir_all(&space.root);
-    }
-
-    #[test]
-    fn quick_actions_available() {
-        assert!(!quick_actions().is_empty());
     }
 }

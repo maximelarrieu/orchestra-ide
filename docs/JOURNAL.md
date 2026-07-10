@@ -489,6 +489,12 @@ repliables et bascule de thème.
   **Mémoire** = notes de `.orchestra/memory.md` (`memory::entries`) ; **Contexte** = fichiers
   lus/écrits dans la session ; pastille de statut = état réel de l'agent.
 - Fenêtre par défaut 1280×820 (tient en 1920×1080). Warning `draft` corrigé.
+- **Itération finition** : thème **sombre à dominante verte par défaut** (comme le template),
+  polish (transitions, coins arrondis, ombres, spinner du plan, pastilles d'onglet vertes,
+  bouton d'envoi rond vert, anneau de focus). Boutons de repli **dans le coin** de l'explorateur
+  et du visualiseur (+ stub cliquable pour rouvrir), retirés de la barre supérieure. Suppression
+  des **actions rapides** obsolètes (Objectif rapide / Cadrer / Analyser) côté cœur + TUI + desktop.
+  Indicateur **LLM** dans la barre de statut (Claude / Gemini / mode simulé selon les clés d'env).
 - `orchestra-core` + `orchestra-tui` verts, `clippy` sans warning ; desktop à vérifier au build local.
 
 ## Refonte — Phase 3 : shell « Cursor » + « orchestre en verre » 🚧 (desktop)
