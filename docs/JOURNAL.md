@@ -416,6 +416,22 @@ rendus headless (ADRs + mode saisie). `clippy` sans warning.
 - Desktop : boutons générés depuis `quick_actions` (`action_button`). TUI : **F1..Fn** dans le chat,
   aide listée dynamiquement. Mêmes actions des deux côtés.
 
+## Refonte — Phase 1 : l'Orchestrateur PTAC (post-Phase 5) ✅
+
+Recentrage du produit sur **un agent principal unique et puissant** qui déploie sa propre équipe.
+- `COORDINATOR` → **« Orchestrateur »**. La conversation ne s'appuie plus sur un roster figé
+  (suppression de `coordinator_prompt`, `run_coordinator_turn`, `delegation_tool`, `orchestrate_tool`).
+- **Prompt PTAC** (`orchestrator_prompt`) : boucle **Perceive → Think → Act → Check**, agent
+  autonome/robuste, transparent, documente au fil de l'eau.
+- **Outillage complet** (`orchestrator_tools`) : tous les skills exécutables (`skills::all_tool_specs`)
+  + intégrations + mémoire + `Load_Skill` + **`spawn_agent`**.
+- **`spawn_agent(role, instruction)`** : l'Orchestrateur **crée des sous-agents ad hoc** à la volée
+  (multi-agents composé par lui, plus par l'utilisateur). Récursion async bornée (`Box::pin` ; les
+  sous-agents n'ont pas `spawn_agent`).
+- UIs inchangées (contrat `AgentEvent` intact) : elles dialoguent maintenant avec l'Orchestrateur.
+- **Suite** : Phase 2 (retrait de `ProjectType`/agents pré-définis/menu Agents ; « espace » →
+  « session ») ; Phase 3 (refonte UI façon Cursor : explorateur · centre code/diff · chat).
+
 ## Registre des espaces connus (récents) (post-Phase 5) ✅
 
 - Nouveau module cœur `registry` (testé) : liste **persistante** des espaces déjà ouverts

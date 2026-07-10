@@ -98,6 +98,12 @@ pub fn tool_specs(enabled: &[String]) -> Vec<ToolSpec> {
         .collect()
 }
 
+/// Définitions d'outils de **tous** les skills exécutables — pour un agent « pleinement outillé »
+/// (l'Orchestrateur), indépendamment de la configuration.
+pub fn all_tool_specs() -> Vec<ToolSpec> {
+    EXECUTABLE_SKILLS.iter().filter_map(|id| tool_definition(id)).collect()
+}
+
 /// Jeu d'outils de l'Agent Documentaliste (Phase 5) : lecture/écriture de fichiers et
 /// génération de diagrammes Mermaid — indépendant de la liste de Skills du projet.
 pub fn documentalist_tool_definitions() -> Vec<ToolSpec> {

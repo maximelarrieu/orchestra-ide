@@ -29,9 +29,9 @@ use crate::orchestration::{self, Plan};
 use crate::model::space::ContextSpace;
 use crate::skills;
 
-/// Nom affiché du chef d'orchestre dans le flux de conversation. Public pour que les UI
-/// distinguent ses messages de ceux des sous-agents.
-pub const COORDINATOR: &str = "Coordinateur";
+/// Nom affiché de l'**Orchestrateur** (agent principal) dans le flux de conversation. Public pour
+/// que les UI distinguent ses messages de ceux des sous-agents qu'il déploie.
+pub const COORDINATOR: &str = "Orchestrateur";
 
 /// Nombre maximal de tours LLM ↔ outils par agent (garde-fou anti-boucle).
 const MAX_TURNS: usize = 6;
@@ -267,6 +267,17 @@ async fn run_agent_turn(
                     let _ = tx.send(AgentEvent::FileChanged { path: rel, added, removed, diff });
                 }
                 outcome
+            } else if name == SPAWN_AGENT {
+                // L'Orchestrateur déploie un sous-agent ad hoc (seul lui a cet outil → pas de récursion).
+                let role = input.get("role").and_then(Value::as_str).unwrap_or("Agent").trim().to_string();
+                let role = if role.is_empty() { "Agent".to_string() } else { role };
+                let instruction = input.get("instruction").and_then(Value::as_str).unwrap_or("").to_string();
+                // `Box::pin` : la récursion async (run_agent_turn → sous-agent → run_agent_turn)
+                // doit passer par un pointeur.
+                match Box::pin(run_spawned_agent(client, &role, &instruction, ctx, tx)).await {
+                    Ok(text) => skills::SkillOutcome::ok(text),
+                    Err(e) => skills::SkillOutcome::err(format!("échec du sous-agent « {role} » : {e}")),
+                }
             } else {
                 skills::execute_skill(&name, &input, &ctx.workspace).await
             };
@@ -396,34 +407,104 @@ pub fn cadrage_message(idea: &str) -> String {
 fn start_conversation_inner(space: &ContextSpace, client: Option<Arc<LlmClient>>) -> ChatHandle {
     let (user_tx, user_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
-    let (approve_tx, approve_rx) = mpsc::unbounded_channel();
+    // Canal d'approbation conservé pour compat du contrat ; l'Orchestrateur pilote la boucle
+    // conversationnellement (pas de plan formel à approuver ici).
+    let (approve_tx, _approve_rx) = mpsc::unbounded_channel::<bool>();
     let ctx = AgentContext::from_space(space);
-    let roster = roster(space);
 
-    tokio::spawn(conversation_task(ctx, roster, client, user_rx, approve_rx, event_tx));
+    tokio::spawn(conversation_task(ctx, client, user_rx, event_tx));
     ChatHandle { user: user_tx, events: event_rx, approve: approve_tx }
 }
 
-/// Boucle de conversation : attend un message utilisateur, le confie au coordinateur, puis
-/// recommence. Se termine quand le `Sender` utilisateur est fermé (l'UI quitte le chat).
+/// Outil `spawn_agent` : l'Orchestrateur crée un sous-agent spécialisé à la volée.
+const SPAWN_AGENT: &str = "spawn_agent";
+
+fn spawn_agent_tool() -> ToolSpec {
+    ToolSpec {
+        name: SPAWN_AGENT.to_string(),
+        description:
+            "Crée un SOUS-AGENT spécialisé pour accomplir une tâche précise, et renvoie son \
+             résultat. Fournis un `role` (ex. « Architecte », « Codeur backend », « Testeur », \
+             « Rédacteur doc ») et une `instruction` autonome et détaillée. Sert à déléguer, \
+             paralléliser ou mobiliser une expertise — tu composes ainsi ton équipe."
+                .to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "role": { "type": "string", "description": "Rôle/spécialité du sous-agent" },
+                "instruction": { "type": "string", "description": "Tâche autonome et détaillée à réaliser" }
+            },
+            "required": ["role", "instruction"]
+        }),
+    }
+}
+
+/// Jeu d'outils **complet** de l'Orchestrateur : agir directement (tous les skills exécutables),
+/// intégrations Git/GitHub configurées, mémoire, chargement de fiches, et déploiement d'agents.
+fn orchestrator_tools(ctx: &AgentContext) -> Vec<ToolSpec> {
+    let mut t = skills::all_tool_specs();
+    t.extend(integrations::tool_definitions(&ctx.integ));
+    t.extend(memory::tool_definitions());
+    t.push(markdown_skill::tool_definition()); // Load_Skill toujours disponible
+    t.push(spawn_agent_tool());
+    t
+}
+
+/// Prompt système de l'Orchestrateur : agent principal, très outillé, piloté par la boucle
+/// **Perceive → Think → Act → Check**, capable de déployer une équipe (`spawn_agent`).
+fn orchestrator_prompt(ctx: &AgentContext) -> String {
+    let persona = ctx
+        .persona
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or("(contexte non renseigné — demande-le à l'utilisateur si nécessaire)");
+    format!(
+        "Tu es l'**Orchestrateur** d'Orchestra IDE, l'agent principal de la session « {name} ».\n\
+         Dossier de travail : {ws}\n\n\
+         # Rôle\n\
+         Agent autonome, polyvalent et robuste. Tu AGIS directement (lire/écrire des fichiers, \
+         exécuter des commandes shell, chercher sur le web, tenir une mémoire) ET tu DÉPLOIES UNE \
+         ÉQUIPE : crée des sous-agents spécialisés à la volée via `spawn_agent` (tu choisis leur \
+         rôle et leur donnes une instruction claire), puis tu coordonnes leurs résultats. Tu réponds \
+         en français, de façon concise, et tu n'inventes jamais de résultat d'outil.\n\n\
+         # Boucle de travail : Perceive → Think → Act → Check (itère)\n\
+         1. **Perceive** — rassemble le contexte : liste et lis les fichiers utiles, `Recall` la \
+            mémoire, inspecte le workspace. Vérifie plutôt que supposer.\n\
+         2. **Think** — établis un plan court et explicite (étapes, découpage, quels sous-agents) et \
+            annonce-le brièvement.\n\
+         3. **Act** — exécute : toi-même pour le simple, `spawn_agent` pour le spécialisé ou le \
+            parallélisable. Fais des changements petits et sûrs.\n\
+         4. **Check** — vérifie (relis les fichiers modifiés, lance les tests/commandes, confronte \
+            aux critères). Si c'est incomplet ou faux, **repars en Perceive** et itère. Consigne les \
+            décisions et l'avancement en mémoire (`Remember`).\n\n\
+         # Principes\n\
+         - Transparent : explique brièvement chaque action et chaque délégation.\n\
+         - Demande à l'utilisateur pour toute décision qui lui revient ou toute info manquante.\n\
+         - Documente au fil de l'eau (`docs/…`) et garde une trace des changements.\n\
+         - Prudence sur les actions destructrices ; privilégie des étapes réversibles.\n\n\
+         # Contexte de la session\n{persona}",
+        name = ctx.project_name,
+        ws = ctx.workspace.display(),
+    )
+}
+
+/// Boucle de conversation avec l'**Orchestrateur** : à chaque message utilisateur, l'agent
+/// principal mène sa boucle PTAC (agir directement + `spawn_agent`). Se termine quand le `Sender`
+/// utilisateur est fermé. L'historique `conv` est conservé entre les messages.
 async fn conversation_task(
     ctx: AgentContext,
-    roster: Vec<RosterAgent>,
     client: Option<Arc<LlmClient>>,
     mut user_rx: UnboundedReceiver<String>,
-    mut approve_rx: UnboundedReceiver<bool>,
     tx: UnboundedSender<AgentEvent>,
 ) {
     let _ = tx.send(AgentEvent::Started { agent: COORDINATOR.to_string() });
     let _ = tx.send(AgentEvent::Log {
         agent: COORDINATOR.to_string(),
-        msg: "Prêt. Pose ta question ou donne ta consigne.".to_string(),
+        msg: "Prêt. Décris ton objectif ou pose ta question.".to_string(),
     });
 
-    let system = coordinator_prompt(&ctx, &roster);
-    // Outils : un par agent (délégation) + `orchestrate` (plan complet validé/exécuté/corrigé).
-    let mut tools: Vec<ToolSpec> = roster.iter().map(delegation_tool).collect();
-    tools.push(orchestrate_tool());
+    let system = orchestrator_prompt(&ctx);
+    let tools = orchestrator_tools(&ctx);
     let mut conv: Vec<Msg> = Vec::new();
 
     while let Some(user_msg) = user_rx.recv().await {
@@ -434,7 +515,7 @@ async fn conversation_task(
             Some(c) => {
                 conv.push(Msg::User(user_msg));
                 if let Err(e) =
-                    run_coordinator_turn(c, &system, &tools, &mut conv, &ctx, &roster, &mut approve_rx, &tx).await
+                    run_agent_turn(c, &system, &tools, &mut conv, COORDINATOR, &ctx, &tx).await
                 {
                     emit_log(&tx, COORDINATOR, &format!("⚠ LLM injoignable ({e})"));
                 }
@@ -450,78 +531,30 @@ async fn conversation_task(
     let _ = tx.send(AgentEvent::Done { agent: COORDINATOR.to_string() });
 }
 
-/// Un tour du coordinateur : il répond, délègue à des sous-agents, ou orchestre un objectif
-/// complet. Boucle jusqu'à une réponse finale à l'utilisateur.
-#[allow(clippy::too_many_arguments)] // boucle agentique : dépendances explicites assumées
-async fn run_coordinator_turn(
+/// Déploie un **sous-agent** ad hoc (créé par l'Orchestrateur via `spawn_agent`) : rôle → prompt,
+/// jeu d'outils complet (sans `spawn_agent`, donc pas de récursion), exécute l'instruction et
+/// renvoie son résultat. Émet Started/Done pour que l'UI voie l'équipe travailler.
+async fn run_spawned_agent(
     client: &LlmClient,
-    system: &str,
-    tools: &[ToolSpec],
-    conv: &mut Vec<Msg>,
+    role: &str,
+    instruction: &str,
     ctx: &AgentContext,
-    roster: &[RosterAgent],
-    approve_rx: &mut UnboundedReceiver<bool>,
     tx: &UnboundedSender<AgentEvent>,
-) -> Result<(), crate::llm::LlmError> {
-    for _ in 0..MAX_TURNS {
-        let _ = tx.send(AgentEvent::Thinking { agent: COORDINATOR.to_string() });
-        let blocks = client.complete(system, tools, conv).await?;
-
-        let mut calls: Vec<(String, String, Value)> = Vec::new();
-        for block in &blocks {
-            match block {
-                Block::Text(t) => emit_log(tx, COORDINATOR, t.trim()),
-                Block::ToolUse { id, name, input } => {
-                    let what = if name == ORCHESTRATE { "→ orchestration d'un objectif".to_string() } else { format!("→ délègue à {name}") };
-                    emit_log(tx, COORDINATOR, &what);
-                    calls.push((id.clone(), name.clone(), input.clone()));
-                }
-            }
-        }
-
-        if calls.is_empty() {
-            return Ok(()); // le coordinateur a répondu à l'utilisateur
-        }
-
-        conv.push(Msg::Assistant(blocks));
-        let mut results = Vec::with_capacity(calls.len());
-        for (id, name, input) in calls {
-            let text = if name == ORCHESTRATE {
-                // Orchestration complète inline : plan → approbation → exécution → synthèse.
-                let objective = input.get("objective").and_then(Value::as_str).unwrap_or("").to_string();
-                run_orchestration(Some(client), ctx, roster, &objective, approve_rx, tx).await
-            } else {
-                let instruction = input.get("instruction").and_then(Value::as_str).unwrap_or("").to_string();
-                run_subagent(client, ctx, roster, &name, &instruction, tx)
-                    .await
-                    .unwrap_or_else(|e| format!("(échec du sous-agent : {e})"))
-            };
-            results.push(ToolResult { id, name, content: text, is_error: false });
-        }
-        conv.push(Msg::Tool(results));
-    }
-    Ok(())
-}
-
-/// Nom de l'outil d'orchestration exposé au coordinateur du chat.
-const ORCHESTRATE: &str = "orchestrate";
-
-/// Outil `orchestrate` : déclenche une orchestration complète d'un objectif depuis le chat.
-fn orchestrate_tool() -> ToolSpec {
-    ToolSpec {
-        name: ORCHESTRATE.to_string(),
-        description:
-            "Planifie et exécute un objectif complexe en plusieurs étapes coordonnées (plan \
-             validé par l'utilisateur, exécution parallèle, auto-correction). À utiliser pour une \
-             demande nécessitant plusieurs agents ou étapes ; pour une demande simple, réponds \
-             directement ou délègue à un seul agent."
-                .to_string(),
-        parameters: json!({
-            "type": "object",
-            "properties": { "objective": { "type": "string", "description": "L'objectif à orchestrer" } },
-            "required": ["objective"]
-        }),
-    }
+) -> Result<String, crate::llm::LlmError> {
+    let agent = RosterAgent {
+        name: role.to_string(),
+        role: role.to_string(),
+        skills: Vec::new(),
+        documentalist: false,
+    };
+    let _ = tx.send(AgentEvent::Started { agent: role.to_string() });
+    let effective = if agent.skills.is_empty() { &ctx.skills } else { &agent.skills };
+    let system = build_system_prompt(&agent.name, &agent.role, false, effective, ctx);
+    let tools = agent_tools(&agent, ctx); // pas de spawn_agent → pas de récursion infinie
+    let mut conv: Vec<Msg> = vec![Msg::User(instruction.to_string())];
+    let text = run_agent_turn(client, &system, &tools, &mut conv, role, ctx, tx).await;
+    let _ = tx.send(AgentEvent::Done { agent: role.to_string() });
+    text
 }
 
 /// Exécute un sous-agent sur une instruction du coordinateur, en émettant son activité, et
@@ -550,26 +583,6 @@ async fn run_subagent(
 
     let _ = tx.send(AgentEvent::Done { agent: label });
     text
-}
-
-/// Outil de délégation exposé au coordinateur pour solliciter un agent (un par agent).
-fn delegation_tool(agent: &RosterAgent) -> ToolSpec {
-    let role = if agent.role.is_empty() { "agent spécialisé" } else { &agent.role };
-    ToolSpec {
-        // Le nom d'outil doit respecter `^[a-zA-Z0-9_-]{1,128}$` (contrainte API) : on slugifie
-        // le nom d'agent (accents/espaces → « _ »). Le vrai nom reste dans la description.
-        name: tool_slug(&agent.name),
-        description: format!(
-            "Délègue une tâche à l'agent « {} » ({role}). Fournis une instruction claire et autonome ; \
-             tu recevras son compte rendu.",
-            agent.name
-        ),
-        parameters: json!({
-            "type": "object",
-            "properties": { "instruction": { "type": "string", "description": "Instruction pour l'agent" } },
-            "required": ["instruction"]
-        }),
-    }
 }
 
 /// Normalise un nom d'agent en identifiant d'outil valide pour l'API LLM
@@ -955,36 +968,6 @@ fn first_line(s: &str) -> String {
 }
 
 /// Prompt système du coordinateur : rôle + roster des agents délégables (avec leur rôle).
-fn coordinator_prompt(ctx: &AgentContext, roster: &[RosterAgent]) -> String {
-    let agents = roster
-        .iter()
-        .map(|a| {
-            if a.role.is_empty() {
-                format!("« {} »", a.name)
-            } else {
-                format!("« {} » ({})", a.name, a.role)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut s = format!(
-        "Tu es le chef d'orchestre d'Orchestra IDE pour le projet « {} » (type : {}). Tu \
-         dialogues en français avec l'utilisateur. Tu peux solliciter des agents spécialisés \
-         via les outils (un par agent) : {agents}. Pour une demande simple, réponds directement \
-         ou délègue à UN agent. Pour un objectif complexe nécessitant plusieurs étapes \
-         coordonnées, utilise l'outil `orchestrate` (il planifie, fait valider le plan par \
-         l'utilisateur, exécute en parallèle et corrige jusqu'à l'objectif). Synthétise les \
-         retours, pose des questions si besoin. Sois concis.",
-        ctx.project_name,
-        ctx.project_type.label(),
-    );
-    if let Some(persona) = &ctx.persona {
-        s.push_str("\n\n## Contexte / persona\n");
-        s.push_str(persona);
-    }
-    s
-}
-
 /// Construit le prompt système d'un agent à partir de son nom, son rôle, ses skills
 /// (les fiches Markdown assignées sont injectées sous « ## Compétences ») et l'espace.
 fn build_system_prompt(
@@ -1150,24 +1133,11 @@ mod tests {
     }
 
     #[test]
-    fn delegation_tool_name_is_api_valid_for_accented_agents() {
+    fn tool_slug_is_api_valid_for_accented_names() {
         let valid = |s: &str| !s.is_empty() && s.len() <= 128
             && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-
-        // Le nom d'agent peut contenir accents/espaces ; le nom d'OUTIL doit rester ASCII-safe.
-        let agent = RosterAgent {
-            name: "Agent Modélisateur & Co".to_string(),
-            role: String::new(),
-            skills: Vec::new(),
-            documentalist: false,
-        };
-        let tool = delegation_tool(&agent);
-        assert!(valid(&tool.name), "nom d'outil invalide : {}", tool.name);
-        // La description conserve le vrai nom (lisibilité).
-        assert!(tool.description.contains("Agent Modélisateur & Co"));
-
-        // Le slug retrouve bien l'agent (dispatch).
-        assert_eq!(tool_slug(&agent.name), tool.name);
+        // Un nom d'agent avec accents/espaces doit produire un slug ASCII-safe (contrainte API).
+        assert!(valid(&tool_slug("Agent Modélisateur & Co")));
         assert!(valid(&tool_slug("")) && valid(&tool_slug("é")));
     }
 
