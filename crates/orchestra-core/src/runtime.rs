@@ -28,8 +28,19 @@ use crate::skills;
 /// que les UI distinguent ses messages de ceux des sous-agents qu'il déploie.
 pub const COORDINATOR: &str = "Orchestrateur";
 
-/// Nombre maximal de tours LLM ↔ outils par agent (garde-fou anti-boucle).
-const MAX_TURNS: usize = 6;
+/// Nombre maximal de tours LLM ↔ outils par agent, par message (garde-fou anti-boucle).
+/// Une vraie tâche (lire/écrire plusieurs fichiers, déployer des agents, tenir le plan à jour)
+/// enchaîne beaucoup de rounds : la valeur doit être généreuse. Surchargeable via
+/// `ORCHESTRA_MAX_TURNS` pour les tâches très longues.
+const DEFAULT_MAX_TURNS: usize = 40;
+
+fn max_turns() -> usize {
+    std::env::var("ORCHESTRA_MAX_TURNS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_TURNS)
+}
 
 /// Contexte de session transmis à l'Orchestrateur et à ses sous-agents (clonable, `Send`).
 #[derive(Clone)]
@@ -88,7 +99,7 @@ async fn run_agent_turn(
 ) -> Result<String, crate::llm::LlmError> {
     let mut final_text = String::new();
 
-    for _ in 0..MAX_TURNS {
+    for _ in 0..max_turns() {
         let _ = tx.send(AgentEvent::Thinking { agent: label.to_string() });
         let blocks = client.complete(system, tools, conv).await?;
 
@@ -217,7 +228,13 @@ async fn run_agent_turn(
         conv.push(Msg::Tool(results));
     }
 
-    emit_log(tx, label, "limite de tours atteinte — arrêt.");
+    emit_log(
+        tx,
+        label,
+        "J'ai atteint la limite de tours pour ce message (garde-fou anti-boucle). \
+         Le travail n'est peut-être pas terminé — dis « continue » pour que je poursuive, \
+         ou augmente `ORCHESTRA_MAX_TURNS` pour les tâches très longues.",
+    );
     Ok(final_text)
 }
 
