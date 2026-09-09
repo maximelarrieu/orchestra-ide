@@ -275,6 +275,31 @@ pub const CSS: &str = r#"
     .small { font-size: .8rem; }
     .muted { color: var(--text-mute); }
 
+    /* ---- Docs (persona / ADR / mémoire) ---- */
+    .docrow { display: block; width: 100%; text-align: left; background: none; border: none;
+              color: var(--text-dim); padding: .18rem .1rem; cursor: pointer; font: inherit; font-size: .84rem;
+              border-radius: var(--radius); }
+    .docrow:hover { background: var(--bg-hover); color: var(--text); }
+
+    /* ---- Git (constat, panneau Tâches) ---- */
+    .gitbranch { font-family: var(--mono); font-size: .82rem; color: var(--text); margin: .2rem 0 .4rem; }
+    .gitfilerow { display: flex; justify-content: space-between; gap: .5rem; width: 100%;
+                  background: none; border: none; text-align: left; cursor: pointer; font: inherit;
+                  padding: .18rem .1rem; border-radius: var(--radius); }
+    .gitfilerow:hover { background: var(--bg-hover); }
+    .gfpath { font-family: var(--mono); font-size: .8rem; color: var(--text-dim);
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ---- Docker (constat, panneau Tâches) ---- */
+    .dockercard { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+                  padding: .45rem .6rem; margin-bottom: .35rem; }
+    .dockername { font-family: var(--mono); font-size: .84rem; color: var(--text); }
+    /* Pastille d'état générique (réutilisée hors barre de statut, cf. `.statusbar .dot` ci-dessous
+       pour les couleurs de fond de cette dernière). */
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot.ok { background: var(--add); }
+    .dot.warn { background: var(--amber); }
+
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ---- Barre d'espaces (ouvrir / créer / récents) ---- */
@@ -333,6 +358,9 @@ pub const CSS: &str = r#"
     .dl.add { color: var(--add); background: var(--add-bg); }
     .dl.del { color: var(--del); background: var(--del-bg); }
     .dl.ctx { color: var(--text-mute); }
+    /* Lignes d'un vrai `git diff` (panneau Git) : en-têtes de hunk et méta (index/---/+++). */
+    .dl.hunk { color: var(--link); background: var(--bg-elev); }
+    .dl.meta { color: var(--text-mute); }
 
     /* ---- Rendu Markdown ---- */
     .markdown { line-height: 1.6; }

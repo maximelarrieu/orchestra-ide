@@ -72,6 +72,12 @@ pub fn render(frame: &mut Frame, app: &App, tabs: &[String], active: usize) {
             View::Docs => render_docs_list(frame, center, app),
             View::Spaces => render_spaces(frame, center, app),
             View::Changes => render_changes(frame, center, app),
+            View::Files => render_files(frame, center, app),
+            View::Git => render_git(frame, center, app),
+            View::Docker => render_docker(frame, center, app),
+            View::Terminal => render_terminal(frame, center, app),
+            View::Memory => render_memory(frame, center, app),
+            View::Context => render_context(frame, center, app),
         }
     }
     render_menu(frame, menu, app);
@@ -139,8 +145,9 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(" [2] Docs   [4] Persona", Style::new().dark_gray())));
-    lines.push(Line::from(Span::styled(" [7] Modifs", Style::new().dark_gray())));
+    lines.push(Line::from(Span::styled(" [2] Docs   [4] Persona  [6] Fichiers", Style::new().dark_gray())));
+    lines.push(Line::from(Span::styled(" [7] Modifs [8] Git      [9] Docker", Style::new().dark_gray())));
+    lines.push(Line::from(Span::styled(" [0] Terminal [m] Mémoire [c] Contexte", Style::new().dark_gray())));
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -292,6 +299,302 @@ fn render_changes(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(diff_lines).block(Block::bordered().title(" diff ")),
         diff_area,
     );
+}
+
+/// Arborescence du workspace (pilier « Fichiers ») — badgée avec l'activité live des agents.
+fn render_files(frame: &mut Frame, area: Rect, app: &App) {
+    let title = if app.files_truncated {
+        " 📁 FICHIERS (liste tronquée — dépôt volumineux) "
+    } else {
+        " 📁 FICHIERS DU WORKSPACE "
+    };
+    let block = Block::bordered().title(title);
+    if app.files.is_empty() {
+        let lines = vec![Line::from(Span::styled(
+            "  (workspace vide ou introuvable)",
+            Style::new().dark_gray(),
+        ))];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+    let lines: Vec<Line> = app
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let selected = i == app.files_sel;
+            let icon = if n.is_dir { "📁" } else { "📄" };
+            let name_style = if selected {
+                Style::new().bold().reversed()
+            } else if n.is_dir {
+                Style::new().cyan()
+            } else {
+                Style::new()
+            };
+            let mut spans = vec![
+                Span::raw(if selected { "▶ " } else { "  " }),
+                Span::raw("  ".repeat(n.depth)),
+                Span::raw(format!("{icon} ")),
+                Span::styled(n.name.clone(), name_style),
+            ];
+            if let Some(t) = app.context_files.get(&n.rel) {
+                let badge = if t.writes > 0 {
+                    format!("  ✎ {}", t.last_agent)
+                } else if t.reads > 0 {
+                    format!("  👁 {}", t.last_agent)
+                } else {
+                    String::new()
+                };
+                if !badge.is_empty() {
+                    spans.push(Span::styled(badge, Style::new().yellow()));
+                }
+            }
+            Line::from(spans)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// État Git structuré : branche + ahead/behind, liste staged/unstaged/untracked, diff du
+/// fichier sélectionné.
+fn render_git(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 🔀 GIT — [r] rafraîchir · Entrée diff ");
+    let Some(g) = &app.git else {
+        let lines = vec![Line::from(Span::styled("  Chargement…", Style::new().dark_gray()))];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    };
+    if !g.is_repo {
+        let lines = vec![Line::from(Span::styled(
+            "  Pas un dépôt Git ici (ou binaire git indisponible).",
+            Style::new().dark_gray(),
+        ))];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let branch = g.branch.clone().unwrap_or_else(|| "(detached)".to_string());
+    let ab = match (g.ahead, g.behind) {
+        (0, 0) => String::new(),
+        (a, 0) => format!("  ↑{a}"),
+        (0, b) => format!("  ↓{b}"),
+        (a, b) => format!("  ↑{a} ↓{b}"),
+    };
+    let header = Line::from(vec![
+        Span::styled(format!(" {branch}"), Style::new().yellow().bold()),
+        Span::styled(ab, Style::new().cyan()),
+    ]);
+
+    let rows = app.git_rows();
+    // `clamp` exige min <= max : sur un terminal minuscule, `inner.height / 2` peut tomber
+    // sous 4, donc on relève le plafond au plancher plutôt que de paniquer.
+    let list_h = (rows.len() as u16 + 3).clamp(4, (inner.height / 2).max(4));
+    let [status_area, diff_area] =
+        Layout::vertical([Constraint::Length(list_h), Constraint::Min(3)]).areas(inner);
+
+    let mut lines = vec![header, Line::raw("")];
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Rien à signaler — arbre de travail propre.",
+            Style::new().dark_gray(),
+        )));
+    }
+    for (i, r) in rows.iter().enumerate() {
+        let selected = i == app.git_sel;
+        lines.push(Line::from(vec![
+            Span::raw(if selected { "▶ " } else { "  " }),
+            Span::styled(format!("{}{} ", r.index, r.worktree), git_status_style(r.index)),
+            Span::raw(r.path.clone()),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), status_area);
+
+    let diff_lines: Vec<Line> = match &app.git_diff {
+        Some((path, text)) if rows.get(app.git_sel).map(|r| r.path.as_str()) == Some(path.as_str()) => {
+            render_unified_diff(text)
+        }
+        _ => vec![Line::from(Span::styled(
+            "  Entrée sur un fichier pour voir son diff.",
+            Style::new().dark_gray(),
+        ))],
+    };
+    frame.render_widget(Paragraph::new(diff_lines).block(Block::bordered().title(" diff ")), diff_area);
+}
+
+fn git_status_style(index: char) -> Style {
+    if index == '?' {
+        Style::new().magenta() // non suivi
+    } else if index == '.' {
+        Style::new().yellow() // non indexé seulement
+    } else {
+        Style::new().green() // indexé
+    }
+}
+
+/// Colore un diff unifié brut (`git diff`) — distinct du format interne `diff.rs` (préfixes
+/// `+ `/`- ` avec espace) utilisé par la vue Modifications.
+fn render_unified_diff(text: &str) -> Vec<Line<'static>> {
+    if text.trim().is_empty() {
+        return vec![Line::from(Span::styled("  (aucune modification)", Style::new().dark_gray()))];
+    }
+    text.lines()
+        .map(|l| {
+            let style = if l.starts_with("+++") || l.starts_with("---") {
+                Style::new().bold()
+            } else if l.starts_with("@@") {
+                Style::new().cyan().bold()
+            } else if l.starts_with('+') {
+                Style::new().green()
+            } else if l.starts_with('-') {
+                Style::new().red()
+            } else {
+                Style::new().dark_gray()
+            };
+            Line::from(Span::styled(l.to_string(), style))
+        })
+        .collect()
+}
+
+/// État des conteneurs Docker du projet, en lecture seule.
+fn render_docker(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 🐳 DOCKER — [r] rafraîchir ");
+    let Some(d) = &app.docker else {
+        let lines = vec![Line::from(Span::styled("  Chargement…", Style::new().dark_gray()))];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    if !d.docker_available {
+        lines.push(Line::from(Span::styled(
+            "  Docker non disponible (binaire absent ou démon injoignable).",
+            Style::new().dark_gray(),
+        )));
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::from(vec![
+        Span::styled(" Dockerfile : ", Style::new().bold()),
+        Span::raw(if d.dockerfile_present { "présent" } else { "absent" }),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(" Compose    : ", Style::new().bold()),
+        Span::raw(
+            d.compose_file
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "absent".to_string()),
+        ),
+    ]));
+    lines.push(Line::raw(""));
+
+    if d.containers.is_empty() {
+        if d.docker_available && d.compose_file.is_some() {
+            lines.push(Line::from(Span::styled(
+                "  Aucun conteneur en cours pour ce projet.",
+                Style::new().dark_gray(),
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            " NOM                SERVICE      IMAGE                 ÉTAT        PORTS",
+            Style::new().bold(),
+        )));
+        for c in &d.containers {
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {:<18} ", truncate_str(&c.name, 18)), Style::new().cyan()),
+                Span::raw(format!("{:<12} ", truncate_str(c.service.as_deref().unwrap_or("-"), 12))),
+                Span::raw(format!("{:<21} ", truncate_str(&c.image, 21))),
+                Span::styled(format!("{:<11} ", c.state.clone()), docker_state_style(&c.state)),
+                Span::raw(c.ports.clone()),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn docker_state_style(state: &str) -> Style {
+    if state.eq_ignore_ascii_case("running") {
+        Style::new().green().bold()
+    } else if state.is_empty() {
+        Style::new().dark_gray()
+    } else {
+        Style::new().yellow()
+    }
+}
+
+/// Commandes exécutées par les agents (`AgentEvent::Terminal`), les plus récentes en tête.
+fn render_terminal(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 💻 TERMINAL — commandes exécutées par les agents ");
+    if app.terminal_log.is_empty() {
+        let lines = vec![Line::from(Span::styled(
+            "  Aucune commande exécutée pour l'instant.",
+            Style::new().dark_gray(),
+        ))];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+    let mut lines: Vec<Line> = Vec::new();
+    for t in app.terminal_log.iter().rev().take(50) {
+        let (icon, style) = if t.ok { ("✔", Style::new().green()) } else { ("✗", Style::new().red()) };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {icon} "), style),
+            Span::styled(format!("{} ", t.agent), Style::new().cyan().bold()),
+            Span::styled(format!("$ {}", t.command), Style::new().bold()),
+        ]));
+        for out_line in t.output.lines().take(4) {
+            lines.push(Line::from(Span::styled(format!("     {out_line}"), Style::new().dark_gray())));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Notes de la mémoire partagée (`.orchestra/memory.md`), défilement borné.
+fn render_memory(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 🧠 MÉMOIRE PARTAGÉE (.orchestra/memory.md) ");
+    if app.memory.is_empty() {
+        let lines = vec![Line::from(Span::styled("  Aucune note pour l'instant.", Style::new().dark_gray()))];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+    let visible = area.height.saturating_sub(2) as usize;
+    let max_scroll = app.memory.len().saturating_sub(visible.max(1));
+    let top = app.memory_scroll.min(max_scroll);
+    let lines: Vec<Line> = app
+        .memory
+        .iter()
+        .skip(top)
+        .take(visible.max(1))
+        .map(|n| Line::from(vec![Span::raw(" • "), Span::raw(n.clone())]))
+        .collect();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Fichiers touchés (lus/écrits) par les agents cette session.
+fn render_context(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" 🔎 CONTEXTE — fichiers touchés cette session ");
+    let rows = app.context_rows();
+    if rows.is_empty() {
+        let lines = vec![Line::from(Span::styled(
+            "  Aucun fichier lu ou modifié pour l'instant.",
+            Style::new().dark_gray(),
+        ))];
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+    let lines: Vec<Line> = rows
+        .iter()
+        .map(|(path, info)| {
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled((*path).clone(), Style::new().cyan()),
+                Span::styled(format!("  👁{} ✎{}", info.reads, info.writes), Style::new().dark_gray()),
+                Span::styled(format!("  ({})", info.last_agent), Style::new().dark_gray()),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Sélecteur d'espaces connus (récents), pour rouvrir sans retaper le chemin.
@@ -727,11 +1030,29 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
             "📝 Modifications — ↑↓ choisir un fichier · diff coloré · Échap retour",
             Style::new().cyan(),
         ))]
+    } else if app.view == View::Files {
+        vec![Line::from(Span::styled(
+            "📁 Fichiers — ↑↓ choisir · Entrée ouvrir · Échap retour",
+            Style::new().cyan(),
+        ))]
+    } else if app.view == View::Git {
+        vec![Line::from(Span::styled(
+            "🔀 Git — ↑↓ choisir · Entrée diff · [r] rafraîchir · Échap retour",
+            Style::new().cyan(),
+        ))]
+    } else if app.view == View::Docker {
+        vec![Line::from(Span::styled("🐳 Docker — [r] rafraîchir · Échap retour", Style::new().cyan()))]
+    } else if app.view == View::Terminal {
+        vec![Line::from(Span::styled("💻 Terminal — Échap retour", Style::new().cyan()))]
+    } else if app.view == View::Memory {
+        vec![Line::from(Span::styled("🧠 Mémoire — ↑↓ défiler · Échap retour", Style::new().cyan()))]
+    } else if app.view == View::Context {
+        vec![Line::from(Span::styled("🔎 Contexte — Échap retour", Style::new().cyan()))]
     } else if let Some(notice) = &app.notice {
         vec![Line::from(Span::styled(notice.clone(), Style::new().yellow()))]
     } else {
         vec![Line::from(
-            "[5] Assistant  [1] Objectif rapide  [2] Docs  [3] Session  [4] Persona  [7] Modifs  [q] Quitter",
+            "[5] Assistant [1] Objectif [2] Docs [3] Session [4] Persona [6] Fichiers [7] Modifs [8] Git [9] Docker [0] Terminal [m] Mémoire [c] Contexte [q] Quitter",
         )]
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -820,6 +1141,80 @@ mod tests {
         // Un mot plus long que la largeur est découpé proprement (largeur plancher = 8).
         let long = wrap_plain("supercalifragilistic", 8);
         assert!(long.len() > 1 && long.iter().all(|l| l.chars().count() <= 8));
+    }
+
+    /// Les six nouveaux écrans (Fichiers/Git/Docker/Terminal/Mémoire/Contexte) doivent se
+    /// rendre sans panique, y compris à l'état initial (données pas encore chargées) et à
+    /// l'état peuplé, à plusieurs tailles de terminal.
+    #[test]
+    fn renders_new_screens_without_panic() {
+        use orchestra_core::docker::{DockerContainer, DockerStatus};
+        use orchestra_core::explorer::FileNode;
+        use orchestra_core::git::{GitFileStatus, GitStatus};
+
+        let mut app = demo_app();
+        app.files = vec![
+            FileNode { name: "src".into(), rel: "src".into(), is_dir: true, depth: 0 },
+            FileNode { name: "main.rs".into(), rel: "src/main.rs".into(), is_dir: false, depth: 1 },
+        ];
+        app.git = Some(GitStatus {
+            is_repo: true,
+            branch: Some("main".into()),
+            upstream: Some("origin/main".into()),
+            ahead: 1,
+            behind: 0,
+            staged: vec![GitFileStatus { path: "src/main.rs".into(), index: 'M', worktree: '.' }],
+            unstaged: vec![],
+            untracked: vec!["new.txt".into()],
+        });
+        app.git_diff = Some(("src/main.rs".into(), "@@ -1 +1 @@\n-old\n+new".into()));
+        app.docker = Some(DockerStatus {
+            docker_available: true,
+            dockerfile_present: true,
+            compose_file: Some(std::path::PathBuf::from("docker-compose.yml")),
+            containers: vec![DockerContainer {
+                name: "app-web-1".into(),
+                service: Some("web".into()),
+                image: "app:latest".into(),
+                state: "running".into(),
+                status_text: "Up 2 minutes".into(),
+                ports: "8080->80".into(),
+            }],
+        });
+        app.on_event(AgentEvent::Terminal {
+            agent: "Agent_Scraper".into(),
+            command: "cargo test".into(),
+            output: "ok".into(),
+            ok: true,
+        });
+        app.memory = vec!["Note 1".into(), "Note 2".into()];
+        app.on_event(AgentEvent::FileRead { agent: "Agent_Scraper".into(), path: "src/main.rs".into() });
+
+        for view in [
+            View::Files,
+            View::Git,
+            View::Docker,
+            View::Terminal,
+            View::Memory,
+            View::Context,
+        ] {
+            app.view = view;
+            for (w, h) in [(80, 24), (40, 12), (20, 6)] {
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                terminal.draw(|f| render(f, &app, &["Demo".to_string()], 0)).unwrap();
+            }
+        }
+    }
+
+    /// Ces mêmes écrans doivent aussi se rendre à l'état initial (rien encore chargé).
+    #[test]
+    fn renders_new_screens_before_data_loaded() {
+        let mut app = demo_app();
+        for view in [View::Files, View::Git, View::Docker, View::Terminal, View::Memory, View::Context] {
+            app.view = view;
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|f| render(f, &app, &["Demo".to_string()], 0)).unwrap();
+        }
     }
 
     /// L'éditeur de persona doit se rendre (avec curseur) sans panique.

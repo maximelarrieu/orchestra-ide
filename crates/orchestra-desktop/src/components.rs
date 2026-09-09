@@ -2,13 +2,17 @@
 //! elles lisent des signaux et déclenchent les ponts de [`crate::state`].
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use dioxus::prelude::*;
+use orchestra_core::docker::DockerStatus;
+use orchestra_core::git::GitStatus;
+use orchestra_core::model::DocKind;
 use orchestra_core::session::Sessions;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::state::{self, AgStatus, ChatMsg, DesktopSession, FileActivity, KnownSpace, MsgKind, PlanRow};
+use crate::state::{self, AgStatus, ChatMsg, DesktopSession, FileActivity, GitDiffView, KnownSpace, MsgKind, PlanRow};
 
 /// Barre d'**onglets** (sessions) : un onglet par session ouverte, l'active mise en évidence ;
 /// clic pour basculer, × pour fermer. N'apparaît qu'à partir de deux sessions.
@@ -136,33 +140,44 @@ pub fn terminal_panel(sessions: Signal<Sessions<DesktopSession>>) -> Element {
     }
 }
 
-/// Rail **Tâches** (droite) : plan de l'Orchestrateur (checklist + approbation), Mémoire de
-/// l'espace et Contexte (fichiers touchés). Réel : plan/mémoire/contexte viennent des données
-/// vivantes de la session.
+/// Rail **Tâches** (droite) : plan de l'Orchestrateur (checklist + approbation), Docs de
+/// l'espace, Git, Docker, Mémoire et Contexte (fichiers touchés). Plan/mémoire/contexte viennent
+/// des données vivantes de la session ; Docs/Git/Docker sont des panneaux de **constat** du
+/// projet, indépendants du fil de conversation (rafraîchis au changement de session ou à la
+/// demande — voir [`state::refresh_dev_status`]).
 #[component]
 pub fn TaskRail(
     plan: Signal<Vec<PlanRow>>,
     mut pending: Signal<bool>,
     approve_tx: Signal<Option<UnboundedSender<bool>>>,
     sessions: Signal<Sessions<DesktopSession>>,
+    mut selected: Signal<Option<String>>,
+    mut doc_selected: Signal<Option<PathBuf>>,
+    mut git_diff: Signal<Option<GitDiffView>>,
+    git_status: Signal<GitStatus>,
+    docker_status: Signal<DockerStatus>,
 ) -> Element {
     let rows = plan();
     let done = rows.iter().filter(|r| r.status.contains('✓')).count();
     let total = rows.len();
-    // Mémoire + contexte de la session active.
-    let (memory, context) = {
+    // Racine, documents, mémoire et contexte de la session active.
+    let (root, docs, memory, context) = {
         let s = sessions.read();
         match s.active() {
             Some(a) => {
+                let root = a.workspace_root().to_path_buf();
+                let docs = a.space.documents();
                 let mem = state::memory_entries(&a.space.root);
                 let mut ctx: Vec<String> = a.activity.keys().cloned().collect();
                 ctx.sort();
-                (mem, ctx)
+                (root, docs, mem, ctx)
             }
-            None => (Vec::new(), Vec::new()),
+            None => (std::path::PathBuf::new(), Vec::new(), Vec::new(), Vec::new()),
         }
     };
     let is_pending = pending();
+    let git = git_status();
+    let docker = docker_status();
 
     rsx! {
         div { class: "taskrail",
@@ -212,6 +227,92 @@ pub fn TaskRail(
                 }
             }
 
+            // --- Docs (persona / ADR / mémoire / .md du workspace) ---
+            div { class: "railhead", span { "DOCS" } }
+            if docs.is_empty() {
+                p { class: "muted small", "persona.md, ADRs… apparaîtront ici." }
+            }
+            for d in docs {
+                {
+                    let path = d.path.clone();
+                    let icon = match d.kind { DocKind::Persona => "◆", DocKind::Adr => "▤", DocKind::Doc => "▫" };
+                    rsx! {
+                        button { key: "{d.label}", class: "docrow",
+                            onclick: move |_| {
+                                doc_selected.set(Some(path.clone()));
+                                selected.set(None);
+                                git_diff.set(None);
+                            },
+                            "{icon} {d.label}"
+                        }
+                    }
+                }
+            }
+
+            // --- Git ---
+            div { class: "railhead",
+                span { "GIT" }
+                {
+                    let root = root.clone(); // capture propre à CE bouton (l'autre ci-dessous en a sa propre copie)
+                    rsx! {
+                        button { class: "panebtn", title: "Rafraîchir",
+                            onclick: move |_| state::refresh_dev_status(root.clone(), git_status, docker_status),
+                            "↻" }
+                    }
+                }
+            }
+            if !git.is_repo {
+                p { class: "muted small", "Pas un dépôt Git." }
+            } else {
+                div { class: "gitbranch",
+                    "⎇ {git.branch.clone().unwrap_or_else(|| \"(détaché)\".into())}"
+                    if git.ahead > 0 || git.behind > 0 { " · ↑{git.ahead} ↓{git.behind}" }
+                }
+                if git.staged.is_empty() && git.unstaged.is_empty() && git.untracked.is_empty() {
+                    p { class: "muted small", "Aucun changement." }
+                }
+                for f in git.staged.iter().cloned() {
+                    { git_file_row(f.path, format!("indexé · {}", f.index), root.clone(), git_diff) }
+                }
+                for f in git.unstaged.iter().cloned() {
+                    { git_file_row(f.path, format!("modifié · {}", f.worktree), root.clone(), git_diff) }
+                }
+                for p in git.untracked.iter().cloned() {
+                    { git_file_row(p, "non suivi".to_string(), root.clone(), git_diff) }
+                }
+            }
+
+            // --- Docker ---
+            div { class: "railhead",
+                span { "DOCKER" }
+                button { class: "panebtn", title: "Rafraîchir",
+                    onclick: move |_| state::refresh_dev_status(root.clone(), git_status, docker_status),
+                    "↻" }
+            }
+            // (dernier point d'usage de `root` dans cette fonction : la capture ci-dessus peut le
+            // déplacer sans conflit avec le bouton Git, qui a sa propre copie clonée plus haut.)
+            if !docker.dockerfile_present && docker.compose_file.is_none() {
+                p { class: "muted small", "Pas de Docker sur ce projet." }
+            } else if !docker.docker_available {
+                p { class: "muted small", "Docker non disponible (démon injoignable)." }
+            } else if docker.containers.is_empty() {
+                p { class: "muted small", "Aucun conteneur en cours pour ce projet." }
+            } else {
+                for c in docker.containers {
+                    div { key: "{c.name}", class: "dockercard",
+                        div { class: "dockername", "{c.name}" }
+                        div { class: "muted small", "{c.image}" }
+                        div { class: "small",
+                            span { class: if c.state == "running" { "dot ok" } else { "dot warn" } }
+                            " {c.state} · {c.status_text}"
+                        }
+                        if !c.ports.is_empty() {
+                            div { class: "muted small", "{c.ports}" }
+                        }
+                    }
+                }
+            }
+
             // --- Mémoire ---
             div { class: "railhead", span { "MEMORY" } }
             if memory.is_empty() {
@@ -229,6 +330,19 @@ pub fn TaskRail(
             for (i, c) in context.into_iter().enumerate() {
                 div { key: "c{i}", class: "ctxrow", "@ {c}" }
             }
+        }
+    }
+}
+
+/// Une ligne de fichier du panneau Git (chemin + statut court) — clic pour charger son diff
+/// (`git diff`) dans le panneau central.
+fn git_file_row(path: String, status: String, root: PathBuf, git_diff: Signal<Option<GitDiffView>>) -> Element {
+    let click_path = path.clone();
+    rsx! {
+        button { key: "{path}", class: "gitfilerow",
+            onclick: move |_| state::load_git_diff(root.clone(), click_path.clone(), git_diff),
+            span { class: "gfpath", "{path}" }
+            span { class: "muted small", "{status}" }
         }
     }
 }
@@ -434,6 +548,8 @@ const MERMAID_BOOT: &str = r#"
 pub fn FileExplorer(
     sessions: Signal<Sessions<DesktopSession>>,
     selected: Signal<Option<String>>,
+    doc_selected: Signal<Option<PathBuf>>,
+    git_diff: Signal<Option<GitDiffView>>,
 ) -> Element {
     let s = sessions.read();
     let Some(sess) = s.active() else {
@@ -449,7 +565,7 @@ pub fn FileExplorer(
                     li { span { class: "muted", "(workspace vide ou introuvable)" } }
                 }
                 for node in tree.nodes {
-                    { file_row(node.clone(), activity.get(&node.rel).cloned(), cur.clone(), selected) }
+                    { file_row(node.clone(), activity.get(&node.rel).cloned(), cur.clone(), selected, doc_selected, git_diff) }
                 }
                 if tree.truncated {
                     li { span { class: "muted", "… (arborescence tronquée)" } }
@@ -466,6 +582,8 @@ fn file_row(
     act: Option<FileActivity>,
     selected_rel: Option<String>,
     mut selected: Signal<Option<String>>,
+    mut doc_selected: Signal<Option<PathBuf>>,
+    mut git_diff: Signal<Option<GitDiffView>>,
 ) -> Element {
     let pad = format!("padding-left: {}rem;", 0.55 + node.depth as f32 * 0.85);
     let is_sel = selected_rel.as_deref() == Some(node.rel.as_str());
@@ -497,7 +615,13 @@ fn file_row(
                 if is_dir {
                     span { class: "tname", "{name}" }
                 } else {
-                    button { class: "tname", onclick: move |_| selected.set(Some(rel.clone())), "{name}" }
+                    button { class: "tname",
+                        onclick: move |_| {
+                            selected.set(Some(rel.clone()));
+                            doc_selected.set(None);
+                            git_diff.set(None);
+                        },
+                        "{name}" }
                 }
                 if let Some((bcls, btxt)) = badge {
                     span { class: "{bcls}", "{btxt}" }
@@ -507,25 +631,108 @@ fn file_row(
     }
 }
 
-/// **Panneau central** : contenu du fichier sélectionné. Si un agent l'a modifié pendant la
-/// session, on montre son **diff**. Sinon, on affiche le fichier — Markdown **rendu** (avec
-/// diagrammes Mermaid) pour les `.md`, texte brut sinon — et on peut l'**éditer/enregistrer**.
+/// Classe CSS d'une ligne d'un vrai diff `git diff` (unifié), pour coloration — distinct du
+/// format interne `+ `/`- ` des diffs d'agent (voir la boucle sur `d.lines()` plus bas).
+fn git_diff_line_class(line: &str) -> &'static str {
+    if line.starts_with("+++") || line.starts_with("---") || line.starts_with("diff --git") || line.starts_with("index ") {
+        "dl meta"
+    } else if line.starts_with("@@") {
+        "dl hunk"
+    } else if let Some(rest) = line.strip_prefix('+') {
+        if rest.is_empty() || !rest.starts_with('+') { "dl add" } else { "dl meta" }
+    } else if let Some(rest) = line.strip_prefix('-') {
+        if rest.is_empty() || !rest.starts_with('-') { "dl del" } else { "dl meta" }
+    } else {
+        "dl ctx"
+    }
+}
+
+/// **Panneau central** : trois modes mutuellement exclusifs (au plus un signal actif à la fois,
+/// maintenu par les panneaux appelants) —
+/// 1. un diff **Git réel** ([`GitDiffView`], panneau Git) ;
+/// 2. un **document d'espace** (persona/ADR/mémoire, panneau Docs), éditable ;
+/// 3. le **fichier du workspace** sélectionné dans l'explorateur (comportement historique) : si
+///    un agent l'a modifié pendant la session on montre son diff, sinon le fichier — Markdown
+///    **rendu** (avec diagrammes Mermaid) pour les `.md`, texte brut sinon — éditable.
 #[component]
 pub fn CenterPane(
     sessions: Signal<Sessions<DesktopSession>>,
     selected: Signal<Option<String>>,
+    doc_selected: Signal<Option<PathBuf>>,
+    git_diff: Signal<Option<GitDiffView>>,
 ) -> Element {
     // Hooks EN PREMIER (règle des hooks Dioxus : toujours appelés, même hors sélection).
     let mut editing = use_signal(|| false);
     let mut draft = use_signal(String::new);
-    // (Re)rend les diagrammes Mermaid quand la sélection change (Markdown).
+    // (Re)rend les diagrammes Mermaid quand la sélection change (Markdown), quel que soit le mode.
     use_effect(move || {
         let _ = selected();
+        let _ = doc_selected();
         spawn(async move {
             let _ = dioxus::document::eval(MERMAID_BOOT).await;
         });
     });
 
+    // Mode 1 : diff Git réel (panneau Git) — prioritaire, en lecture seule.
+    if let Some(gd) = git_diff() {
+        return rsx! {
+            div { class: "filepane",
+                div { class: "centerhead", span { class: "path", "⎇ {gd.path}" } }
+                div { class: "centerbody",
+                    if gd.text.trim().is_empty() {
+                        p { class: "muted", "Aucun changement non indexé pour ce fichier." }
+                    } else {
+                        div { class: "diff",
+                            for (i, line) in gd.text.lines().enumerate() {
+                                { let cls = git_diff_line_class(line); rsx! { div { key: "{i}", class: "{cls}", "{line}" } } }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    // Mode 2 : document d'espace sélectionné (panneau Docs) — persona/ADR/mémoire, éditable.
+    if let Some(path) = doc_selected() {
+        let label = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let content = state::load_document(&path);
+        let is_md = path.extension().is_some_and(|e| e == "md");
+        let html = content.as_deref().map(state::render_markdown_html).unwrap_or_default();
+        let raw = content.clone().unwrap_or_default();
+        let raw_for_edit = raw.clone();
+        let save_path = path.clone();
+        return rsx! {
+            div { class: "filepane",
+                div { class: "centerhead",
+                    span { class: "path", "{label}" }
+                    if editing() {
+                        button { class: "go",
+                            onclick: move |_| {
+                                if state::save_space_document(sessions, &save_path, &draft()) { editing.set(false); }
+                            },
+                            "💾 Enregistrer" }
+                        button { onclick: move |_| editing.set(false), "Annuler" }
+                    } else {
+                        button { onclick: move |_| { draft.set(raw_for_edit.clone()); editing.set(true); }, "✏ Éditer" }
+                    }
+                }
+                div { class: "centerbody",
+                    if editing() {
+                        textarea { class: "editor", value: "{draft}", oninput: move |e| draft.set(e.value()) }
+                    } else if content.is_none() {
+                        p { class: "muted", "Document introuvable ou illisible." }
+                    } else if is_md {
+                        div { class: "viewer markdown", dangerous_inner_html: html }
+                    } else {
+                        pre { class: "codeview", "{raw}" }
+                    }
+                }
+            }
+        };
+    }
+
+    // Mode 3 : fichier du workspace sélectionné dans l'explorateur (comportement historique).
     // Données de la session active, extraites sous le verrou de lecture puis relâchées.
     let (project, root, sel, diff, content) = {
         let s = sessions.read();

@@ -607,3 +607,67 @@ l'axe innovant **« orchestre en verre »** : on *voit* l'équipe d'agents trava
 **Visé**
 - Agent Documentaliste (mise à jour de doc automatique, diagrammes Mermaid), interactions
   `[2]`/`[3]` du dashboard, polissage.
+
+## Recentrage total sur le dev : Git/Docker/Fichiers structurés + parité complète TUI⇄Desktop ✅
+
+Chantier de fond : recentrer l'outil sur les besoins concrets d'un dev au quotidien — voir
+l'état de son code (Fichiers), de son dépôt (Git), de son conteneur (Docker), de ce que
+l'Orchestrateur fait (Plan/Tâches) et de qui travaille (Agents) — et purger tout ce qui ne
+sert pas cet objectif. Constat de départ : le **code** était déjà 100 % dev-focused (les
+anciens types de projet Langue/Immobilier/Nutrition avaient déjà été retirés du code lors du
+« Recentrage DEV » et de la « Refonte » ci-dessus) ; seule la **documentation** en gardait des
+traces, et il manquait des panneaux passifs de constat (Git structuré, Docker) que le
+runtime — piloté par événements d'agents — ne pouvait pas fournir nativement.
+
+**Cœur (`orchestra-core`)**
+- Nouveau module **`git.rs`** : `GitStatus`/`GitFileStatus` structurés, à partir d'un parsing
+  de `git status --porcelain=v2 --branch` (format stable, contrairement à `--short`) —
+  branche, upstream, ahead/behind, fichiers staged/unstaged/untracked. `git::diff(root, path)`
+  pour le diff non indexé. Jamais d'erreur remontée à l'UI (`is_repo: false` en état neutre).
+  `integrations.rs` (outils Git de l'agent) **délègue** désormais son shell-out à
+  `git::run_command` — une seule source de vérité pour tout appel `git`, agent ou UI passive.
+- Nouveau module **`docker.rs`**, lecture seule : détecte `Dockerfile`/fichier compose à la
+  racine, interroge `docker compose ps --format json` (gère à la fois le tableau JSON et le
+  NDJSON selon la version de Compose) si le démon est joignable. Jamais bloquant : binaire ou
+  démon absent → état neutre (`docker_available: false`).
+- Ces deux modules répondent à un modèle **pull** (l'UI appelle directement, à l'ouverture
+  d'un écran ou sur rafraîchi) plutôt que **push** (`AgentEvent`) — cohérent avec leur nature
+  de panneaux de constat indépendants de toute conversation en cours.
+- 15 nouveaux tests (parsing porcelain v2, parsing JSON/NDJSON `compose ps`, détection sur
+  dossier temporaire, dépôt Git temporaire réel). `cargo test -p orchestra-core` : 68 → verts,
+  `clippy` propre.
+
+**TUI (`orchestra-tui`)**
+- Six nouveaux écrans : **Fichiers** (`[6]`, arborescence + activité live), **Git** (`[8]`,
+  branche/statut + diff au clic), **Docker** (`[9]`, conteneurs ou état neutre), **Terminal**
+  (`[0]`, commandes exécutées par les agents — événement déjà émis mais jamais affiché avant
+  ce chantier), **Mémoire** (`[m]`), **Contexte** (`[c]`, fichiers touchés cette session).
+  Récupération Git/Docker via des tâches `tokio` + canaux `oneshot`, sur le même modèle que le
+  reste des appels asynchrones du TUI.
+- `cargo test -p orchestra-core -p orchestra-tui` : 103 tests verts (dont rendu **headless**
+  des 6 nouveaux écrans à plusieurs tailles de terminal — a capturé et corrigé un panic
+  `clamp(min > max)` sur petit terminal dans le rendu Git). `clippy` propre.
+
+**Desktop (`orchestra-desktop`)**
+- Rail Tâches enrichi de trois sections : **DOCS** (persona/ADR/mémoire/`.md`, clic → édition
+  dans le panneau central — le persona n'était éditable nulle part côté desktop avant ce
+  chantier), **GIT** (branche/statut, clic fichier → diff réel), **DOCKER** (conteneurs,
+  lecture seule). `CenterPane` gagne trois modes exclusifs : diff Git réel (prioritaire),
+  document d'espace éditable, fichier workspace (comportement historique inchangé).
+  Rafraîchissement Git/Docker au changement de session active (`use_memo` sur la racine de
+  travail), pas à chaque `AgentEvent` — évite un `git status`/`docker compose ps` en boucle.
+- Compilation non vérifiable dans cet environnement (webview Linux absente, comme documenté
+  de longue date) — relecture manuelle attentive à la place (a détecté et corrigé un double
+  déplacement (`move`) d'un `PathBuf` entre deux closures de bouton). **Build local requis**
+  avant de considérer ce chantier définitivement clos côté desktop.
+
+**Nettoyage**
+- Suppression du dossier non suivi par git `examples/recherche-immo-aix/` — résidu d'un ancien
+  test « immobilier », hors du positionnement du produit.
+- Réécriture complète de `README.md`, `docs/ARCHITECTURE.md` et `docs/FONCTIONNEL.md` :
+  suppression de toute trace documentaire du roster fixe / des types de projet Dev-Langue
+  d'une architecture antérieure à la Refonte (le code n'en gardait déjà plus rien, seule la
+  doc était restée figée) ; nouveau contenu structuré autour des 5 piliers ; documentation
+  honnête du fait que `orchestration.rs` (modèle `Plan`/`Task` avec tri topologique) n'est
+  **plus câblé** au chemin d'exécution actuel (remplacé en pratique par
+  `Set_Plan`/`Update_Step`), pour éviter de reproduire le même écart doc/code à l'avenir.

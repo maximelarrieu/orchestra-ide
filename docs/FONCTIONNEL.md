@@ -5,120 +5,127 @@
 
 ## 1. Vision
 
-Orchestra IDE est un **« IDE pour l'ère agentique »** : un poste de pilotage où l'on ne
-manipule pas du code ligne à ligne, mais un **orchestre d'agents** qui travaillent pour
-nous sur un objectif. L'outil est **centré sur le développement logiciel** (création d'un
-projet *from scratch* ou reprise d'un projet existant). Le moteur reste générique — un second
-type **Langue** est conservé (mis de côté pour l'instant) — mais le produit vise le Dev.
+Orchestra IDE est un **outil de dev piloté par IA** — rien d'autre. Pas un compagnon
+généraliste, pas un produit à tiroirs : un poste de pilotage où un **Orchestrateur** (un
+agent IA unique, qui déploie sa propre équipe de sous-agents à la volée) fait avancer du code
+pour toi, pendant que tu gardes une vue claire et honnête sur l'état réel du projet.
+
+Cinq questions, cinq réponses toujours visibles :
+
+| Question | Pilier |
+|---|---|
+| Qu'est-ce qui a changé dans mon code ? | **Fichiers** |
+| Où j'en suis avec Git ? | **Git** |
+| Mon appli tourne, dans Docker ? | **Docker** |
+| Qu'est-ce que l'IA est en train de faire, et dans quel ordre ? | **Plan / Tâches** |
+| Qui travaille, là, maintenant ? | **Agents** |
 
 ## 2. Concept clé : l'Espace de Contexte
 
-Tout part d'un **Espace de Contexte** : un dossier qui rassemble *tout ce qu'il faut
-savoir* pour qu'un orchestre d'agents travaille sur un sujet donné.
-
-Un Espace contient :
+Tout part d'un **Espace de Contexte** : un dossier (`.orchestra/`) qui rassemble ce qu'il
+faut savoir pour que l'Orchestrateur travaille efficacement sur un projet de code donné.
 
 | Élément | Rôle |
 |---|---|
-| **Type de projet** | `Dev` (focus) ou `Langue` — détermine les agents et Skills par défaut |
-| **Persona** (`persona.md`) | Le contexte et les critères rédigés par l'utilisateur (stack, conventions de code, objectifs…) |
-| **Agents** | Les membres de l'orchestre (ex. `Agent_Architecte`, `Agent_Codeur`) |
-| **Skills** | Les capacités : **primitives** exécutables (code : `Read_File`, `Web_Fetch`…) et **fiches** d'instructions (`skills/<id>/SKILL.md`, sans code) |
+| **Workspace** | Le dossier de code réellement piloté (créé neuf, ou un projet existant « adopté ») |
+| **Persona** (`persona.md`) | Contexte et critères rédigés par l'utilisateur (stack, conventions, objectifs…) |
 | **Mémoire** (`memory.md`) | Notes partagées entre agents et entre sessions (faits, décisions, synthèses) |
-| **ADRs** | Les décisions structurantes consignées (`adr/*.md`) |
-| **Intégrations** | Git / GitHub (actives si configurées) ; Jira à venir |
+| **ADRs** | Décisions d'architecture structurantes (`adr/*.md`) |
+| **Intégrations** | Git / GitHub (actives si configurées) ; Jira déclarable, pas encore implémentée |
 
-### Matrice des types de projet
-
-| Type | Agents *de départ* | Skills par défaut |
-|---|---|---|
-| **Dev** | Agent_Architecte, Agent_Codeur, Agent_Testeur (+ catalogue lifecycle : Reviewer, Debuggeur, Refactoreur, DevOps, Sécurité, DBA, Release) | Read_File, Write_File_Validated, Execute_Terminal_Command |
-| **Langue** | Agent_Tuteur, Agent_Correcteur | Generate_Quiz, Translate_Text, Text_To_Speech |
+**Aucun agent ni skill n'est pré-câblé.** L'Orchestrateur compose son équipe lui-même, tâche
+par tâche, en fonction de ce qu'il y a à faire — pas de roster figé à maintenir.
 
 ## 3. Parcours utilisateur
 
-### a) Créer un Espace — `orchestra init`
+### a) Démarrer un projet — nouveau ou existant
 
 ```bash
-cargo run -p orchestra-tui -- init ./ma-recherche
+# Nouveau projet : crée .orchestra/{config.json, persona.md, adr/}
+cargo run -p orchestra-tui -- init ./mon-projet
+
+# Reprendre un projet de code existant : l'outil l'« adopte » comme Espace de Contexte
+cargo run -p orchestra-tui -- ./mon-projet-existant
 ```
 
-Un assistant interactif pose quelques questions :
+Un Espace déjà initialisé n'est **jamais écrasé**. Le sélecteur d'Espaces (TUI `[3]` /
+barre d'espaces du Desktop) garde en mémoire les projets déjà ouverts et propose un
+navigateur de dossiers pour en découvrir sans taper de chemin.
 
-```mermaid
-flowchart TD
-    A([orchestra init chemin]) --> B[Nom du projet ?]
-    B --> C[Type ? 1.Dev 2.Langue]
-    C --> D{Type = Dev ?}
-    D -->|oui| E[Chemin du code à piloter ?]
-    D -->|non| F[Agent Documentaliste ? o/N]
-    E --> F
-    F --> G[[Génère .orchestra/ : config.json + persona.md + adr/]]
-    G --> H([Espace prêt — complète persona.md])
-```
+### b) Piloter l'Orchestrateur
 
-Le résultat est un dossier `.orchestra/` pré-rempli avec les agents et Skills adaptés au
-type choisi. Un Espace déjà existant **n'est jamais écrasé**.
+Deux façons de lui donner du travail, dans les deux UIs :
 
-### b) Piloter l'orchestre — le tableau de bord
+1. **Objectif rapide** (TUI `[1]`) — tu saisis un but, l'Orchestrateur l'exécute en one-shot
+   (déploie les sous-agents utiles, travaille, te rend un compte-rendu).
+2. **Assistant** (TUI `[5]` / Desktop, panneau de conversation) — conversation persistante :
+   tu discutes, poses des questions, donnes des instructions au fil de l'eau ; l'historique
+   est conservé.
 
-```bash
-cargo run -p orchestra-tui -- ./ma-recherche
-```
+Dans les deux cas, l'Orchestrateur **publie et tient à jour un plan visible** (pilier
+Plan/Tâches) et **déploie des sous-agents à la volée** (pilier Agents) — tu vois qui fait
+quoi, dans quel ordre, en direct.
 
-Le tableau de bord (TUI) s'ouvre en 3 zones :
+### c) Les 5 piliers, en détail
 
-```
-┌─ ORCHESTRA IDE v0.1.0 | [Mon_App] (Dev) | ● au repos ────────────────────┐
-├─ 🛰  ÉCRAN RADAR (FLUX D'ACTIVITÉ DES AGENTS) ───────────────────────────┤
-│   Prêt. Appuie sur [1] pour lancer l'orchestre.                          │
-├─ 📋 OPTIONS & MENUS ─────────────────────────────────────────────────────┤
-│  [1] Lancer l'orchestre  [2] Voir les ADRs  [3] Changer d'Espace  [q]…   │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+**Fichiers** — l'arborescence du workspace, annotée en direct : un fichier s'illumine selon
+qu'un agent le **lit** ou l'**écrit**, pendant la session (« orchestre en verre » — tu vois
+l'équipe parcourir et modifier le code). Sélectionner un fichier l'ouvre : rendu Markdown
+(avec diagrammes Mermaid côté Desktop) ou texte brut, diff s'il a été modifié par un agent
+cette session, édition/sauvegarde possible.
 
-| Touche | Action | État |
-|---|---|---|
-| `[1]` | Orchestrer un objectif : plan (tâches + dépendances) → approbation → exécution → synthèse | ✅ actif |
-| `[5]` | Converser avec le chef d'orchestre (délègue aux agents, **ou orchestre un objectif complexe** ; historique conservé) | ✅ actif |
-| `[2]` | Navigateur de documents (persona/mémoire/ADRs/docs) + visualiseur Markdown | ✅ actif |
-| `[3]` | Changer d'Espace (saisie d'un chemin) | ✅ actif (5) |
-| `[4]` | Éditer le persona dans l'interface (`Ctrl+S` enregistre) | ✅ actif |
-| `[6]` | Gérer les agents (rôle, stats ; renommer/ajouter/supprimer) ; `[s]` **sélecteur de skills** à cocher ; `[n]` créer une fiche | ✅ actif |
-| `q` / `Échap` | Quitter | ✅ actif |
+**Git** — branche courante, ahead/behind par rapport à l'amont, fichiers indexés/modifiés/non
+suivis. Cliquer un fichier modifié affiche son diff. Fonctionne **sans aucune configuration**
+dès que le dossier est un dépôt Git — c'est un panneau de lecture, indépendant des outils Git
+que l'Orchestrateur peut utiliser lui-même (voir plus bas).
 
-Quand l'orchestre tourne, l'en-tête indique `▶ N agent(s) en cours`, le radar liste les
-démarrages, les logs et les fins d'agents, puis bascule en `✓ terminé`.
+**Docker** — si le projet a un `Dockerfile`/`docker-compose.yml`, l'outil interroge les
+conteneurs (image, état, ports) sans rien demander à configurer. **Lecture seule** dans cette
+version : c'est un constat, pas un panneau de pilotage (pas de start/stop/logs pour l'instant).
+Si Docker n'est pas installé ou son démon injoignable, message neutre — jamais une erreur qui
+bloque l'interface.
+
+**Plan / Tâches** — le plan que l'Orchestrateur publie et met à jour au fil de son travail :
+liste d'étapes, chacune passant de « en attente » à « en cours » puis « fait » (ou « échec »).
+Pas une simple prose dans le chat : un vrai suivi visuel de la progression.
+
+**Agents** — statut live de l'Orchestrateur et de chaque sous-agent qu'il a déployé (repos /
+réfléchit / actif / terminé). L'équipe n'est jamais fixée à l'avance : elle apparaît à mesure
+que l'Orchestrateur la compose pour la tâche en cours.
+
+S'y ajoutent, complémentaires : **Modifications** (diffs de tout ce que les agents ont écrit
+cette session), **Terminal** (commandes réellement exécutées), **Mémoire** (notes partagées
+entre agents, durables entre sessions), **Contexte** (fichiers touchés cette session) et
+**Docs** (persona/ADRs/mémoire, consultables et éditables sans quitter l'outil).
 
 ## 4. État des fonctionnalités
 
-| Capacité | État | Phase |
-|---|---|---|
-| Modèle d'Espace de Contexte agnostique | ✅ | 1 |
-| Tableau de bord 3 zones | ✅ | 1 |
-| Création d'Espace assistée (`init`) | ✅ | 2 |
-| Radar temps réel (flux d'agents) | ✅ | 3 |
-| **Agents intelligents (LLM Claude ou Gemini)** | ✅ avec clé API | 4a |
-| Skills Dev exécutables (lecture/écriture fichier, terminal) | ✅ | 4a |
-| Skill `Web_Fetch` (lecture d'URL) + registre de primitives | ✅ | post-5 |
-| Skills « fiches » Markdown (`SKILL.md`) + création depuis l'UI (`[n]`) | ✅ | post-5 |
-| Divulgation progressive des fiches (`Load_Skill`) | ✅ | post-5 |
-| Mémoire partagée d'espace (`Remember` / `Recall`) | ✅ | post-5 |
-| Économie de tokens (prompt caching Anthropic) | ✅ | post-5 |
-| Orchestration réelle (plan → approbation → exécution → synthèse) | ✅ | post-5 |
-| Repli simulé hors-ligne (sans clé) | ✅ | 4a |
-| Intégration Git (statut, diff, branche, commit) | ✅ si configuré | 4b |
-| Intégration GitHub (issues, commentaire, PR) | ✅ si configuré + token | 4b |
-| Intégration Jira | ❌ | 4c |
-| Changement d'Espace dans l'UI (`[3]`) | ✅ | 5 |
-| Navigateur de documents + visualiseur Markdown (`[2]`) | ✅ | post-5 |
-| Éditeur de persona intégré (`[4]`) | ✅ | post-5 |
-| Gestionnaire d'agents (rôle/skills/stats, éditable) (`[6]`) | ✅ | post-5 |
-| Agent Documentaliste (doc auto, Mermaid) | ✅ si activé | 5 |
+| Capacité | État |
+|---|---|
+| Espace de Contexte (créer / adopter un projet existant) | ✅ |
+| Orchestrateur unique, compose sa propre équipe (`spawn_agent`) | ✅ |
+| Objectif rapide (one-shot) + Assistant (conversation persistante) | ✅ |
+| Plan / Tâches en direct (`Set_Plan`/`Update_Step`) | ✅ |
+| Agents intelligents (LLM Claude **ou** Gemini, bascule automatique) | ✅ avec clé API |
+| Repli simulé hors-ligne (sans clé) | ✅ |
+| Skills Dev exécutables (fichiers, terminal, Mermaid, web) | ✅ |
+| Skills « fiches » Markdown (sans code) + divulgation progressive | ✅ |
+| Mémoire partagée d'espace (`Remember`/`Recall`) | ✅ |
+| **Panneau Fichiers** (arborescence annotée) | ✅ (TUI + Desktop) |
+| **Panneau Git** (branche, ahead/behind, statut, diff) | ✅ (TUI + Desktop) |
+| **Panneau Docker** (conteneurs, lecture seule) | ✅ (TUI + Desktop) |
+| Panneau Modifications (diffs des agents) | ✅ |
+| Panneau Terminal (commandes exécutées) | ✅ |
+| Panneau Mémoire / Contexte | ✅ |
+| Navigateur de documents (persona/ADR/mémoire) + édition | ✅ |
+| Sessions en onglets (plusieurs projets ouverts) | ✅ |
+| Registre des espaces connus + navigateur de dossiers | ✅ |
+| Intégration Git (outils agent : statut, diff, branche, commit) | ✅ si configuré |
+| Intégration GitHub (issues, commentaire, PR) | ✅ si configuré + token |
+| Intégration Jira | ❌ (déclarable en config, pas implémentée) |
+| Actions Docker (start/stop/logs) | ❌ (volontairement hors périmètre v1, lecture seule) |
 
-### Activer le LLM — Claude ou Gemini, au choix
-
-Les agents appellent réellement un LLM dès qu'une clé API est exposée :
+## 5. Activer le LLM — Claude ou Gemini, au choix
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."   # Claude (défaut claude-opus-4-8)
@@ -128,31 +135,22 @@ export GEMINI_API_KEY="..."             # Gemini (défaut gemini-2.5-flash)
 # Optionnel : forcer le fournisseur / le modèle
 export ORCHESTRA_PROVIDER=gemini        # anthropic | gemini
 export ORCHESTRA_MODEL=gemini-2.5-flash
-
-cargo run -p orchestra-tui -- /chemin/vers/mon-projet
 ```
 
-Le fournisseur est choisi automatiquement selon les clés présentes ; `ORCHESTRA_PROVIDER` a
-priorité (force un fournisseur unique). Les clés sont lues depuis l'environnement, jamais en dur.
+Si les deux clés sont présentes, **Claude est préféré, Gemini sert de repli** automatique
+(réseau, surcharge, quota ou crédit épuisé) — sans interrompre l'Orchestrateur. Sans aucune
+clé (ou si tous les fournisseurs échouent), l'outil bascule en **mode simulé**, pleinement
+utilisable hors-ligne.
 
-**Bascule automatique Claude ↔ Gemini** : si les deux clés sont définies, Claude est préféré et
-**Gemini sert de repli**. Si Claude devient indisponible — réseau, surcharge, quota ou **crédit
-épuisé** — l'appli **passe sur Gemini toute seule**, sans couper l'orchestre ; un fournisseur
-définitivement KO (clé invalide / plus de crédit) est écarté pour la suite. L'en-tête affiche le
-fournisseur actif et le repli (ex. `Claude · claude-opus-4-8 (repli : Gemini)`).
+> ⚠️ Le Skill `Execute_Terminal_Command` exécute de vraies commandes shell dans le workspace
+> — capacité assumée pour un outil de dev, encadrée (confiné au workspace, délai max, sortie
+> plafonnée) mais à utiliser en connaissance de cause.
 
-Si **aucun** fournisseur n'est disponible (aucune clé, ou tous en échec), l'appli bascule en
-**mode simulé** — pleinement utilisable hors-ligne ; l'en-tête indique `simulé · clé API absente`
-et le radar rappelle quelles variables définir.
+## 6. Activer les intégrations Git / GitHub (outils agent)
 
-> ⚠️ Le Skill `Execute_Terminal_Command` exécute de vraies commandes shell dans le
-> workspace. C'est une capacité assumée pour un IDE de développement, encadrée (workspace
-> uniquement, délai max, sortie plafonnée) — mais à utiliser en connaissance de cause.
-
-### Activer les intégrations Git / GitHub (Phase 4b)
-
-Les agents gagnent des Skills supplémentaires **si l'intégration est déclarée** dans
-`.orchestra/config.json` :
+Le panneau **Git passif** (branche/diff) ne demande aucune configuration. Pour que
+l'**Orchestrateur lui-même** puisse committer, créer une branche, ou agir sur GitHub, il faut
+déclarer l'intégration dans `.orchestra/config.json` :
 
 ```json
 "integrations": {
@@ -162,70 +160,15 @@ Les agents gagnent des Skills supplémentaires **si l'intégration est déclaré
 ```
 
 ```bash
-export GITHUB_TOKEN="ghp_..."     # requis pour les Skills GitHub
+export GITHUB_TOKEN="ghp_..."     # requis pour activer les outils GitHub de l'agent
 ```
 
-- **Git** (local) : `Git_Status`, `Git_Diff`, `Git_Create_Branch`, `Git_Commit`.
-- **GitHub** (REST) : `GitHub_List_Issues`, `GitHub_Create_Issue_Comment`,
-  `GitHub_Create_Pull_Request` — exposés seulement si le token est présent.
+Le modèle ne voit que les outils réellement actionnables : sans intégration configurée (ou
+sans token), ils n'apparaissent simplement pas. Jira suivra le même schéma le jour où elle
+sera implémentée.
 
-Le modèle ne voit que les Skills réellement actionnables : sans intégration configurée (ou
-sans token), ces outils n'apparaissent pas. Jira suivra le même schéma (Phase 4c).
+## 7. Démarrage
 
-### Skills : deux couches (primitives vs fiches)
-
-Un skill n'agit que s'il est **branché**. Deux façons de l'être :
-
-- **Primitive (code)** — capacité réelle implémentée en Rust : `Read_File`,
-  `Write_File_Validated`, `Execute_Terminal_Command`, `Write_Mermaid_Diagram`, `Web_Fetch`,
-  + Git/GitHub si configurés. Le menu Agents les marque **en vert**.
-- **Fiche (`SKILL.md`, sans code)** — un dossier `.orchestra/skills/<id>/SKILL.md` (en-tête
-  `name`/`description` + corps Markdown du « comment faire »). Tout agent à qui la fiche est
-  assignée en voit le **nom + la description** dans son prompt et charge la procédure complète
-  à la demande (`Load_Skill`). Crée-en une **sans quitter l'outil** : menu Agents `[6]` →
-  `[n]` → saisis un nom → rédige dans l'éditeur → `Ctrl+S`. Marquées **(fiche)** en cyan ; un
-  skill sans aucun des deux reste une étiquette **(inactif)** en gris.
-
-Idéal : `Creation_Quiz` (pur texte → fiche) ; `Web_Search` (une fiche qui s'appuie sur la
-primitive `Web_Fetch`).
-
-**Assigner sans rien connaître par cœur** : dans `[6]`, `[s]` ouvre un **sélecteur** — un
-catalogue navigable de tous les skills (primitives + fiches) avec leur **description** et leur
-nature (`prim.`/`fiche`). On **coche** (`Espace`) pour assigner/retirer ; `[e]` édite la fiche
-sélectionnée, `[n]` en crée une. Fini la saisie de noms à l'aveugle.
-
-### Orchestration d'un objectif (`[1]`)
-
-Plutôt que de diffuser la même consigne à tous les agents, `[1]` fait travailler l'orchestre
-comme un vrai orchestre :
-
-1. **Plan** — le chef décompose l'objectif en **tâches** assignées à des agents, reliées par des
-   dépendances (qui doit passer avant qui).
-2. **Approbation** — le plan s'affiche ; tu l'exécutes (`Entrée`) ou l'annules (`Échap`).
-3. **Exécution ordonnée et parallèle** — les tâches **indépendantes s'exécutent en même temps** ;
-   une tâche n'attend que ses prérequis. Chaque agent reçoit en contexte les résultats de ses
-   dépendances et **consigne le sien en mémoire** (passage de relais).
-4. **Auto-correction** — le chef évalue si l'objectif est atteint ; sinon il propose un **plan
-   correctif** (que tu ré-approuves) et relance une manche, jusqu'à satisfaction (ou une limite).
-5. **Synthèse** — le chef agrège les comptes rendus de toutes les manches en une réponse finale.
-
-Le panneau **Plan** suit l'avancement en direct (⋯ en attente · ▶ en cours · ✓ fait · ✗ échec).
-Sans clé API, le plan de repli (pipeline linéaire) et un flux simulé restent fonctionnels.
-
-### Mémoire partagée
-
-Tous les agents disposent de deux outils universels :
-
-- **`Remember{note}`** — consigne un fait, une décision ou une synthèse dans
-  `.orchestra/memory.md` (durable entre sessions, visible dans le navigateur `[2]`).
-- **`Recall{query?}`** — relit la mémoire, filtrée par mot-clé.
-
-C'est à la fois la **mémoire de l'orchestre** (le travail se capitalise) et un **levier
-d'économie de tokens** : un agent résume une source volumineuse une fois, les autres lisent
-la synthèse au lieu de relire le fichier.
-
-## 5. Démarrage
-
-Aucun espace n'est fourni : ouvre un dossier de projet existant (ou lance `orchestra init`
-pour en créer un). L'Orchestrateur déploie ensuite sa propre équipe à la volée — rien à
-pré-configurer.
+Aucun espace n'est fourni : ouvre un dossier de projet existant (adopté automatiquement) ou
+lance `orchestra init` pour en créer un neuf. L'Orchestrateur déploie ensuite sa propre
+équipe à la volée — rien à pré-configurer côté agents ou skills.

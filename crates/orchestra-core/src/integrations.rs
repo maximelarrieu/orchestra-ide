@@ -14,8 +14,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::process::Command;
-use tokio::time::timeout;
 
 use crate::llm::ToolSpec;
 use crate::model::space::ContextSpace;
@@ -32,7 +30,6 @@ pub const GH_LIST_ISSUES: &str = "GitHub_List_Issues";
 pub const GH_COMMENT: &str = "GitHub_Create_Issue_Comment";
 pub const GH_CREATE_PR: &str = "GitHub_Create_Pull_Request";
 
-const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const GITHUB_API: &str = "https://api.github.com";
 
 /// Connexion GitHub résolue : dépôt `owner/repo` + token (depuis l'environnement).
@@ -193,18 +190,14 @@ pub async fn execute(name: &str, input: &Value, workspace: &Path, conn: &Integra
     }
 }
 
+/// Délègue à [`crate::git::run_command`] (source unique du shell-out `git`, partagée avec
+/// le panneau Git structuré des UIs) et formate le résultat en texte pour le modèle.
 async fn git(args: &[&str], ws: &Path) -> SkillOutcome {
-    let mut cmd = Command::new("git");
-    cmd.args(args).current_dir(ws);
-    match timeout(GIT_TIMEOUT, cmd.output()).await {
-        Err(_) => SkillOutcome::err("commande git interrompue (délai dépassé)."),
-        Ok(Err(e)) => SkillOutcome::err(format!("git introuvable ou non exécutable : {e}")),
-        Ok(Ok(out)) => {
-            let code = out.status.code().unwrap_or(-1);
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let text = format!("git {} → exit={code}\n{stdout}{stderr}", args.join(" "));
-            if out.status.success() {
+    match crate::git::run_command(args, ws).await {
+        Err(e) => SkillOutcome::err(e),
+        Ok(out) => {
+            let text = format!("git {} → exit={}\n{}{}", args.join(" "), out.code, out.stdout, out.stderr);
+            if out.success {
                 SkillOutcome::ok(text)
             } else {
                 SkillOutcome::err(text)

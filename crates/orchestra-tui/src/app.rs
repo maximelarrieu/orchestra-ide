@@ -7,7 +7,10 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use orchestra_core::browser::DirEntry;
+use orchestra_core::docker::DockerStatus;
 use orchestra_core::events::{AgentEvent, PlannedTask};
+use orchestra_core::explorer::FileNode;
+use orchestra_core::git::GitStatus;
 use orchestra_core::model::{ContextSpace, DocKind, SpaceDoc};
 use orchestra_core::registry::KnownSpace;
 
@@ -34,6 +37,9 @@ pub enum EditTarget {
 /// oubliés). Largement au-delà de ce qu'un écran affiche.
 const HISTORY_CAP: usize = 500;
 
+/// Nombre de commandes conservées dans le panneau Terminal.
+const TERMINAL_CAP: usize = 200;
+
 /// Phase de l'orchestre, déduite du flux d'événements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -56,6 +62,47 @@ pub enum View {
     Spaces,
     /// Modifications de fichiers réalisées par les agents (liste + diff).
     Changes,
+    /// Arborescence du workspace (pilier « Fichiers »).
+    Files,
+    /// État Git structuré : branche, staged/unstaged/untracked, diff (pilier « Git »).
+    Git,
+    /// État des conteneurs du projet, lecture seule (pilier « Docker »).
+    Docker,
+    /// Commandes exécutées par les agents (`AgentEvent::Terminal`).
+    Terminal,
+    /// Notes de la mémoire partagée (`.orchestra/memory.md`).
+    Memory,
+    /// Fichiers touchés (lus/écrits) par les agents cette session.
+    Context,
+}
+
+/// Une ligne Git combinée (staged + unstaged fusionnés par chemin, puis untracked) — l'ordre
+/// utilisé à la fois par le rendu et par la sélection ([`App::git_move`]).
+#[derive(Debug, Clone)]
+pub struct GitRow {
+    pub path: String,
+    /// Statut dans l'index (`.` = pas de changement indexé).
+    pub index: char,
+    /// Statut dans l'arbre de travail (`.` = pas de changement non indexé, `?` = non suivi).
+    pub worktree: char,
+}
+
+/// Une commande exécutée par un agent (`AgentEvent::Terminal`), pour le panneau Terminal.
+#[derive(Debug, Clone)]
+pub struct TerminalEntry {
+    pub agent: String,
+    pub command: String,
+    pub output: String,
+    pub ok: bool,
+}
+
+/// Activité (lecture/écriture) sur un fichier du workspace cette session — alimente le
+/// panneau Contexte et badge l'arborescence Fichiers.
+#[derive(Debug, Clone, Default)]
+pub struct ContextFile {
+    pub last_agent: String,
+    pub reads: usize,
+    pub writes: usize,
 }
 
 /// Un changement de fichier observé (émis par un agent via `Write_File_Validated`).
@@ -176,6 +223,24 @@ pub struct App {
     pub changes: Vec<FileChange>,
     /// Index du changement sélectionné dans la vue Modifications.
     pub change_sel: usize,
+    /// Arborescence du workspace — vue `[6]` Fichiers.
+    pub files: Vec<FileNode>,
+    pub files_truncated: bool,
+    pub files_sel: usize,
+    /// Dernier état Git connu (`None` tant qu'il n'a pas été chargé) — vue `[8]` Git.
+    pub git: Option<GitStatus>,
+    pub git_sel: usize,
+    /// Diff affiché (chemin, texte) — `None` tant qu'aucun fichier n'a été sélectionné.
+    pub git_diff: Option<(String, String)>,
+    /// Dernier état Docker connu — vue `[9]` Docker.
+    pub docker: Option<DockerStatus>,
+    /// Commandes exécutées par les agents cette session — vue `[0]` Terminal.
+    pub terminal_log: Vec<TerminalEntry>,
+    /// Notes de la mémoire partagée, rechargées à l'ouverture — vue `[m]` Mémoire.
+    pub memory: Vec<String>,
+    pub memory_scroll: usize,
+    /// Fichiers touchés (lus/écrits) cette session, par chemin — vue `[c]` Contexte.
+    pub context_files: HashMap<String, ContextFile>,
 }
 
 /// État d'une tâche du plan d'orchestration, côté affichage.
@@ -249,6 +314,17 @@ impl App {
             new_space: None,
             changes: Vec::new(),
             change_sel: 0,
+            files: Vec::new(),
+            files_truncated: false,
+            files_sel: 0,
+            git: None,
+            git_sel: 0,
+            git_diff: None,
+            docker: None,
+            terminal_log: Vec::new(),
+            memory: Vec::new(),
+            memory_scroll: 0,
+            context_files: HashMap::new(),
         }
     }
 
@@ -411,6 +487,169 @@ impl App {
         }
         let last = self.changes.len() as isize - 1;
         self.change_sel = (self.change_sel as isize + delta).clamp(0, last) as usize;
+    }
+
+    /// `[6]` — ouvre/ferme l'écran **Fichiers** (arborescence du workspace, rechargée à
+    /// chaque ouverture : opération synchrone, pas de canal à ouvrir).
+    pub fn toggle_files(&mut self) {
+        if self.view == View::Files {
+            self.view = View::Radar;
+            return;
+        }
+        let Some(space) = &self.space else {
+            self.notice = Some("Aucun espace chargé : impossible d'ouvrir l'arborescence.".into());
+            return;
+        };
+        let t = orchestra_core::explorer::tree(&space.workspace());
+        self.files = t.nodes;
+        self.files_truncated = t.truncated;
+        self.files_sel = 0;
+        self.notice = None;
+        self.view = View::Files;
+    }
+
+    pub fn files_move(&mut self, delta: isize) {
+        if self.files.is_empty() {
+            return;
+        }
+        let last = self.files.len() as isize - 1;
+        self.files_sel = (self.files_sel as isize + delta).clamp(0, last) as usize;
+    }
+
+    /// Ouvre le fichier sélectionné (s'il ne s'agit pas d'un dossier) dans le visualiseur.
+    pub fn open_selected_file(&mut self) {
+        let Some(node) = self.files.get(self.files_sel) else { return };
+        if node.is_dir {
+            return;
+        }
+        let Some(space) = &self.space else { return };
+        let abs = space.workspace().join(&node.rel);
+        match orchestra_core::model::load_document(&abs) {
+            Ok(text) => {
+                self.viewer =
+                    Some(Viewer { title: node.rel.clone(), text, scroll: 0, path: abs, is_persona: false });
+            }
+            Err(e) => self.notice = Some(format!("Lecture impossible : {e}")),
+        }
+    }
+
+    /// `[8]` — ouvre/ferme l'écran **Git**. Le chargement de l'état (async) est déclenché
+    /// par l'appelant (`main.rs`) via [`App::set_git_status`].
+    pub fn toggle_git(&mut self) {
+        if self.view == View::Git {
+            self.view = View::Radar;
+            return;
+        }
+        self.notice = None;
+        self.view = View::Git;
+    }
+
+    /// Liste combinée des fichiers Git à afficher : staged et unstaged fusionnés par chemin
+    /// (comme `git status --short`), puis untracked. Ordre partagé par le rendu et la sélection.
+    pub fn git_rows(&self) -> Vec<GitRow> {
+        let Some(g) = &self.git else { return Vec::new() };
+        let mut rows: Vec<GitRow> = Vec::new();
+        for f in &g.staged {
+            rows.push(GitRow { path: f.path.clone(), index: f.index, worktree: '.' });
+        }
+        for f in &g.unstaged {
+            if let Some(r) = rows.iter_mut().find(|r| r.path == f.path) {
+                r.worktree = f.worktree;
+            } else {
+                rows.push(GitRow { path: f.path.clone(), index: '.', worktree: f.worktree });
+            }
+        }
+        for p in &g.untracked {
+            rows.push(GitRow { path: p.clone(), index: '?', worktree: '?' });
+        }
+        rows
+    }
+
+    pub fn git_move(&mut self, delta: isize) {
+        let n = self.git_rows().len();
+        if n == 0 {
+            return;
+        }
+        let last = n as isize - 1;
+        self.git_sel = (self.git_sel as isize + delta).clamp(0, last) as usize;
+    }
+
+    /// Chemin du fichier Git actuellement sélectionné, pour déclencher un `git diff`.
+    pub fn git_selected_path(&self) -> Option<String> {
+        self.git_rows().get(self.git_sel).map(|r| r.path.clone())
+    }
+
+    pub fn set_git_status(&mut self, status: GitStatus) {
+        self.git_sel = 0;
+        self.git_diff = None;
+        self.git = Some(status);
+    }
+
+    pub fn set_git_diff(&mut self, path: String, text: String) {
+        self.git_diff = Some((path, text));
+    }
+
+    /// `[9]` — ouvre/ferme l'écran **Docker**. Chargement async déclenché par l'appelant.
+    pub fn toggle_docker(&mut self) {
+        if self.view == View::Docker {
+            self.view = View::Radar;
+            return;
+        }
+        self.notice = None;
+        self.view = View::Docker;
+    }
+
+    pub fn set_docker_status(&mut self, status: DockerStatus) {
+        self.docker = Some(status);
+    }
+
+    /// `[0]` — ouvre/ferme l'écran **Terminal** (commandes déjà reçues via `AgentEvent::Terminal`).
+    pub fn toggle_terminal(&mut self) {
+        if self.view == View::Terminal {
+            self.view = View::Radar;
+            return;
+        }
+        self.notice = None;
+        self.view = View::Terminal;
+    }
+
+    /// `[m]` — ouvre/ferme l'écran **Mémoire**, rechargé depuis `.orchestra/memory.md`
+    /// (lecture synchrone via le cœur, comme le navigateur de documents).
+    pub fn toggle_memory(&mut self) {
+        if self.view == View::Memory {
+            self.view = View::Radar;
+            return;
+        }
+        self.memory = self
+            .space
+            .as_ref()
+            .map(|s| orchestra_core::memory::entries(&s.root))
+            .unwrap_or_default();
+        self.memory_scroll = 0;
+        self.notice = None;
+        self.view = View::Memory;
+    }
+
+    pub fn memory_scroll_by(&mut self, delta: isize) {
+        self.memory_scroll = (self.memory_scroll as isize + delta).max(0) as usize;
+    }
+
+    /// `[c]` — ouvre/ferme l'écran **Contexte** (fichiers touchés cette session, déjà
+    /// agrégés en direct dans `on_event`).
+    pub fn toggle_context(&mut self) {
+        if self.view == View::Context {
+            self.view = View::Radar;
+            return;
+        }
+        self.notice = None;
+        self.view = View::Context;
+    }
+
+    /// Fichiers touchés, triés par chemin pour un affichage stable (`HashMap` n'a pas d'ordre).
+    pub fn context_rows(&self) -> Vec<(&String, &ContextFile)> {
+        let mut v: Vec<_> = self.context_files.iter().collect();
+        v.sort_by(|a, b| a.0.cmp(b.0));
+        v
     }
 
     /// `[3]` — ouvre/ferme le **sélecteur d'espaces connus** (récents), rafraîchi depuis le
@@ -666,6 +905,8 @@ impl App {
         self.agent_status.clear(); // statuts live remis à zéro pour le nouveau run
         self.changes.clear();
         self.change_sel = 0;
+        self.terminal_log.clear();
+        self.context_files.clear();
     }
 
     /// Intègre un événement du runtime dans l'état (compteurs + historique + stats agents).
@@ -696,18 +937,38 @@ impl App {
                 self.set_task_status(id, PlanStatus::Failed);
                 return;
             }
-            AgentEvent::FileChanged { path, added, removed, diff, .. } => {
+            AgentEvent::FileChanged { agent, path, added, removed, diff } => {
                 self.changes.push(FileChange {
                     path: path.clone(),
                     added: *added,
                     removed: *removed,
                     diff: diff.clone(),
                 });
+                let entry = self.context_files.entry(path.clone()).or_default();
+                entry.writes += 1;
+                entry.last_agent = agent.clone();
                 return;
             }
-            // Activité fichier / terminal : met à jour le statut live sans polluer le radar.
-            AgentEvent::FileRead { agent, .. } | AgentEvent::Terminal { agent, .. } => {
+            // Activité fichier / terminal : met à jour le statut live sans polluer le radar,
+            // et alimente respectivement le panneau Contexte et le panneau Terminal.
+            AgentEvent::FileRead { agent, path } => {
                 self.agent_status.insert(agent.clone(), LiveStatus::Working);
+                let entry = self.context_files.entry(path.clone()).or_default();
+                entry.reads += 1;
+                entry.last_agent = agent.clone();
+                return;
+            }
+            AgentEvent::Terminal { agent, command, output, ok } => {
+                self.agent_status.insert(agent.clone(), LiveStatus::Working);
+                self.terminal_log.push(TerminalEntry {
+                    agent: agent.clone(),
+                    command: command.clone(),
+                    output: output.clone(),
+                    ok: *ok,
+                });
+                if self.terminal_log.len() > TERMINAL_CAP {
+                    self.terminal_log.remove(0);
+                }
                 return;
             }
             _ => {}
@@ -966,5 +1227,119 @@ mod tests {
         assert!(mk(Some("Budget : à compléter")).persona_incomplete());
         assert!(!mk(Some("Budget : 350k€")).persona_incomplete());
         assert!(!mk(None).persona_incomplete(), "pas de persona → pas bloquant");
+    }
+
+    #[test]
+    fn toggle_views_switch_and_close() {
+        let mut app = App::new(None);
+        for toggle in [
+            App::toggle_docker as fn(&mut App),
+            App::toggle_terminal,
+            App::toggle_context,
+        ] {
+            assert_eq!(app.view, View::Radar);
+            toggle(&mut app);
+            assert_ne!(app.view, View::Radar);
+            toggle(&mut app);
+            assert_eq!(app.view, View::Radar);
+        }
+    }
+
+    #[test]
+    fn toggle_git_switches_view_without_touching_status() {
+        let mut app = App::new(None);
+        app.toggle_git();
+        assert_eq!(app.view, View::Git);
+        assert!(app.git.is_none(), "le chargement async est déclenché par l'appelant, pas par le toggle");
+        app.toggle_git();
+        assert_eq!(app.view, View::Radar);
+    }
+
+    #[test]
+    fn git_rows_merge_staged_and_unstaged_by_path() {
+        use orchestra_core::git::{GitFileStatus, GitStatus};
+        let mut app = App::new(None);
+        app.set_git_status(GitStatus {
+            is_repo: true,
+            branch: Some("main".into()),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            staged: vec![GitFileStatus { path: "a.rs".into(), index: 'M', worktree: '.' }],
+            unstaged: vec![GitFileStatus { path: "a.rs".into(), index: '.', worktree: 'M' }],
+            untracked: vec!["b.rs".into()],
+        });
+        let rows = app.git_rows();
+        assert_eq!(rows.len(), 2, "a.rs fusionné en une seule ligne, + b.rs");
+        let a = rows.iter().find(|r| r.path == "a.rs").unwrap();
+        assert_eq!((a.index, a.worktree), ('M', 'M'));
+        let b = rows.iter().find(|r| r.path == "b.rs").unwrap();
+        assert_eq!((b.index, b.worktree), ('?', '?'));
+    }
+
+    #[test]
+    fn git_move_and_selected_path_track_rows() {
+        use orchestra_core::git::GitStatus;
+        let mut app = App::new(None);
+        app.set_git_status(GitStatus {
+            untracked: vec!["a.rs".into(), "b.rs".into()],
+            ..GitStatus::default()
+        });
+        assert_eq!(app.git_selected_path().as_deref(), Some("a.rs"));
+        app.git_move(1);
+        assert_eq!(app.git_selected_path().as_deref(), Some("b.rs"));
+        app.git_move(5); // borné en haut
+        assert_eq!(app.git_selected_path().as_deref(), Some("b.rs"));
+    }
+
+    #[test]
+    fn terminal_events_are_logged_and_capped() {
+        let mut app = App::new(None);
+        app.on_event(AgentEvent::Terminal {
+            agent: "A".into(),
+            command: "ls".into(),
+            output: "README.md".into(),
+            ok: true,
+        });
+        assert_eq!(app.terminal_log.len(), 1);
+        assert_eq!(app.terminal_log[0].command, "ls");
+        // Un nouveau run remet le journal Terminal à zéro (comme les Modifications).
+        app.begin_run();
+        assert!(app.terminal_log.is_empty());
+    }
+
+    #[test]
+    fn file_activity_populates_context_rows() {
+        let mut app = App::new(None);
+        app.on_event(AgentEvent::FileRead { agent: "A".into(), path: "src/lib.rs".into() });
+        app.on_event(AgentEvent::FileChanged {
+            agent: "B".into(),
+            path: "src/lib.rs".into(),
+            added: 2,
+            removed: 1,
+            diff: "+ x\n- y".into(),
+        });
+        let rows = app.context_rows();
+        assert_eq!(rows.len(), 1);
+        let (path, info) = rows[0];
+        assert_eq!(path, "src/lib.rs");
+        assert_eq!(info.reads, 1);
+        assert_eq!(info.writes, 1);
+        assert_eq!(info.last_agent, "B"); // dernier événement fait foi
+    }
+
+    #[test]
+    fn toggle_files_without_space_sets_notice_instead_of_panicking() {
+        let mut app = App::new(None);
+        app.toggle_files();
+        assert_eq!(app.view, View::Radar, "pas d'espace → l'écran ne s'ouvre pas");
+        assert!(app.notice.is_some());
+    }
+
+    #[test]
+    fn files_move_is_bounded_on_empty_list() {
+        let mut app = App::new(None);
+        app.files_move(3);
+        assert_eq!(app.files_sel, 0);
     }
 }

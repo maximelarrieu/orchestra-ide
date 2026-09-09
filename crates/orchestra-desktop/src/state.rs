@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use dioxus::prelude::*;
+use orchestra_core::docker::DockerStatus;
 use orchestra_core::events::AgentEvent;
+use orchestra_core::git::GitStatus;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime;
 use orchestra_core::session::{Sessions, Tabbed};
@@ -287,6 +289,53 @@ pub fn start_session_chat(mut sessions: Signal<Sessions<DesktopSession>>, index:
 /// Enregistre un document quelconque de l'espace (persona, memory, ADR, `.md`) via le cœur.
 pub fn save_document(path: &Path, content: &str) -> bool {
     orchestra_core::model::save_document(path, content).is_ok()
+}
+
+/// Lit un document d'espace (persona, memory, ADR, `.md`) via son chemin absolu.
+/// Alimente le panneau central quand un document de la liste **Docs** est sélectionné.
+pub fn load_document(path: &Path) -> Option<String> {
+    orchestra_core::model::load_document(path).ok()
+}
+
+/// Enregistre un document d'espace de la session **active**. La persona passe par
+/// [`ContextSpace::save_persona`] (garde la copie en mémoire à jour) ; les autres documents
+/// (memory, ADR, `.md` du workspace) par [`save_document`].
+pub fn save_space_document(mut sessions: Signal<Sessions<DesktopSession>>, path: &Path, content: &str) -> bool {
+    let mut s = sessions.write();
+    let Some(sess) = s.active_mut() else { return false };
+    if path == sess.space.persona_path() {
+        sess.space.save_persona(content).is_ok()
+    } else {
+        orchestra_core::model::save_document(path, content).is_ok()
+    }
+}
+
+/// Diff Git (non indexé) d'un fichier, chargé pour affichage dans le panneau central : le
+/// chemin (relatif au workspace) accompagné du texte du diff.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GitDiffView {
+    pub path: String,
+    pub text: String,
+}
+
+/// Rafraîchit l'état Git + Docker du workspace de la session active (appelé à l'ouverture d'une
+/// session et sur demande via le bouton « rafraîchir » des panneaux Git/Docker).
+pub fn refresh_dev_status(root: PathBuf, mut git: Signal<GitStatus>, mut docker: Signal<DockerStatus>) {
+    let docker_root = root.clone();
+    spawn(async move {
+        git.set(orchestra_core::git::status(&root).await);
+    });
+    spawn(async move {
+        docker.set(orchestra_core::docker::detect(&docker_root).await);
+    });
+}
+
+/// Charge le diff Git d'un fichier dans le signal cible, pour affichage dans le panneau central.
+pub fn load_git_diff(root: PathBuf, path: String, mut target: Signal<Option<GitDiffView>>) {
+    spawn(async move {
+        let text = orchestra_core::git::diff(&root, Some(&path)).await;
+        target.set(Some(GitDiffView { path, text }));
+    });
 }
 
 /// Lit un fichier du workspace (`root` + chemin relatif) en UTF-8. `None` si illisible ou binaire.

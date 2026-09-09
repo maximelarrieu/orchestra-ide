@@ -1,20 +1,20 @@
 # Architecture technique — Orchestra IDE
 
-> Doc technique vivante, mise à jour à chaque phase. Pour la vision produit et les
-> parcours utilisateur, voir [`FONCTIONNEL.md`](./FONCTIONNEL.md) ; pour l'historique
-> par phase, [`JOURNAL.md`](./JOURNAL.md).
+> Doc technique vivante. Pour la vision produit, voir [`FONCTIONNEL.md`](./FONCTIONNEL.md) ;
+> pour l'historique par phase, [`JOURNAL.md`](./JOURNAL.md).
 
 ## 1. Principe directeur : découplage strict métier / affichage
 
-Orchestra IDE est un prototype Rust d'« IDE pour l'ère agentique ». Le TUI (`ratatui`)
-est l'interface d'aujourd'hui ; un portage Tauri + React est prévu. Pour que ce portage
-ne soit pas une réécriture, **toute la logique vit dans `orchestra-core`, qui ne dépend
-d'AUCUNE bibliothèque d'affichage**. L'UI ne fait que :
+Orchestra IDE est un **outil de dev piloté par IA**. Deux UIs — un TUI `ratatui` et une GUI
+de bureau Dioxus — donnent accès à la même chose : **toute la logique vit dans
+`orchestra-core`, qui ne dépend d'AUCUNE bibliothèque d'affichage**. Les UIs ne font que :
 
-1. appeler des fonctions du cœur (`scaffold_space`, `runtime::spawn`, `ContextSpace::load`) ;
-2. consommer le type-contrat `AgentEvent`.
+1. appeler des fonctions du cœur (`scaffold_space`, `runtime::orchestrate`,
+   `git::status`, `docker::detect`, `explorer::tree`…) ;
+2. consommer le type-contrat `AgentEvent` pour tout ce qui est piloté par les agents.
 
-C'est l'invariant non négociable du projet. Toute évolution doit le préserver.
+C'est l'invariant non négociable du projet (`CLAUDE.md`) : toute feature nouvelle ou
+améliorée est livrée **dans les deux UIs**, jamais une seule.
 
 ## 2. Vue d'ensemble des crates
 
@@ -23,29 +23,30 @@ graph TD
     subgraph workspace[Workspace Cargo]
         core["orchestra-core<br/>(domaine pur — 0 dépendance UI)"]
         tui["orchestra-tui<br/>(frontend ratatui + CLI)"]
+        desktop["orchestra-desktop<br/>(GUI Dioxus — tout-Rust)"]
     end
     tui -->|appelle / consomme AgentEvent| core
     tui -->|rendu| ratatui
+    desktop -->|appelle / consomme AgentEvent| core
+    desktop -->|rendu| dioxus
     core -->|sérialisation| serde
     core -->|tâches + canal mpsc| tokio
-    desktop["orchestra-desktop<br/>(GUI Dioxus — tout-Rust)"] -->|appelle / consomme AgentEvent| core
+    core -->|shell-out| gitcli["binaire git"]
+    core -->|shell-out| dockercli["binaire docker"]
 
     style core fill:#0b7,stroke:#064,color:#fff
-    style desktop stroke-dasharray: 5 5
 ```
 
 | Crate | Rôle | Dépendances clés |
 |---|---|---|
-| `orchestra-core` | Modèle, scaffolding, runtime d'agents, contrat d'événements | `serde`, `serde_json`, `thiserror`, `tokio` |
-| `orchestra-tui` | CLI (`init`) + tableau de bord temps réel | `orchestra-core`, `ratatui`, `tokio`, `futures`, `crossterm` |
-| `orchestra-desktop` | GUI bureau (Dioxus), **tout-Rust, sans IPC** — consomme le même `orchestra-core` | `orchestra-core`, `dioxus` (desktop), `tokio` |
+| `orchestra-core` | Modèle, runtime d'agents, contrat d'événements, Git/Docker/Fichiers structurés | `serde`, `serde_json`, `thiserror`, `tokio`, `reqwest` |
+| `orchestra-tui` | CLI (`init`) + tableau de bord temps réel (les 5 piliers) | `orchestra-core`, `ratatui`, `tokio`, `futures`, `crossterm` |
+| `orchestra-desktop` | GUI bureau (Dioxus), **tout-Rust, sans IPC** — mêmes 5 piliers | `orchestra-core`, `dioxus` (desktop), `tokio` |
 
-> **Deux UIs, un seul cœur.** `orchestra-tui` (ratatui) et `orchestra-desktop` (Dioxus) sont
-> deux *consommateurs* du même `orchestra-core` : c'est le bénéfice direct du découplage strict
-> (le cœur ne dépend d'aucune lib d'affichage). Dioxus a été préféré à Tauri+React pour rester
-> **tout-Rust** — l'UI appelle le cœur directement (pas de frontière IPC ni de toolchain Node) et
-> fait un `match` natif sur `AgentEvent`. Build : webview système (WebView2 sur Windows,
-> `webkit2gtk` sur Linux).
+> **Deux UIs, un seul cœur.** Dioxus a été préféré à Tauri+React pour rester **tout-Rust** —
+> l'UI appelle le cœur directement (pas de frontière IPC ni de toolchain Node). Build de
+> `orchestra-desktop` : webview système (WebView2 sur Windows, `webkit2gtk`/GTK sur Linux) —
+> **ne compile pas dans un conteneur cloud sans webview** ; s'itère en local.
 
 ### Arborescence des modules
 
@@ -54,43 +55,44 @@ crates/
 ├─ orchestra-core/src/
 │  ├─ lib.rs            # ré-exports publics
 │  ├─ error.rs          # OrchestraError (type d'erreur unique)
-│  ├─ events.rs         # AgentEvent — contrat cœur ↔ UI (activité fichier attribuée à l'agent)
-│  ├─ runtime.rs        # Orchestrateur PTAC : conversation + spawn_agent (boucle LLM ou simulée)
-│  ├─ llm.rs            # LlmClient : Claude/Gemini au choix, en HTTP (Phase 4a) + prompt caching
-│  ├─ skills.rs         # primitives exécutables via tool use — registre (Phase 4a, +Web_Fetch)
+│  ├─ events.rs         # AgentEvent — contrat cœur ↔ UI
+│  ├─ runtime.rs        # l'Orchestrateur : conversation + orchestrate() + spawn_agent
+│  ├─ llm.rs            # LlmClient : Claude/Gemini au choix, HTTP brut, bascule + prompt caching
+│  ├─ skills.rs         # primitives exécutables via tool use (Read_File, Execute_Terminal_Command…)
 │  ├─ markdown_skill.rs # skills « fiches » SKILL.md + Load_Skill (divulgation progressive)
 │  ├─ memory.rs         # mémoire partagée d'espace : Remember / Recall (.orchestra/memory.md)
-│  ├─ orchestration.rs  # modèle de plan (Task/Plan, tri topo, validation, repli)
-│  ├─ integrations.rs   # Skills Git (local) + GitHub (REST) (Phase 4b)
+│  ├─ integrations.rs   # Skills Git (local) + GitHub (REST), exposés à l'agent si configurés
+│  ├─ git.rs            # état Git STRUCTURÉ (panneau Git des UIs) — indépendant du chemin LLM
+│  ├─ docker.rs         # état Docker STRUCTURÉ, lecture seule (panneau Docker des UIs)
+│  ├─ explorer.rs       # arborescence de fichiers du workspace (panneau Fichiers)
 │  ├─ registry.rs       # registre global des espaces connus (récents) — partagé TUI/GUI
-│  ├─ session.rs        # Sessions<T> : mécanique d'onglets (ouvrir/activer/fermer) — partagé TUI/GUI
-│  ├─ explorer.rs       # arborescence de fichiers du workspace (panneau explorateur) — testé
+│  ├─ session.rs        # Sessions<T> : mécanique d'onglets (ouvrir/activer/fermer) — partagé
 │  ├─ browser.rs        # navigateur de dossiers (découvrir un espace sans taper de chemin)
-│  ├─ scaffold.rs       # scaffold_space() : crée un Espace (Phase 2)
+│  ├─ scaffold.rs       # scaffold_space() (créer) / adopt_project() (reprendre un projet existant)
+│  ├─ orchestration.rs  # modèle Task/Plan pur (tri topo, validation) — voir note §5 ci-dessous
+│  ├─ diff.rs           # diff texte ligne à ligne, sans dépendance (diffs d'agent)
 │  └─ model/
-│     ├─ config.rs        # ProjectConfig + Integrations
-│     └─ space.rs         # ContextSpace (+ Adr)
+│     ├─ config.rs        # ProjectConfig + Integrations (git/github/jira)
+│     └─ space.rs         # ContextSpace (+ Adr, SpaceDoc, DocKind)
 ├─ orchestra-tui/src/
 │  ├─ main.rs           # dispatch CLI + boucle async tokio::select! (multi-sessions/onglets)
-│  ├─ app.rs            # App : état agrégé du dashboard (sans ratatui)
-│  ├─ dashboard.rs      # rendu des zones (onglets / en-tête / radar / docs / menu)
+│  ├─ app.rs            # App : état agrégé de toutes les vues (sans ratatui, testé)
+│  ├─ dashboard.rs      # rendu de toutes les zones/vues
 │  ├─ editor.rs         # mini-éditeur texte (persona & documents)
 │  ├─ markdown.rs       # rendu Markdown → lignes ratatui (visualiseur)
 │  └─ wizard.rs         # assistant interactif `orchestra init`
-└─ orchestra-desktop/src/   # GUI bureau Dioxus (tout-Rust) — shell 3 panneaux façon Cursor
-   ├─ main.rs           # launch + racine : topbar · explorateur · centre · conversation
-   ├─ state.rs          # état + pont vers le cœur (Sessions<DesktopSession>, activité fichier)
-   ├─ components.rs     # FileExplorer (annoté) / CenterPane / SquadPanel / chat_view / SpaceBar
-   └─ styles.rs         # CSS de la fenêtre
+└─ orchestra-desktop/src/
+   ├─ main.rs           # launch + racine : shell 5 zones (checkpoints · explorateur · centre · conversation · tâches)
+   ├─ state.rs          # état + pont vers le cœur (Sessions<DesktopSession>, refresh_dev_status…)
+   ├─ components.rs     # FileExplorer / CenterPane / TaskRail / SquadPanel / chat_view / SpaceBar
+   └─ styles.rs         # CSS (thème vert sombre par défaut, thème clair)
 ```
 
 ## 3. Modèle de données — l'« Espace de Contexte »
 
-Le concept central est volontairement **minimal et agnostique du domaine** : un Espace ne
-décrit qu'un nom, un éventuel workspace de code et des intégrations. **Aucun agent ni skill
-n'est pré-câblé** — l'Orchestrateur déploie sa propre équipe à la volée (`spawn_agent`). Les
-anciens champs (`project_type`, `agents`, `skills`, `documentalist_enabled`) éventuellement
-présents dans de vieux `config.json` sont ignorés au chargement.
+Un Espace est **volontairement minimal et agnostique du domaine** : nom, éventuel workspace
+de code, intégrations. **Aucun agent ni skill n'est pré-câblé** — l'Orchestrateur déploie sa
+propre équipe à la volée (`spawn_agent`, §5).
 
 ```mermaid
 classDiagram
@@ -99,7 +101,9 @@ classDiagram
         +ProjectConfig config
         +Option~String~ persona
         +Vec~Adr~ adrs
-        +load(root) Result
+        +workspace() PathBuf
+        +documents() Vec~SpaceDoc~
+        +save_persona(content)
     }
     class ProjectConfig {
         +String project_name
@@ -120,7 +124,7 @@ classDiagram
     ProjectConfig --> Integrations
 ```
 
-Sur le disque, un Espace est un dossier contenant :
+Sur le disque :
 
 ```
 <espace>/.orchestra/
@@ -131,336 +135,211 @@ Sur le disque, un Espace est un dossier contenant :
 └─ adr/            # Architecture Decision Records (*.md)
 ```
 
-**Règle d'accès** : l'UI ne touche jamais au système de fichiers. Elle passe par
-`ContextSpace::load` / `scaffold_space`. Les intégrations ne stockent jamais de secret en
-clair : seul le **nom** de la variable d'environnement du token est persisté
-(`token_env_var`).
+`ContextSpace::workspace()` renvoie `workspace_path` si défini, sinon la racine de l'espace —
+c'est cette racine qui sert de point d'ancrage aux panneaux **Fichiers**, **Git** et
+**Docker**. **Règle d'accès** : l'UI ne touche jamais au système de fichiers directement,
+elle passe par le cœur (`ContextSpace::load`/`documents`/`save_persona`,
+`model::space::load_document`/`save_document`). Les intégrations ne stockent jamais de
+secret en clair : seul le **nom** de la variable d'environnement du token est persisté
+(`token_env_var`). Les anciens champs de config (`project_type`, `agents`, `skills`,
+`documentalist_enabled`, d'une architecture antérieure à roster fixe) sont ignorés au
+chargement (serde tolère l'inconnu).
 
 ## 4. Contrat d'événements `AgentEvent`
 
-Pivot du découplage temps réel. Figé tôt pour que l'UI puisse être écrite sans connaître
-les agents.
+Pivot du découplage temps réel — piloté par les **agents** (contrairement à Git/Docker/
+Fichiers, voir §6, qui sont interrogés directement par l'UI, en dehors de ce flux).
 
 ```rust
 enum AgentEvent {
     Started  { agent: String },
-    Thinking { agent: String },                       // appel LLM en cours → pilote le spinner
+    Thinking { agent: String },                          // appel LLM en cours → spinner
     Log      { agent: String, msg: String },
     Done     { agent: String },
-    // Orchestration réelle :
-    PlanReady   { tasks: Vec<PlannedTask> },          // plan établi, en attente d'approbation
-    TaskStarted { id: String, agent: String },        // une tâche du plan démarre
-    TaskDone    { id: String },                       // tâche réussie
-    TaskFailed  { id: String, error: String },        // tâche échouée
+    PlanReady   { tasks: Vec<PlannedTask> },              // Set_Plan
+    TaskStarted { id: String, agent: String },            // Update_Step("running")
+    TaskDone    { id: String },                           // Update_Step("done")
+    TaskFailed  { id: String, error: String },            // Update_Step("failed")
+    Terminal    { agent: String, command: String, output: String, ok: bool },
+    FileRead    { agent: String, path: String },          // panneau Fichiers / Contexte
+    FileChanged { agent: String, path: String, added: usize, removed: usize, diff: String },
 }
 ```
 
-## 5. Runtime d'agents (Phase 3) et flux temps réel
+## 5. L'Orchestrateur : un agent unique qui compose son équipe
 
-`runtime::spawn(&ContextSpace) -> UnboundedReceiver<AgentEvent>` lance un agent par nom
-présent dans `config.agents`, chacun comme une **tâche `tokio`**. Tous publient sur un
-unique canal `tokio::sync::mpsc`. Le `Sender` original est lâché à la fin de `spawn` :
-**quand tous les agents ont terminé, le canal se ferme et `recv()` renvoie `None`** —
-c'est ainsi que l'UI sait, sans drapeau dédié, que l'orchestre est au repos.
+`orchestra-core::runtime` n'a **pas de roster fixe**. Un seul agent principal, l'**Orchestrateur**
+(`runtime::COORDINATOR = "Orchestrateur"`), mène une boucle **Percevoir → Penser → Agir →
+Vérifier** et déploie lui-même des **sous-agents ad hoc** via l'outil `spawn_agent(role,
+instruction)` — récursion async bornée (`Box::pin`), les sous-agents n'ont pas `spawn_agent`
+(pas de récursion infinie).
 
-Depuis la **Phase 4a**, chaque agent mène — si une clé API est présente — une vraie boucle
-agentique Claude (voir §5bis). **Sans clé, ou si l'API échoue, le runtime retombe sur le
-corps simulé** (`scripted_steps`, scénario scripté étalé dans le temps). `spawn` lit
-`LlmClient::from_env()` ; un `spawn_inner(space, client)` interne, injectable, garde les
-tests hors-ligne et déterministes.
+Deux points d'entrée, tous deux exécutant la même boucle Orchestrateur :
 
-## 5bis. Boucle agentique LLM + Skills exécutables (Phase 4a)
+- `runtime::start_conversation(space) -> ChatHandle { user, events, approve }` — conversation
+  persistante (TUI `[5]`, Desktop « Assistant »). Canal bidirectionnel `mpsc`.
+- `runtime::orchestrate(space, objectif) -> OrchestrationHandle` — objectif ponctuel en
+  one-shot (TUI `[1]`).
 
-`orchestra-core::llm::LlmClient` appelle, en **HTTP brut** via `reqwest` (Rust n'a pas de
-SDK officiel), l'un des deux fournisseurs **au choix** :
+**Outillage de l'Orchestrateur** (`orchestrator_tools`) : tous les Skills Dev exécutables
+(§5bis) + intégrations Git/GitHub + mémoire + `Load_Skill` + `spawn_agent` + les outils de
+**plan live** :
+
+- `Set_Plan(steps: [String])` — publie (ou remplace) le plan dans le rail Tâches : émet
+  `AgentEvent::PlanReady` avec une `PlannedTask` par étape (id = position, pas de dépendances
+  formelles — la liste est **ordonnée**, pas un graphe).
+- `Update_Step(step, status)` — `status` ∈ `running`/`done`/`failed`, émet
+  `TaskStarted`/`TaskDone`/`TaskFailed`.
+
+Le prompt PTAC impose à l'Orchestrateur de publier son plan **avant d'agir** et de le tenir à
+jour — c'est ce mécanisme, pas une approbation préalable, qui alimente le panneau **Plan /
+Tâches** des deux UIs.
+
+> **Note sur `orchestration.rs`.** Ce module contient un modèle `Plan`/`Task` **pur et
+> testé** (tri topologique, validation de dépendances, plan de repli linéaire) issu d'une
+> architecture antérieure à roster fixe. Il n'est **plus câblé** au chemin d'exécution actuel
+> (`Set_Plan`/`Update_Step` ci-dessus le remplace en pratique) : conservé comme brique
+> potentiellement réutilisable (ex. validation d'un plan proposé), pas comme source de vérité
+> du panneau Plan aujourd'hui.
+
+## 5bis. Boucle agentique LLM + Skills exécutables
+
+`orchestra-core::llm::LlmClient` appelle, en **HTTP brut** via `reqwest` (pas de SDK Rust
+officiel), l'un des deux fournisseurs **au choix** :
 
 | Provider | Endpoint | Modèle par défaut | Clé |
 |---|---|---|---|
 | `Anthropic` (Claude) | `POST /v1/messages` | `claude-opus-4-8` | `ANTHROPIC_API_KEY` |
 | `Gemini` | `…/{model}:generateContent` | `gemini-2.5-flash` | `GEMINI_API_KEY` |
 
-Une représentation **neutre** (`Msg` / `Block` / `ToolSpec` / `ToolResult`) découple la
-boucle agentique du format de chaque fournisseur : chaque provider *rend* cette
-représentation dans son protocole (content blocks vs `functionCall`/`functionResponse`) et
-*parse* sa réponse vers les mêmes `Block`. `orchestra-core::skills` expose les Skills Dev comme
-*tools* et les exécute côté Rust, confinés au workspace.
-
-**Bascule automatique de fournisseur.** `LlmClient` détient une liste ordonnée de `Backend`
-(provider + clé + modèle) construite par `from_env` : `ORCHESTRA_PROVIDER` force un backend
-unique, sinon tous ceux dont la clé est présente sont enregistrés — **Claude préféré, Gemini en
-repli** (`ORCHESTRA_MODEL` surcharge le principal). `complete()` essaie les backends à partir de
-`active` (un `AtomicUsize` partagé via l'`Arc`) et **bascule** sur le suivant si l'erreur est
-rattrapable (`should_failover` : réseau, 5xx, 429, 401/403, ou 400 de facturation). Un échec
-**permanent** (`is_permanent` : 401/402/403, ou 400 « credit balance/quota ») fait avancer
-`active` → le backend mort est écarté des tours suivants. Une requête malformée (400 hors
-facturation) n'est **pas** masquée par bascule : elle remonte telle quelle.
-
-```mermaid
-sequenceDiagram
-    participant Ag as Tâche agent (runtime)
-    participant C as Claude (/v1/messages)
-    participant S as skills (workspace)
-
-    Ag->>C: system + tools + messages
-    loop tant que stop_reason == tool_use
-        C-->>Ag: text + tool_use(name, input)
-        Note over Ag: émet AgentEvent::Log (texte, 🔧 outil)
-        Ag->>S: execute_skill(name, input)
-        S-->>Ag: résultat (texte, is_error)
-        Ag->>C: tour assistant rejoué + tool_result
-    end
-    C-->>Ag: end_turn → Done
-```
+Une représentation **neutre** (`Msg`/`Block`/`ToolSpec`/`ToolResult`) découple la boucle
+agentique du format de chaque fournisseur. **Bascule automatique** : Claude préféré, Gemini
+en repli si Claude est indisponible (réseau, 5xx, 429, ou crédit épuisé) ; un échec permanent
+(401-403, crédit épuisé) écarte définitivement le backend. Sans clé → mode simulé (l'appli
+reste utilisable hors-ligne). `run_agent_turn` (mutualisé Orchestrateur/sous-agents) borne
+chaque message à `max_turns()` tours LLM ↔ outils (`DEFAULT_MAX_TURNS = 40`, surchargeable
+par `ORCHESTRA_MAX_TURNS`).
 
 | Skill (tool) | Action | Garde-fou |
 |---|---|---|
 | `Read_File` | lit un fichier texte | chemin confiné au workspace |
 | `Write_File_Validated` | écrit/remplace un fichier | idem + création des parents |
-| `Execute_Terminal_Command` | commande shell dans le workspace | `cwd`=workspace, délai 30 s, sortie plafonnée |
+| `Execute_Terminal_Command` | commande shell dans le workspace | `cwd`=workspace, délai configurable (300 s par défaut), sortie plafonnée |
 | `Write_Mermaid_Diagram` | écrit un `.md` avec un bloc `mermaid` | type de diagramme validé |
 | `Web_Fetch` | lit le contenu d'une URL | schémas `http(s)` uniquement, délai, sortie plafonnée |
 
-**Le registre comme source de vérité.** `skills.rs` indexe chaque primitive par son id :
-`tool_definition(id)` (définition exposée au LLM) + `execute_skill(id, …)` (exécution). La
-liste `EXECUTABLE_SKILLS` (+ `is_executable`) énumère ce qui est branché ; `tool_specs(enabled)`
-ne produit des outils que pour les skills assignés *présents au registre*. Ajouter une
-primitive = une entrée au catalogue + un bras dans chaque match. Garde-fous : `safe_join`
-refuse les chemins absolus et tout composant `..` ; la boucle est bornée à 6 tours ; un skill
-inconnu du registre n'est pas exposé (le modèle ne voit que ce qu'il peut actionner).
+Chaque écriture/commande émet aussi `AgentEvent::FileChanged`/`Terminal` — c'est ce qui
+alimente les panneaux **Modifications**, **Terminal** et **Contexte** des deux UIs, en plus
+du radar/chat.
 
-**Prompt caching (Anthropic).** Le bloc `system` (projet + rôle + compétences + persona),
-stable d'un tour et d'un agent à l'autre, est marqué `cache_control: ephemeral` dans
-`anthropic_body` : les tours suivants paient une fraction des tokens d'entrée sur ce préfixe.
+### Intégrations Git / GitHub (outils LLM, conditionnels)
 
-### Conversation avec un coordinateur (`[5]`)
-
-En complément de l'exécution autonome (`[1]`), `runtime::start_conversation(space)` ouvre
-une **conversation persistante** via une `ChatHandle { user, events }` (canal
-**bidirectionnel** `mpsc` : l'UI envoie des messages sur `user`, reçoit les événements sur
-`events`). Une tâche `tokio` tient la boucle :
-
-```mermaid
-sequenceDiagram
-    actor U as Utilisateur (UI)
-    participant C as Coordinateur (tâche)
-    participant Cl as Claude/Gemini
-    participant A as Sous-agent (Tuteur…)
-
-    U->>C: message (canal `user`)
-    C-->>U: écho « Vous » + « Coordinateur » (canal `events`)
-    loop tant que le coordinateur délègue
-        C->>Cl: complete(system, [outils = 1 par agent], conv)
-        Cl-->>C: tool_use(Agent_X, instruction)
-        C->>A: run_agent_turn(instruction)
-        A-->>U: activité du sous-agent (Started/Log/Done)
-        A-->>C: compte rendu (texte)
-        C->>Cl: tool_result
-    end
-    Cl-->>C: réponse finale
-    C-->>U: réponse du coordinateur
-    Note over U,C: l'historique `conv` persiste entre les messages
-```
-
-**Pattern « agent-outil »** : chaque agent du roster est exposé au coordinateur comme un
-outil (`delegation_tool`) ; quand le coordinateur l'invoque, `run_subagent` lance un *tour*
-de cet agent (`run_agent_turn`, mutualisé avec le mode autonome) avec ses propres
-prompt/outils, émet son activité sur le radar, et renvoie son texte comme `tool_result`. La
-conversation se termine quand l'UI ferme le canal `user` (`Échap`).
-
-**Orchestration depuis le chat** : le coordinateur dispose en plus d'un outil `orchestrate`
-(`orchestrate_tool`). Quand il l'invoque, `run_coordinator_turn` appelle la boucle mutualisée
-`run_orchestration` (la même que `[1]` — cf. section suivante) : plan → approbation →
-exécution parallèle → auto-correction → synthèse. L'approbation passe par
-`ChatHandle.approve` (réutilise l'écran de plan du TUI) ; la synthèse renvoyée devient le
-`tool_result` que le coordinateur intègre à sa réponse, et le dialogue continue.
-
-### Orchestration réelle (`[1]`) — plan → approbation → exécution → synthèse (post-Phase 5)
-
-`runtime::orchestrate(space, objectif) -> OrchestrationHandle { approve, events }` fait
-travailler l'orchestre comme un pipeline plutôt qu'en délégation plate. La tâche `tokio` :
-
-1. **Planifie** (`plan_objective`) : via le LLM (outil `submit_plan` → `orchestration::parse_plan`)
-   si une clé est présente et le plan **valide** (`Plan::validate` : ids uniques, agents connus,
-   dépendances existantes, pas de cycle) ; sinon `orchestration::fallback_plan` (pipeline linéaire).
-2. Émet `PlanReady` et **attend l'approbation** sur le canal `approve` (`true` = exécuter).
-3. **Exécute** (`execute_plan`) par **vagues concurrentes** : à chaque vague, toutes les tâches
-   dont les dépendances sont satisfaites sont lancées **en parallèle** (`futures::future::join_all`
-   — les indépendantes avancent ensemble), chacune via `run_subagent` (mutualisé) avec en contexte
-   (borné) les sorties de ses dépendances ; le résultat est **tracé en mémoire** (`memory::append`,
-   hand-off). Émet `TaskStarted`/`TaskDone`. (`Plan::topo_order` reste utilisé par la validation.)
-4. **Re-planification itérative** : après une manche, `evaluate_objective` (LLM) juge si
-   l'objectif est atteint. Sinon, il renvoie un **plan correctif** (`submit_plan`) → retour à
-   l'étape 2 (ré-affichage + ré-approbation), borné par `MAX_ROUNDS`. La mémoire fait le pont
-   entre manches (les agents correctifs voient l'acquis). Mécanisme **agnostique** : aucun agent
-   ni skill dédié — la boucle réutilise les agents de l'espace.
-5. **Synthétise** les comptes rendus de toutes les manches en une réponse finale (`synthesize`).
-
-`run_waves` exécute une manche (vagues concurrentes) et renvoie son transcript ; la boucle de
-manches + l'évaluation vivent dans `orchestration_task`. Hors-ligne : pas d'évaluation → une
-seule manche.
-
-Le **modèle** (pur, testable) vit dans `orchestra-core::orchestration` (`Task`, `Plan`,
-`TaskStatus`, tri topo, validation, repli) ; l'**exécution** asynchrone et les appels LLM
-restent dans `runtime`. Hors-ligne, le plan de repli + un flux simulé gardent `[1]` fonctionnel.
-
-```mermaid
-sequenceDiagram
-    actor U as Utilisateur (UI)
-    participant O as orchestration_task
-    participant Cl as LLM
-    participant A as Sous-agents
-    participant M as mémoire
-
-    U->>O: objectif ([1])
-    O->>Cl: plan_objective (submit_plan) — ou repli linéaire
-    O-->>U: PlanReady (panneau Plan)
-    U->>O: approve(true) (Entrée) / false (Échap)
-    loop vagues (tâches prêtes en parallèle)
-        O-->>U: TaskStarted (×N de la vague)
-        O->>A: run_subagent concurrents (objectif + contexte des dépendances)
-        A->>M: Remember (résultat)
-        A-->>O: comptes rendus
-        O-->>U: TaskDone (×N)
-    end
-    O->>Cl: synthèse finale
-    O-->>U: synthèse + Done
-```
-
-### Intégrations Git / GitHub (Phase 4b)
-
-`orchestra-core::integrations` ajoute des Skills **conditionnels** à la liste d'outils, en
-fonction de `config.integrations` :
+`orchestra-core::integrations` ajoute des Skills **au LLM uniquement si configurés** dans
+`config.integrations` :
 
 | Intégration | Skills | Exécution | Exposé si |
 |---|---|---|---|
-| Git (local) | `Git_Status`, `Git_Diff`, `Git_Create_Branch`, `Git_Commit` | binaire `git` dans le workspace | `integrations.git` présent |
-| GitHub (REST) | `GitHub_List_Issues`, `GitHub_Create_Issue_Comment`, `GitHub_Create_Pull_Request` | API `api.github.com` (`reqwest`) | `integrations.github` présent **et** token (`token_env_var`) résolu |
+| Git (local) | `Git_Status`, `Git_Diff`, `Git_Create_Branch`, `Git_Commit` | binaire `git`, via `git::run_command` (§6) | `integrations.git` présent |
+| GitHub (REST) | `GitHub_List_Issues`, `GitHub_Create_Issue_Comment`, `GitHub_Create_Pull_Request` | API `api.github.com` (`reqwest`) | `integrations.github` présent **et** token résolu |
 
-Le runtime fusionne `skills::tool_specs`, `integrations::tool_definitions`, `Load_Skill` et
-les outils de mémoire, puis dispatche chaque appel via une cascade `memory::handles` →
-`markdown_skill::handles` → `integrations::handles` → registre `skills`. Token GitHub lu depuis
-l'environnement (jamais en dur) ; seul son **nom de variable** est persisté dans la config.
+`integrations.rs` **délègue le shell-out `git` au module `git.rs`** (`run_command`) — source
+unique pour tout appel `git`, qu'il vienne d'un outil LLM ou du panneau Git passif (§6).
+Jira reste une **intégration déclarable en config mais non implémentée** (pas d'entrée dans
+`integrations.rs`) — à faire au même schéma que GitHub le jour où elle est priorisée.
 
-### Skills « fiches » Markdown + divulgation progressive (post-Phase 5)
+### Skills « fiches » Markdown + mémoire partagée
 
-`orchestra-core::markdown_skill` charge les fiches `.orchestra/skills/<id>/SKILL.md` (en-tête
-`name`/`description` + corps). Au lieu d'injecter le corps complet dans le prompt,
-`build_system_prompt` n'y met que **nom + description** des fiches assignées (section
-« Compétences ») ; l'agent charge la procédure à la demande via la primitive **`Load_Skill{id}`**
-(`markdown_skill::execute`), exposée seulement s'il a au moins une fiche assignée. Gain de
-tokens : le corps n'est payé qu'à l'usage, et le prompt raccourci profite aux deux fournisseurs.
-Création/édition depuis l'UI (`[n]`) via `markdown_skill::create` / `save` — l'écriture disque
-reste dans le cœur.
+`markdown_skill.rs` charge `.orchestra/skills/<id>/SKILL.md` (nom+description injectés dans
+le prompt, corps chargé à la demande via `Load_Skill{id}` — divulgation progressive, économie
+de tokens). `memory.rs` expose `Remember{note}`/`Recall{query?}` à **tous** les agents : notes
+numérotées, durables entre sessions, dans `.orchestra/memory.md` — listées par
+`memory::entries()`, source du panneau **Mémoire**.
 
-### Mémoire partagée d'espace (post-Phase 5)
+## 6. Git / Docker / Fichiers : panneaux de constat, **hors** du flux `AgentEvent`
 
-`orchestra-core::memory` expose deux primitives **universelles** (tous les agents) :
-`Remember{note}` (append attribué + numéroté dans `.orchestra/memory.md`) et `Recall{query?}`
-(lecture filtrée par mot-clé). Aiguillage via `memory::handles` dans la boucle d'outils, comme
-les intégrations ; le prompt ne porte qu'un rappel court (le contenu se lit à la demande). La
-mémoire est durable entre sessions, listée par `ContextSpace::documents()` (navigateur `[2]`),
-et sert de **compression de contexte** : une synthèse écrite une fois remplace les relectures.
+Contrairement aux piliers Plan/Tâches et Agents (pilotés par les événements des agents), les
+panneaux **Fichiers**, **Git** et **Docker** répondent à une question factuelle sur l'état du
+projet, indépendante de toute conversation en cours. Modèle **pull** : les UIs appellent ces
+fonctions directement (à l'ouverture d'un écran/onglet, ou sur demande via une touche
+« rafraîchir ») plutôt que d'attendre un événement poussé par le runtime.
 
-### Agent Documentaliste (Phase 5)
+- **`explorer::tree(root) -> Tree`** (sync) — arborescence à plat (`Vec<FileNode>` avec
+  `depth`), dossiers bruyants ignorés (`.git`, `target`, `node_modules`…), bornée à 800
+  entrées. Les deux UIs l'annotent avec l'activité live tirée du flux `AgentEvent`
+  (`FileRead`/`FileChanged`) — c'est le seul point où les deux modèles (pull + push) se
+  recoupent visuellement.
 
-Si `config.documentalist_enabled` est vrai, le runtime ajoute au roster un **Agent
-Documentaliste** (en plus de `config.agents`). Il reçoit un prompt orienté documentation et
-un jeu d'outils dédié (`skills::documentalist_tool_definitions` : `Read_File`,
-`Write_File_Validated`, `Write_Mermaid_Diagram`) — indépendant de la liste de Skills du
-projet. `Write_Mermaid_Diagram` écrit un `.md` contenant un bloc ` ```mermaid ` après
-validation du type de diagramme.
+- **`git::status(root) -> GitStatus`** (async) — `git status --porcelain=v2 --branch` parsé :
+  branche, upstream, ahead/behind, fichiers `staged`/`unstaged`/`untracked`. Jamais d'erreur
+  remontée à l'UI : si `root` n'est pas un dépôt (ou `git` absent), `GitStatus::default()`
+  (`is_repo: false`) — état neutre affiché tel quel. `git::diff(root, path)` (async) renvoie
+  le texte `git diff` (non indexé), vide si rien à montrer.
 
-### Finitions du dashboard (Phase 5)
-
-`App` porte une `View` (`Radar`/`Docs`/`Agents`), un mode de saisie (`input`), un éditeur
-(`editor: Option<Editor>` + `editor_target` : persona ou fiche de skill), un visualiseur
-(`viewer: Option<Viewer>`) et un `notice`. La boucle clavier applique une **priorité de
-modes** : éditeur → visualiseur → saisie d'agent → navigateur → commandes. Tout reste dans
-l'outil :
-
-- `[2]` ouvre le **navigateur de documents** : `ContextSpace::documents()` agrège le persona,
-  la **mémoire** (`memory.md`), les ADRs et les Markdown du workspace (balayage borné, dossiers
-  cachés/build ignorés). `Entrée` lit via `load_document()` et l'affiche dans le **visualiseur
-  Markdown** (`orchestra-tui::markdown::to_lines`), avec défilement. Sur le persona, `e` édite.
-- `[3]` charge un autre espace (`ContextSpace::load`).
-- `[4]` ouvre l'**éditeur de persona** (`orchestra-tui::editor`, multi-ligne UTF-8 pur) ;
-  `Ctrl+S` persiste via `ContextSpace::save_persona`.
-- `[6]` ouvre le **gestionnaire d'agents** (rôle/stats, éditables) ; `[s]` ouvre le **sélecteur
-  de skills** (`SkillPicker`) : catalogue à cocher des primitives (`skills::catalog()`) et fiches
-  (`markdown_skill::load_all`), `Espace` (re)écrit `agent.skills` puis persiste, `[e]` édite une
-  fiche, `[n]` en crée une (`markdown_skill::create`, ouverte dans l'éditeur — `editor_target =
-  SkillFile`, `Ctrl+S` → `markdown_skill::save`). Plus de saisie de noms à l'aveugle.
-
-Toute lecture/écriture passe par le cœur (`documents`/`load_document`/`save_persona`) — l'UI
-ne touche jamais le système de fichiers directement. Objectif produit : limiter au maximum
-les actions effectuées hors de l'outil.
-
-### Flux d'un lancement (touche `[1]`)
+- **`docker::detect(root) -> DockerStatus`** (async) — détecte `Dockerfile`/fichier compose à
+  la racine, interroge `docker compose ps --format json` (JSON array **ou** NDJSON selon la
+  version de Compose, les deux sont gérés) si le démon est joignable. **Lecture seule** —
+  aucune action start/stop/logs dans cette version. `docker_available: false` en l'absence du
+  binaire ou démon injoignable : jamais d'erreur bloquante, un état neutre.
 
 ```mermaid
-sequenceDiagram
-    actor U as Utilisateur
-    participant L as event_loop (tui/main)
-    participant A as App (tui/app)
-    participant R as runtime::spawn (core)
-    participant Tk as Tâches tokio (agents)
-
-    U->>L: touche [1]
-    L->>A: begin_run() (reset radar, phase=Running)
-    L->>R: spawn(space)
-    R->>Tk: spawn une tâche par agent
-    R-->>L: UnboundedReceiver<AgentEvent>
-    loop tant que le canal est ouvert
-        Tk-->>L: AgentEvent (Started / Log / Done)
-        L->>A: on_event(ev) (compteurs + historique)
-        L->>L: terminal.draw(render(App))
-    end
-    Tk-->>L: (toutes finies → canal fermé, recv = None)
-    L->>A: mark_finished() (phase=Finished)
+graph LR
+    ui["UI (TUI/Desktop)"] -->|à l'ouverture / rafraîchir| gitmod["git::status / git::diff"]
+    ui -->|à l'ouverture / rafraîchir| dockermod["docker::detect"]
+    ui -->|à l'ouverture| explmod["explorer::tree"]
+    gitmod -->|shell-out| gitcli[("git")]
+    dockermod -->|shell-out| dockercli[("docker")]
+    agentevt["flux AgentEvent<br/>(FileRead/FileChanged)"] -.->|badge l'arborescence| ui
 ```
 
-## 6. Boucle d'affichage asynchrone (`orchestra-tui`)
+## 7. Sessions en onglets
 
-Le dashboard multiplexe trois sources via `tokio::select!` :
+`orchestra-core::session::Sessions<T>` (générique sur un trait `Tabbed`) gère l'ouverture,
+l'activation, la fermeture et le cycle entre plusieurs Espaces ouverts **simultanément** —
+mécanique pure, testée, partagée TUI/Desktop. Rouvrir un Espace déjà ouvert réactive son
+onglet (pas de doublon). `orchestra-core::registry` persiste la liste des espaces **connus**
+(`<config>/orchestra/spaces.json`) pour les rouvrir en un clic (`browser.rs` complète avec un
+navigateur de dossiers pour découvrir un espace sans taper de chemin).
+
+## 8. Boucle d'affichage asynchrone (`orchestra-tui`)
 
 ```mermaid
 graph LR
     subgraph loop["event_loop — tokio::select!"]
         kbd["EventStream clavier<br/>(crossterm)"]
-        chan["recv_optional(rx)<br/>flux des agents"]
-        tick["interval 250 ms<br/>(rafraîchissement)"]
+        chan["flux AgentEvent<br/>(par session)"]
+        gitdocker["oneshot Git/Docker<br/>(par requête)"]
+        tick["tick de rafraîchissement"]
     end
-    kbd -->|q/Échap → quit · 1 → spawn| state[App]
+    kbd --> state[App]
     chan -->|on_event| state
-    tick -->|redraw| state
+    gitdocker -->|set_git_status / set_docker_status| state
+    tick --> state
     state --> render[dashboard::render]
 ```
 
-- `recv_optional` neutralise la branche du canal tant que l'orchestre n'est pas lancé
-  (`std::future::pending()` si `rx` est `None`).
-- `App` (dans `app.rs`) agrège le flux — compteurs `started`/`done`, historique borné
-  (`HISTORY_CAP = 500`), `Phase` (`Idle` → `Running` → `Finished`) — **sans dépendre de
-  ratatui**, ce qui le rend testable et réutilisable par la future UI Tauri.
-- `dashboard.rs` est purement du rendu : il lit `App` et dessine les 3 zones.
+`App` (dans `app.rs`) agrège tout — flux d'agents, résultats Git/Docker en attente (canaux
+`oneshot`), historique borné — **sans dépendre de ratatui**, ce qui le rend testable
+(rendu headless via `ratatui::backend::TestBackend`). `dashboard.rs` est purement du rendu.
+Chaque session (onglet) garde son propre `App` et ses propres canaux ; une session en
+arrière-plan continue de recevoir ses événements.
 
-## 7. Gestion des erreurs
+## 9. Gestion des erreurs
 
-Type unique `OrchestraError` (via `thiserror`) :
+Type unique `OrchestraError` (via `thiserror`) : `SpaceNotFound`, `SpaceAlreadyExists`,
+`InvalidConfig`, `SkillAlreadyExists`, `InvalidSkillName`, `Io`. Git/Docker n'utilisent
+**pas** ce type : leurs fonctions ne remontent jamais d'erreur à l'UI, seulement des états
+neutres (`is_repo: false`, `docker_available: false`) — cohérent avec leur rôle de panneaux
+de constat qui ne doivent jamais bloquer l'interface.
 
-| Variante | Quand |
-|---|---|
-| `SpaceNotFound` | `config.json` illisible au chargement |
-| `SpaceAlreadyExists` | `orchestra init` refuse d'écraser un Espace existant |
-| `InvalidConfig` | JSON de configuration invalide |
-| `SkillAlreadyExists` | création d'une fiche dont l'id existe déjà |
-| `InvalidSkillName` | nom de fiche invalide (après normalisation) |
-| `Io` | erreurs d'E/S génériques |
-
-## 8. Conventions & tests
+## 10. Conventions & tests
 
 - **Langue du code et des messages** : français (domaine et UI francophones).
 - **Découplage** : aucune dépendance UI ne doit remonter dans `orchestra-core`.
-- **Tests** (`cargo test --workspace`) : modèle (parsing config), `scaffold`
-  (création + refus d'écrasement), `runtime` (start/done par agent, canal vide), `App`
-  (agrégation, borne d'historique), rendu **headless** via `ratatui::backend::TestBackend`.
-- **Qualité** : `cargo clippy --workspace --all-targets` doit rester sans warning.
+- **Tests** (`cargo test -p orchestra-core -p orchestra-tui`) : modèle, `git`/`docker`
+  (parsing, détection, dépôt temporaire réel), `scaffold`, `runtime` (hors-ligne),
+  `App`/`dashboard` (rendu **headless** via `TestBackend`, y compris tous les nouveaux
+  écrans à plusieurs tailles de terminal).
+- **Qualité** : `cargo clippy -p orchestra-core -p orchestra-tui --all-targets -- -D
+  warnings` doit rester sans warning. `orchestra-desktop` ne peut pas être compilé dans un
+  environnement cloud sans webview — vérification manuelle attentive + build local requis
+  avant de considérer une feature desktop terminée.

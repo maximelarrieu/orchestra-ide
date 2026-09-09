@@ -1,9 +1,9 @@
 //! Interface graphique de bureau (Dioxus) — port GUI d'Orchestra IDE.
 //!
 //! L'UI **consomme directement `orchestra-core`** (aucune frontière IPC, aucun Node) : elle
-//! charge/édite un Espace, liste agents et skills, lance l'orchestration et **streame les
-//! `AgentEvent`** — le même contrat que le TUI. Objectif : retrouver dans la fenêtre les
-//! fonctions du terminal (orchestrer, documents, agents & skills ; chat et édition persona à venir).
+//! charge/édite un Espace, lance l'orchestration et **streame les `AgentEvent`** — le même
+//! contrat que le TUI. Parité avec le TUI sur les 5 piliers dev : Fichiers, Git, Docker,
+//! Plan/Tâches, Agents (+ Docs, Terminal, Mémoire, Contexte).
 //!
 //! Découpage : [`state`] (état + ponts vers le cœur), [`components`] (rendu), [`styles`] (CSS).
 //!
@@ -17,12 +17,15 @@ mod styles;
 use dioxus::desktop::tao::dpi::LogicalSize;
 use dioxus::desktop::{Config, WindowBuilder};
 use dioxus::prelude::*;
+use orchestra_core::docker::DockerStatus;
+use orchestra_core::git::GitStatus;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::session::Sessions;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
-use state::{ChatMsg, DesktopSession, PlanRow};
+use state::{ChatMsg, DesktopSession, GitDiffView, PlanRow};
 
 fn main() {
     // Taille de fenêtre par défaut raisonnable (tient dans un 1920×1080 sans réajuster) ;
@@ -59,6 +62,13 @@ fn app() -> Element {
     let mut agents_status = use_signal(HashMap::<String, state::AgStatus>::new);
     let draft = use_signal(String::new);
 
+    // État des panneaux Git / Docker / Docs (pilier « constat du projet », indépendant du fil de
+    // conversation) : rafraîchis à chaque changement de session active, ou à la demande.
+    let git_status = use_signal(GitStatus::default);
+    let docker_status = use_signal(DockerStatus::default);
+    let mut doc_selected = use_signal(|| None::<PathBuf>);
+    let mut git_diff = use_signal(|| None::<GitDiffView>);
+
     // Projection : synchronise les signaux plats avec la session active. Les signaux sont `Copy`,
     // donc les capturer ici (par copie) n'empêche pas de les repasser aux composants plus bas.
     use_effect(move || {
@@ -75,6 +85,19 @@ fn app() -> Element {
                 agents_status.set(a.status.clone());
             }
             None => space.set(None),
+        }
+    });
+
+    // Racine de travail de la session active : dépendance **minimale** pour Git/Docker (un
+    // `PathBuf`, comparé par égalité) — contrairement à la projection ci-dessus, on ne veut PAS
+    // relancer `git status`/`docker compose ps` à chaque événement d'agent, seulement quand
+    // l'onglet actif change réellement.
+    let active_root = use_memo(move || sessions.read().active().map(|a| a.workspace_root().to_path_buf()));
+    use_effect(move || {
+        if let Some(root) = active_root() {
+            doc_selected.set(None);
+            git_diff.set(None);
+            state::refresh_dev_status(root, git_status, docker_status);
         }
     });
 
@@ -141,7 +164,7 @@ fn app() -> Element {
                             button { class: "panebtn", title: "Masquer l'explorateur",
                                 onclick: move |_| show_explorer.set(false), "‹" }
                         }
-                        components::FileExplorer { sessions, selected }
+                        components::FileExplorer { sessions, selected, doc_selected, git_diff }
                     }
                 } else {
                     div { class: "stub",
@@ -177,7 +200,7 @@ fn app() -> Element {
                             button { class: "panebtn", title: "Masquer le visualiseur",
                                 onclick: move |_| show_viewer.set(false), "›" }
                         }
-                        components::CenterPane { sessions, selected }
+                        components::CenterPane { sessions, selected, doc_selected, git_diff }
                         { components::terminal_panel(sessions) }
                     }
                 } else {
@@ -187,7 +210,10 @@ fn app() -> Element {
                     }
                 }
 
-                components::TaskRail { plan, pending, approve_tx, sessions }
+                components::TaskRail {
+                    plan, pending, approve_tx, sessions,
+                    selected, doc_selected, git_diff, git_status, docker_status,
+                }
             }
 
             // --- Barre de statut ---

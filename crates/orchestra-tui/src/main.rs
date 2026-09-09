@@ -23,6 +23,7 @@ use orchestra_core::events::AgentEvent;
 use orchestra_core::model::ContextSpace;
 use orchestra_core::runtime;
 use orchestra_core::session::{Sessions, Tabbed};
+use orchestra_core::{docker, git};
 use ratatui::crossterm::event::{
     Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -30,8 +31,17 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
 
 use crate::app::{App, View};
+
+/// Résultat d'une requête Git asynchrone (état ou diff), livré via un canal `oneshot`
+/// unique — évite de multiplier les branches `select!` pour deux requêtes qui ne sont
+/// jamais concurrentes dans un même onglet.
+enum GitFetch {
+    Status(git::GitStatus),
+    Diff { path: String, text: String },
+}
 
 /// Un **onglet** de travail : l'état complet d'un dashboard (`App`) + les canaux de sa
 /// conversation en cours. Chaque onglet garde donc **son propre contexte et son historique** ;
@@ -45,12 +55,16 @@ struct TuiTab {
     chat_tx: Option<UnboundedSender<String>>,
     /// Canal d'approbation de plan (présent pendant orchestration / conversation).
     plan_tx: Option<UnboundedSender<bool>>,
+    /// Requête Git en cours (état ou diff), présente entre le lancement et la réponse.
+    git_rx: Option<oneshot::Receiver<GitFetch>>,
+    /// Requête Docker en cours, présente entre le lancement et la réponse.
+    docker_rx: Option<oneshot::Receiver<docker::DockerStatus>>,
 }
 
 impl TuiTab {
     /// Nouvel onglet à partir d'un `App`, canaux fermés (aucune conversation en cours).
     fn new(app: App) -> Self {
-        Self { app, rx: None, chat_tx: None, plan_tx: None }
+        Self { app, rx: None, chat_tx: None, plan_tx: None, git_rx: None, docker_rx: None }
     }
 }
 
@@ -182,7 +196,7 @@ async fn event_loop(
         let active_tab = sessions.active_index();
         // Onglet actif : l'`App` rendu/piloté + ses canaux. Plus aucun onglet ⇒ on quitte.
         let Some(tab) = sessions.active_mut() else { break };
-        let TuiTab { app, rx, chat_tx, plan_tx } = tab;
+        let TuiTab { app, rx, chat_tx, plan_tx, git_rx, docker_rx } = tab;
         // Mutation d'onglets à appliquer après relâchement de l'emprunt ci-dessus.
         let mut cmd: Option<SessionCmd> = None;
 
@@ -289,6 +303,63 @@ async fn event_loop(
                                 KeyCode::Up => app.changes_move(-1),
                                 KeyCode::Down => app.changes_move(1),
                                 KeyCode::Esc | KeyCode::Char('7') => app.toggle_changes(),
+                                _ => {}
+                            }
+                        } else if app.view == View::Files {
+                            // Arborescence du workspace : naviguer + ouvrir un fichier.
+                            match key.code {
+                                KeyCode::Up => app.files_move(-1),
+                                KeyCode::Down => app.files_move(1),
+                                KeyCode::Enter => app.open_selected_file(),
+                                KeyCode::Esc | KeyCode::Char('6') => app.toggle_files(),
+                                _ => {}
+                            }
+                        } else if app.view == View::Git {
+                            // État Git : naviguer les fichiers, Entrée = diff, [r] = rafraîchir.
+                            match key.code {
+                                KeyCode::Up => app.git_move(-1),
+                                KeyCode::Down => app.git_move(1),
+                                KeyCode::Enter => {
+                                    if let Some(path) = app.git_selected_path() {
+                                        if let Some(space) = &app.space {
+                                            *git_rx = Some(spawn_git_diff(space.workspace(), path));
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('r') => {
+                                    if let Some(space) = &app.space {
+                                        *git_rx = Some(spawn_git_status(space.workspace()));
+                                    }
+                                }
+                                KeyCode::Esc | KeyCode::Char('8') => app.toggle_git(),
+                                _ => {}
+                            }
+                        } else if app.view == View::Docker {
+                            // État Docker : [r] rafraîchir, Échap retour.
+                            match key.code {
+                                KeyCode::Char('r') => {
+                                    if let Some(space) = &app.space {
+                                        *docker_rx = Some(spawn_docker_status(space.workspace()));
+                                    }
+                                }
+                                KeyCode::Esc | KeyCode::Char('9') => app.toggle_docker(),
+                                _ => {}
+                            }
+                        } else if app.view == View::Terminal {
+                            match key.code {
+                                KeyCode::Esc | KeyCode::Char('0') => app.toggle_terminal(),
+                                _ => {}
+                            }
+                        } else if app.view == View::Memory {
+                            match key.code {
+                                KeyCode::Up => app.memory_scroll_by(-1),
+                                KeyCode::Down => app.memory_scroll_by(1),
+                                KeyCode::Esc | KeyCode::Char('m') => app.toggle_memory(),
+                                _ => {}
+                            }
+                        } else if app.view == View::Context {
+                            match key.code {
+                                KeyCode::Esc | KeyCode::Char('c') => app.toggle_context(),
                                 _ => {}
                             }
                         } else if app.view == View::Spaces && app.new_space.is_some() {
@@ -463,7 +534,24 @@ async fn event_loop(
                                 KeyCode::Char('2') => app.toggle_docs(),
                                 KeyCode::Char('3') => app.toggle_spaces(),
                                 KeyCode::Char('4') => app.open_persona_editor(),
+                                KeyCode::Char('6') if app.space.is_some() => app.toggle_files(),
                                 KeyCode::Char('7') if app.space.is_some() => app.toggle_changes(),
+                                KeyCode::Char('8') if app.space.is_some() => {
+                                    app.toggle_git();
+                                    if app.view == View::Git {
+                                        *git_rx = Some(spawn_git_status(app.space.as_ref().unwrap().workspace()));
+                                    }
+                                }
+                                KeyCode::Char('9') if app.space.is_some() => {
+                                    app.toggle_docker();
+                                    if app.view == View::Docker {
+                                        *docker_rx =
+                                            Some(spawn_docker_status(app.space.as_ref().unwrap().workspace()));
+                                    }
+                                }
+                                KeyCode::Char('0') if app.space.is_some() => app.toggle_terminal(),
+                                KeyCode::Char('m') if app.space.is_some() => app.toggle_memory(),
+                                KeyCode::Char('c') if app.space.is_some() => app.toggle_context(),
                                 // Onglets (sessions) : Tab/Maj+Tab pour circuler, Ctrl+W pour fermer.
                                 KeyCode::Tab => cmd = Some(SessionCmd::Next),
                                 KeyCode::BackTab => cmd = Some(SessionCmd::Prev),
@@ -494,6 +582,22 @@ async fn event_loop(
                 }
             }
             _ = tick.tick() => { app.tick(); }        // rafraîchissement + animation spinner
+
+            res = recv_oneshot(git_rx.as_mut()) => {
+                if let Some(fetch) = res {
+                    match fetch {
+                        GitFetch::Status(status) => app.set_git_status(status),
+                        GitFetch::Diff { path, text } => app.set_git_diff(path, text),
+                    }
+                }
+                *git_rx = None;
+            }
+            res = recv_oneshot(docker_rx.as_mut()) => {
+                if let Some(status) = res {
+                    app.set_docker_status(status);
+                }
+                *docker_rx = None;
+            }
         }
 
         // L'emprunt de l'onglet actif est relâché : on peut muter la collection d'onglets.
@@ -515,4 +619,42 @@ async fn recv_optional(rx: Option<&mut UnboundedReceiver<AgentEvent>>) -> Option
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
     }
+}
+
+/// Attend la réponse d'une requête ponctuelle (Git/Docker) si une est en cours ; sinon ne
+/// se résout jamais. Symétrique de [`recv_optional`] pour un canal `oneshot`.
+async fn recv_oneshot<T>(rx: Option<&mut oneshot::Receiver<T>>) -> Option<T> {
+    match rx {
+        Some(rx) => rx.await.ok(),
+        None => std::future::pending().await,
+    }
+}
+
+/// Lance la récupération de l'état Git en arrière-plan et retourne le récepteur à stocker
+/// dans l'onglet.
+fn spawn_git_status(root: std::path::PathBuf) -> oneshot::Receiver<GitFetch> {
+    let (tx, rxo) = oneshot::channel();
+    tokio::spawn(async move {
+        let _ = tx.send(GitFetch::Status(git::status(&root).await));
+    });
+    rxo
+}
+
+/// Lance la récupération du diff d'un fichier en arrière-plan.
+fn spawn_git_diff(root: std::path::PathBuf, path: String) -> oneshot::Receiver<GitFetch> {
+    let (tx, rxo) = oneshot::channel();
+    tokio::spawn(async move {
+        let text = git::diff(&root, Some(&path)).await;
+        let _ = tx.send(GitFetch::Diff { path, text });
+    });
+    rxo
+}
+
+/// Lance la détection de l'état Docker en arrière-plan.
+fn spawn_docker_status(root: std::path::PathBuf) -> oneshot::Receiver<docker::DockerStatus> {
+    let (tx, rxo) = oneshot::channel();
+    tokio::spawn(async move {
+        let _ = tx.send(docker::detect(&root).await);
+    });
+    rxo
 }
