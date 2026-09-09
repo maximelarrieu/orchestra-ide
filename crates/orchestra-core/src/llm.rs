@@ -283,7 +283,12 @@ impl LlmClient {
             Provider::Ollama => {
                 let url = format!("{}/api/chat", backend.host);
                 let body = ollama_body(&backend.model, system, tools, conv);
-                let resp = self.http.post(&url).json(&body).send().await?;
+                // Délai propre à Ollama, bien plus généreux que le défaut cloud (120 s) : un
+                // modèle local (souvent CPU, voire un simple 7B) peut mettre plusieurs minutes à
+                // répondre sur un tour avec beaucoup d'outils/contexte — un timeout serré s'y
+                // manifeste comme une « erreur réseau » trompeuse (connexion coupée en plein
+                // calcul), pas comme un vrai problème d'indisponibilité du serveur.
+                let resp = self.http.post(&url).timeout(ollama_timeout()).json(&body).send().await?;
                 parse_ollama(&checked_json(resp).await?)
             }
         }
@@ -318,6 +323,17 @@ fn ollama_host() -> String {
         .map(|h| h.trim().trim_end_matches('/').to_string())
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| DEFAULT_OLLAMA_HOST.to_string())
+}
+
+/// Délai max d'un appel Ollama. Par défaut **600 s** (l'inférence locale, souvent CPU, est
+/// bien plus lente qu'une API cloud), surchargeable par `ORCHESTRA_OLLAMA_TIMEOUT_SECS`.
+fn ollama_timeout() -> Duration {
+    std::env::var("ORCHESTRA_OLLAMA_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(600))
 }
 
 fn default_model(provider: Provider) -> String {

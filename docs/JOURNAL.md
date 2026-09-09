@@ -703,3 +703,11 @@ Motivé par un besoin concret : travailler avec des modèles déjà installés e
   bel et bien un modèle local. `state::llm_status()` délègue désormais à
   `LlmClient::from_env().map(|c| c.describe())`, comme le TUI : « Ollama · qwen2.5-coder »
   s'affiche correctement des deux côtés, sans dérive possible entre les deux heuristiques.
+- **Correctif de timeout (retour d'usage réel)** : premier essai en conditions réelles
+  (`qwen2.5-coder:7b` local) → une analyse de projet avec plusieurs outils s'est terminée par
+  une « erreur réseau » (`error sending request for url`) au lieu d'une vraie réponse. Cause
+  probable : le délai partagé de 120 s (calibré pour des API cloud) coupe la connexion en
+  pleine génération sur un modèle local, souvent bien plus lent (CPU notamment). Ajout d'un
+  délai **dédié** à Ollama (`ORCHESTRA_OLLAMA_TIMEOUT_SECS`, 600 s par défaut, via
+  `RequestBuilder::timeout` sur la seule requête Ollama) — n'affecte pas les 120 s des
+  backends cloud.

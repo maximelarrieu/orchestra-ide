@@ -146,7 +146,12 @@ automatique (réseau, surcharge, quota ou crédit épuisé) — sans interrompre
 ```bash
 export ORCHESTRA_PROVIDER=ollama        # modèle qwen2.5-coder par défaut (le plus « code »)
 export ORCHESTRA_OLLAMA_MODEL=mistral   # optionnel : un autre modèle déjà tiré (`ollama pull`)
+export ORCHESTRA_OLLAMA_TIMEOUT_SECS=600  # optionnel : monte-le si le modèle est lent (CPU)
 ```
+
+> ⚠️ Le nom de modèle attendu est le nom **exact** listé par `ollama list` (souvent avec un
+> tag, ex. `qwen2.5-coder:7b`) — un nom approximatif renvoie une erreur 404 « model not
+> found ».
 
 Sans forcer de fournisseur, Ollama ne rejoint la chaîne de repli automatique (après
 Claude/Gemini) que si `ORCHESTRA_OLLAMA_MODEL` est défini — jamais par défaut, pour ne rien

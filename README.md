@@ -61,6 +61,7 @@ export ORCHESTRA_PROVIDER=ollama              # modèle qwen2.5-coder par défau
 # Optionnel :
 export ORCHESTRA_OLLAMA_MODEL=mistral         # un autre modèle déjà `ollama pull`é (mistral, gpt-oss…)
 export ORCHESTRA_OLLAMA_HOST=http://localhost:11434   # défaut, à changer si Ollama tourne ailleurs
+export ORCHESTRA_OLLAMA_TIMEOUT_SECS=600               # défaut ; monte-le si ton modèle est lent (CPU)
 
 cargo run -p orchestra-tui -- /chemin/vers/mon-projet
 ```

@@ -224,7 +224,12 @@ Claude préféré, Gemini en repli si Claude est indisponible (réseau, 5xx, 429
 fournisseur unique ; sans forçage, il ne rejoint la chaîne de repli automatique (après
 Claude/Gemini) que si `ORCHESTRA_OLLAMA_MODEL` est explicitement défini — jamais par défaut,
 pour ne changer le comportement d'aucune installation existante. `ORCHESTRA_OLLAMA_HOST`
-surcharge l'hôte (utile si Ollama tourne sur une autre machine/port). Sans aucun fournisseur
+surcharge l'hôte (utile si Ollama tourne sur une autre machine/port). Timeout par requête
+**dédié et généreux** (`ORCHESTRA_OLLAMA_TIMEOUT_SECS`, défaut 600 s, via
+`RequestBuilder::timeout` — n'affecte pas les 120 s des backends cloud) : l'inférence locale,
+souvent CPU, est nettement plus lente qu'une API cloud, et un délai trop court s'y manifeste
+comme une « erreur réseau » trompeuse (connexion coupée en pleine génération) plutôt que comme
+un vrai signal d'indisponibilité. Sans aucun fournisseur
 disponible → mode simulé (l'appli reste utilisable hors-ligne). `run_agent_turn` (mutualisé
 Orchestrateur/sous-agents) borne chaque message à `max_turns()` tours LLM ↔ outils
 (`DEFAULT_MAX_TURNS = 40`, surchargeable par `ORCHESTRA_MAX_TURNS`).
