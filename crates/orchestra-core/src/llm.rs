@@ -619,12 +619,24 @@ fn ollama_body(model: &str, system: &str, tools: &[ToolSpec], conv: &[Msg]) -> V
 fn parse_ollama(v: &Value) -> Result<Vec<Block>, LlmError> {
     let message = v.get("message").ok_or_else(|| LlmError::Shape("champ `message` absent".into()))?;
     let mut blocks = Vec::new();
-    if let Some(t) = message.get("content").and_then(Value::as_str) {
-        if !t.is_empty() {
-            blocks.push(Block::Text(t.to_string()));
+
+    let native_calls = message.get("tool_calls").and_then(Value::as_array).filter(|c| !c.is_empty());
+
+    if let Some(t) = message.get("content").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+        // Certains modèles (petits modèles locaux notamment) ne posent pas l'appel d'outil dans
+        // `tool_calls` mais le « miment » en texte : la totalité du message est alors un objet
+        // JSON `{"name": ..., "arguments": ...}` (parfois dans un bloc ```). On ne tente cette
+        // récupération QUE si `tool_calls` est absent/vide et que le contenu, une fois débarrassé
+        // d'un éventuel bloc de code, est ENTIÈREMENT ce JSON — jamais sur un texte narratif qui
+        // contiendrait des accolades incidentes (on préfère rater un appel plutôt que d'exécuter
+        // un outil sur un faux positif).
+        match native_calls.is_none().then(|| fake_tool_call_from_text(t)).flatten() {
+            Some((name, input)) => blocks.push(Block::ToolUse { id: format!("{name}-0"), name, input }),
+            None => blocks.push(Block::Text(t.to_string())),
         }
     }
-    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+
+    if let Some(calls) = native_calls {
         for (i, c) in calls.iter().enumerate() {
             let f = c.get("function").cloned().unwrap_or_default();
             let name = f.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -640,6 +652,30 @@ fn parse_ollama(v: &Value) -> Result<Vec<Block>, LlmError> {
         }
     }
     Ok(blocks)
+}
+
+/// Détecte un appel d'outil « mimé » en texte par un modèle sans support natif fiable des
+/// `tool_calls` : `content` (après un éventuel bloc ```/```json) est parsé comme JSON, et
+/// accepté seulement s'il expose un champ `name` — chaîne de caractères — c'est-à-dire s'il a
+/// vraiment la forme d'un appel d'outil, pas n'importe quel JSON.
+fn fake_tool_call_from_text(content: &str) -> Option<(String, Value)> {
+    let stripped = strip_code_fence(content.trim());
+    let v: Value = serde_json::from_str(stripped).ok()?;
+    let name = v.get("name")?.as_str()?.to_string();
+    let input = v.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    Some((name, input))
+}
+
+/// Retire un bloc de code Markdown englobant (` ``` ` ou ` ```json `) s'il couvre tout le
+/// texte ; sinon renvoie le texte tel quel.
+fn strip_code_fence(s: &str) -> &str {
+    let Some(rest) = s.strip_prefix("```") else { return s };
+    let Some(rest) = rest.strip_suffix("```") else { return s };
+    // Un éventuel identifiant de langage (`json`, `js`…) précède le premier saut de ligne.
+    match rest.split_once('\n') {
+        Some((lang, body)) if lang.chars().all(|c| c.is_ascii_alphanumeric()) => body.trim(),
+        _ => rest.trim(),
+    }
 }
 
 #[cfg(test)]
@@ -803,5 +839,49 @@ mod tests {
     fn parse_ollama_empty_content_yields_no_text_block() {
         let v = json!({ "message": { "role": "assistant", "content": "" } });
         assert!(parse_ollama(&v).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_ollama_recovers_tool_call_faked_as_plain_text() {
+        // Modèle local sans `tool_calls` fiable : il « mime » l'appel dans `content`, en JSON pur.
+        let v = json!({ "message": { "role": "assistant",
+            "content": "{\"name\": \"Recall\", \"arguments\": {\"query\": \"évolution projet\"}}"
+        }});
+        let blocks = parse_ollama(&v).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0],
+            Block::ToolUse { name, input, .. } if name == "Recall" && input["query"] == "évolution projet"));
+    }
+
+    #[test]
+    fn parse_ollama_recovers_fenced_json_tool_call() {
+        let v = json!({ "message": { "role": "assistant",
+            "content": "```json\n{\"name\": \"Read_File\", \"arguments\": {\"path\": \"README.md\"}}\n```"
+        }});
+        let blocks = parse_ollama(&v).unwrap();
+        assert!(matches!(&blocks[0], Block::ToolUse { name, .. } if name == "Read_File"));
+    }
+
+    #[test]
+    fn parse_ollama_keeps_narrative_text_with_braces_as_text() {
+        // Ne doit JAMAIS être pris pour un appel d'outil : ce n'est pas un JSON valide dans son
+        // ensemble (texte autour des accolades).
+        let v = json!({ "message": { "role": "assistant",
+            "content": "Le fichier contient une fonction `main() { ... }` assez simple."
+        }});
+        let blocks = parse_ollama(&v).unwrap();
+        assert!(matches!(&blocks[0], Block::Text(_)));
+    }
+
+    #[test]
+    fn parse_ollama_prefers_native_tool_calls_over_text_content() {
+        // `tool_calls` natif présent : le contenu texte reste du texte, jamais réinterprété.
+        let v = json!({ "message": { "role": "assistant",
+            "content": "{\"name\": \"Recall\", \"arguments\": {}}",
+            "tool_calls": [{ "function": { "name": "Read_File", "arguments": { "path": "a" } } }]
+        }});
+        let blocks = parse_ollama(&v).unwrap();
+        assert!(matches!(&blocks[0], Block::Text(_)));
+        assert!(matches!(&blocks[1], Block::ToolUse { name, .. } if name == "Read_File"));
     }
 }

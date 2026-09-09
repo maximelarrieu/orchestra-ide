@@ -217,7 +217,12 @@ Une représentation **neutre** (`Msg`/`Block`/`ToolSpec`/`ToolResult`) découple
 agentique du format de chaque fournisseur — `ollama_body`/`parse_ollama` rendent/parsent le
 format `/api/chat` d'Ollama (proche d'OpenAI : un message assistant fusionne texte +
 `tool_calls`, un résultat d'outil devient un message `tool` par appel, `arguments` accepté en
-objet ou en chaîne JSON selon le modèle). **Bascule automatique** entre backends cloud :
+objet ou en chaîne JSON selon le modèle). **Secours pour les modèles sans `tool_calls`
+fiable** : certains modèles locaux (petits modèles notamment) « miment » un appel d'outil en
+texte pur plutôt que via le champ structuré — `parse_ollama` le détecte et l'exécute quand
+même si `content` est *entièrement* un JSON `{"name": ..., "arguments": ...}` (éventuellement
+dans un bloc ```/```json), jamais sur un texte narratif contenant des accolades incidentes.
+**Bascule automatique** entre backends cloud :
 Claude préféré, Gemini en repli si Claude est indisponible (réseau, 5xx, 429, ou crédit
 épuisé) ; un échec permanent (401-403, crédit épuisé) écarte définitivement le backend.
 **Ollama** ne demande aucune clé : `ORCHESTRA_PROVIDER=ollama` (ou `local`) le force en

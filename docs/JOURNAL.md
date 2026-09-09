@@ -711,3 +711,15 @@ Motivé par un besoin concret : travailler avec des modèles déjà installés e
   délai **dédié** à Ollama (`ORCHESTRA_OLLAMA_TIMEOUT_SECS`, 600 s par défaut, via
   `RequestBuilder::timeout` sur la seule requête Ollama) — n'affecte pas les 120 s des
   backends cloud.
+- **Correctif de fond (retour d'usage réel, suite)** : une fois le timeout réglé, `qwen2.5
+  -coder:7b` posait bien des appels d'outils (`Recall`, `Read_File`…) mais **en texte pur**
+  (`{"name": "Recall", "arguments": {...}}` affiché comme un message au lieu d'être exécuté)
+  plutôt que dans le champ structuré `message.tool_calls` de l'API Ollama — le modèle « mime »
+  l'appel plutôt que d'utiliser le mécanisme natif, un comportement documenté comme variable
+  selon les modèles/quantisations chez Ollama. `parse_ollama` récupère désormais ce cas : si
+  `tool_calls` est absent/vide et que `content` est **entièrement** un JSON `{"name": ...,
+  "arguments": ...}` (éventuellement dans un bloc ```/```json), il est traité comme un vrai
+  appel d'outil plutôt que comme du texte inerte. Volontairement strict (le contenu doit être
+  *exclusivement* ce JSON) pour ne jamais réinterpréter à tort un texte narratif contenant des
+  accolades. 5 nouveaux tests ; `tool_calls` natif reste prioritaire quand présent (le texte
+  qui l'accompagne n'est jamais réinterprété).
