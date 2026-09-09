@@ -175,6 +175,8 @@ pub const CSS: &str = r#"
     .bubble.coord { align-self: stretch; max-width: 100%; background: transparent; border: none; padding: 0; }
     .bubble.coord .who { display: none; }
     .bubble.coord .text { line-height: 1.75; color: var(--text); }
+    /* Indicateur transitoire « réfléchit… Ns » (pas un vrai message) : atténué, italique. */
+    .bubble.coord.thinking { color: var(--text-mute); font-style: italic; font-size: .88rem; }
     /* Utilisateur : bulle arrondie discrète, alignée à droite. */
     .bubble.user { align-self: flex-end; max-width: 78%; background: var(--bubble-user);
                    color: var(--bubble-user-text); padding: .6rem .95rem; border-radius: 16px;

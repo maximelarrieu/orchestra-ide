@@ -10,6 +10,6 @@ orchestra-core = { path = "../orchestra-core" }
 # UI tout-Rust « React-like » ; sur desktop, webview système (WebView2 sur Windows,
 # webkit2gtk sur Linux). Voir README pour les prérequis de build.
 dioxus = { version = "0.6", features = ["desktop"] }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 # Rendu Markdown → HTML pour le visualiseur de documents (titres, listes, code, tableaux…).
 pulldown-cmark = "0.12"

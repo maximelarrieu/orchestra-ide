@@ -723,3 +723,26 @@ Motivé par un besoin concret : travailler avec des modèles déjà installés e
   *exclusivement* ce JSON) pour ne jamais réinterpréter à tort un texte narratif contenant des
   accolades. 5 nouveaux tests ; `tool_calls` natif reste prioritaire quand présent (le texte
   qui l'accompagne n'est jamais réinterprété).
+
+## Indicateur « réfléchit… Ns » côté Desktop (comble un écart de parité) ✅
+
+Le TUI affichait déjà, depuis longtemps, un chronomètre pendant qu'un agent attend une
+réponse LLM (« ⠋ {agent} réfléchit… {n}s », en-tête + bas du radar, piloté par
+`App::busy_since`/`busy_elapsed_secs`) — utile pour distinguer un modèle local qui mouline
+plusieurs dizaines de secondes d'un vrai blocage. Le Desktop n'avait qu'un « … » statique,
+sans durée : écart de parité repéré en creusant la demande d'un retour visuel sur le temps de
+réflexion.
+
+- `DesktopSession` gagne `busy_since: Option<Instant>` / `busy_agent: Option<String>`, posés
+  sur `AgentEvent::Thinking` et effacés sur `Log`/`Done`/redémarrage — même sémantique qu'un
+  seul chrono partagé côté TUI (un appel LLM à la fois bloque l'orchestre, pas un chrono par
+  agent).
+- **Rafraîchissement sans nouvel événement** : contrairement au TUI (qui redessine à un tick
+  fixe), Dioxus ne se re-rend que sur changement de signal — un `use_future` fait tourner un
+  chrono d'affichage (`tick`, +1 chaque seconde, pour la durée de vie de l'app) pour que le
+  texte « …Ns » se mette à jour même pendant un silence prolongé côté agent.
+- Affiché à deux endroits, comme le TUI : la pastille de la barre de statut (« réfléchit…
+  Ns ») et une bulle atténuée en bas du chat (« {agent} réfléchit… Ns »).
+- `orchestra-desktop/Cargo.toml` : feature `time` ajoutée à `tokio` (nécessaire à
+  `tokio::time::sleep`, jusque-là seulement `sync`).
+- Workspace complet (core + TUI + desktop) vert en tests et clippy dans cet environnement.

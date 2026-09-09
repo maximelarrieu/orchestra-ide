@@ -817,6 +817,8 @@ pub fn CenterPane(
 pub fn chat_view(
     messages: Signal<Vec<ChatMsg>>,
     thinking: Signal<bool>,
+    busy_agent: Option<String>,
+    busy_elapsed: Option<u64>,
     mut draft: Signal<String>,
     user_tx: Signal<Option<UnboundedSender<String>>>,
 ) -> Element {
@@ -856,7 +858,12 @@ pub fn chat_view(
                     ChatBubble { key: "{i}", idx: i, msg: m }
                 }
                 if thinking() {
-                    div { class: "bubble coord", "…" }
+                    div { class: "bubble coord thinking",
+                        match (&busy_agent, busy_elapsed) {
+                            (Some(agent), Some(secs)) => rsx! { "{agent} réfléchit… {secs}s" },
+                            _ => rsx! { "…" },
+                        }
+                    }
                 }
             }
             div { class: "composer",

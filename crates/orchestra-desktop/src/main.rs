@@ -23,6 +23,7 @@ use orchestra_core::model::ContextSpace;
 use orchestra_core::session::Sessions;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 
 use state::{ChatMsg, DesktopSession, GitDiffView, PlanRow};
@@ -55,6 +56,19 @@ fn app() -> Element {
     let mut space = use_signal(|| None::<ContextSpace>);
     let mut messages = use_signal(Vec::<ChatMsg>::new);
     let mut thinking = use_signal(|| false);
+    // Depuis quand / quel agent réfléchit (indicateur « réfléchit… Ns », en-tête + bas du chat).
+    let mut busy_since = use_signal(|| None::<Instant>);
+    let mut busy_agent = use_signal(|| None::<String>);
+    // Chrono d'affichage : incrémenté chaque seconde pour forcer le recalcul du texte « …Ns »
+    // même sans nouvel `AgentEvent` (un appel LLM local peut rester silencieux plusieurs
+    // dizaines de secondes). Tourne pour la durée de vie de l'app, coût négligeable.
+    let mut tick = use_signal(|| 0u64);
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            tick.set(tick() + 1);
+        }
+    });
     let mut plan = use_signal(Vec::<PlanRow>::new);
     let mut pending = use_signal(|| false);
     let mut approve_tx = use_signal(|| None::<UnboundedSender<bool>>);
@@ -78,13 +92,19 @@ fn app() -> Element {
                 space.set(Some(a.space.clone()));
                 messages.set(a.messages.clone());
                 thinking.set(a.thinking);
+                busy_since.set(a.busy_since);
+                busy_agent.set(a.busy_agent.clone());
                 plan.set(a.plan.clone());
                 pending.set(a.pending);
                 approve_tx.set(a.approve_tx.clone());
                 user_tx.set(a.user_tx.clone());
                 agents_status.set(a.status.clone());
             }
-            None => space.set(None),
+            None => {
+                space.set(None);
+                busy_since.set(None);
+                busy_agent.set(None);
+            }
         }
     });
 
@@ -125,8 +145,16 @@ fn app() -> Element {
     let mut show_spacebar = use_signal(|| false);
 
     let has_session = space().is_some();
+    // Lire `tick()` abonne ce calcul au chrono d'affichage : le texte se recalcule chaque
+    // seconde tant qu'un appel LLM est en cours, sans dépendre d'un nouvel `AgentEvent`.
+    let _ = tick();
+    let busy_elapsed = busy_since().map(|t| t.elapsed().as_secs());
+    let status_pill = match (busy_elapsed, has_session) {
+        (Some(secs), _) => format!("réfléchit… {secs}s"),
+        (None, true) => "prêt".to_string(),
+        (None, false) => "—".to_string(),
+    };
     let project = space().map(|s| s.config.project_name).unwrap_or_else(|| "Orchestra".into());
-    let status_pill = if thinking() { "réfléchit…" } else if has_session { "prêt" } else { "—" };
     let app_cls = if dark() { "app dark" } else { "app light" };
     // La barre d'espaces s'affiche à la demande (+) ou tant qu'aucune session n'est ouverte.
     let spacebar_open = show_spacebar() || !has_session;
@@ -184,7 +212,7 @@ fn app() -> Element {
                     if has_session {
                         div { class: "chatcol",
                             if user_tx().is_some() {
-                                {components::chat_view(messages, thinking, draft, user_tx)}
+                                {components::chat_view(messages, thinking, busy_agent(), busy_elapsed, draft, user_tx)}
                             }
                         }
                     } else {

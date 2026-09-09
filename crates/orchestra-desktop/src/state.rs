@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use dioxus::prelude::*;
 use orchestra_core::docker::DockerStatus;
@@ -40,6 +41,12 @@ pub struct DesktopSession {
     pub space: ContextSpace,
     pub messages: Vec<ChatMsg>,
     pub thinking: bool,
+    /// Depuis quand un appel LLM est en cours (`Some` ⇔ `thinking`), pour l'indicateur « réfléchit
+    /// depuis Ns » — même sémantique que `busy_since` côté TUI (un seul chrono partagé, pas un
+    /// par agent : c'est toujours *un* appel LLM à la fois qui bloque l'orchestre).
+    pub busy_since: Option<Instant>,
+    /// Agent dont l'appel LLM est en cours, pour le libellé de l'indicateur.
+    pub busy_agent: Option<String>,
     pub plan: Vec<PlanRow>,
     pub pending: bool,
     pub changes: Vec<FileChange>,
@@ -62,6 +69,8 @@ impl DesktopSession {
             space,
             messages: Vec::new(),
             thinking: false,
+            busy_since: None,
+            busy_agent: None,
             plan: Vec::new(),
             pending: false,
             changes: Vec::new(),
@@ -181,10 +190,13 @@ fn apply_event(sess: &mut DesktopSession, ev: AgentEvent) {
     match ev {
         AgentEvent::Thinking { agent } => {
             sess.thinking = true;
+            sess.busy_since = Some(Instant::now());
+            sess.busy_agent = Some(agent.clone());
             mark(sess, &agent, AgStatus::Thinking);
         }
         AgentEvent::Log { agent, msg } => {
             sess.thinking = false;
+            sess.busy_since = None;
             mark(sess, &agent, AgStatus::Working);
             let kind = if agent == "Vous" {
                 MsgKind::User
@@ -205,6 +217,7 @@ fn apply_event(sess: &mut DesktopSession, ev: AgentEvent) {
         }
         AgentEvent::Done { agent } => {
             sess.thinking = false;
+            sess.busy_since = None;
             mark(sess, &agent, AgStatus::Done);
         }
         AgentEvent::PlanReady { tasks } => {
@@ -259,6 +272,8 @@ pub fn start_session_chat(mut sessions: Signal<Sessions<DesktopSession>>, index:
             sess.plan.clear();
             sess.pending = false;
             sess.thinking = false;
+            sess.busy_since = None;
+            sess.busy_agent = None;
             sess.status.clear();
             sess.changes.clear();
             sess.activity.clear();
