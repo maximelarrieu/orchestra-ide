@@ -205,20 +205,29 @@ Tâches** des deux UIs.
 ## 5bis. Boucle agentique LLM + Skills exécutables
 
 `orchestra-core::llm::LlmClient` appelle, en **HTTP brut** via `reqwest` (pas de SDK Rust
-officiel), l'un des deux fournisseurs **au choix** :
+officiel), l'un des trois fournisseurs **au choix** :
 
 | Provider | Endpoint | Modèle par défaut | Clé |
 |---|---|---|---|
 | `Anthropic` (Claude) | `POST /v1/messages` | `claude-opus-4-8` | `ANTHROPIC_API_KEY` |
 | `Gemini` | `…/{model}:generateContent` | `gemini-2.5-flash` | `GEMINI_API_KEY` |
+| `Ollama` (local) | `POST {host}/api/chat` (défaut `http://localhost:11434`) | `qwen2.5-coder` | **aucune** |
 
 Une représentation **neutre** (`Msg`/`Block`/`ToolSpec`/`ToolResult`) découple la boucle
-agentique du format de chaque fournisseur. **Bascule automatique** : Claude préféré, Gemini
-en repli si Claude est indisponible (réseau, 5xx, 429, ou crédit épuisé) ; un échec permanent
-(401-403, crédit épuisé) écarte définitivement le backend. Sans clé → mode simulé (l'appli
-reste utilisable hors-ligne). `run_agent_turn` (mutualisé Orchestrateur/sous-agents) borne
-chaque message à `max_turns()` tours LLM ↔ outils (`DEFAULT_MAX_TURNS = 40`, surchargeable
-par `ORCHESTRA_MAX_TURNS`).
+agentique du format de chaque fournisseur — `ollama_body`/`parse_ollama` rendent/parsent le
+format `/api/chat` d'Ollama (proche d'OpenAI : un message assistant fusionne texte +
+`tool_calls`, un résultat d'outil devient un message `tool` par appel, `arguments` accepté en
+objet ou en chaîne JSON selon le modèle). **Bascule automatique** entre backends cloud :
+Claude préféré, Gemini en repli si Claude est indisponible (réseau, 5xx, 429, ou crédit
+épuisé) ; un échec permanent (401-403, crédit épuisé) écarte définitivement le backend.
+**Ollama** ne demande aucune clé : `ORCHESTRA_PROVIDER=ollama` (ou `local`) le force en
+fournisseur unique ; sans forçage, il ne rejoint la chaîne de repli automatique (après
+Claude/Gemini) que si `ORCHESTRA_OLLAMA_MODEL` est explicitement défini — jamais par défaut,
+pour ne changer le comportement d'aucune installation existante. `ORCHESTRA_OLLAMA_HOST`
+surcharge l'hôte (utile si Ollama tourne sur une autre machine/port). Sans aucun fournisseur
+disponible → mode simulé (l'appli reste utilisable hors-ligne). `run_agent_turn` (mutualisé
+Orchestrateur/sous-agents) borne chaque message à `max_turns()` tours LLM ↔ outils
+(`DEFAULT_MAX_TURNS = 40`, surchargeable par `ORCHESTRA_MAX_TURNS`).
 
 | Skill (tool) | Action | Garde-fou |
 |---|---|---|

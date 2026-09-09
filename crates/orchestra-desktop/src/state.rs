@@ -350,19 +350,12 @@ pub fn memory_entries(root: &Path) -> Vec<String> {
     orchestra_core::memory::entries(root)
 }
 
-/// Fournisseur LLM détecté à partir des variables d'environnement (lues au lancement) : le nom
-/// à afficher dans la barre de statut. `None` ⇒ mode simulé (aucune clé), l'agent répond en local.
-pub fn llm_status() -> Option<&'static str> {
-    let has = |k: &str| std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
-    if has("ANTHROPIC_API_KEY") && has("GEMINI_API_KEY") {
-        Some("Claude + Gemini")
-    } else if has("ANTHROPIC_API_KEY") {
-        Some("Claude")
-    } else if has("GEMINI_API_KEY") {
-        Some("Gemini")
-    } else {
-        None
-    }
+/// Fournisseur LLM actif, pour la barre de statut : délègue à [`orchestra_core::llm::LlmClient`]
+/// (même sélection Claude/Gemini/**Ollama** que le runtime, y compris `ORCHESTRA_PROVIDER` et
+/// la bascule) plutôt que de redériver une heuristique locale — une seule source de vérité,
+/// partagée avec le TUI. `None` ⇒ mode simulé (aucun fournisseur disponible).
+pub fn llm_status() -> Option<String> {
+    orchestra_core::llm::LlmClient::from_env().map(|c| c.describe())
 }
 
 // --- Espaces : registre des espaces connus (récents) ---------------------------------------

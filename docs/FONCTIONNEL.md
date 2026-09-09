@@ -125,7 +125,7 @@ entre agents, durables entre sessions), **Contexte** (fichiers touchés cette se
 | Intégration Jira | ❌ (déclarable en config, pas implémentée) |
 | Actions Docker (start/stop/logs) | ❌ (volontairement hors périmètre v1, lecture seule) |
 
-## 5. Activer le LLM — Claude ou Gemini, au choix
+## 5. Activer le LLM — Claude, Gemini ou un modèle local (Ollama)
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."   # Claude (défaut claude-opus-4-8)
@@ -133,14 +133,25 @@ export ANTHROPIC_API_KEY="sk-ant-..."   # Claude (défaut claude-opus-4-8)
 export GEMINI_API_KEY="..."             # Gemini (défaut gemini-2.5-flash)
 
 # Optionnel : forcer le fournisseur / le modèle
-export ORCHESTRA_PROVIDER=gemini        # anthropic | gemini
+export ORCHESTRA_PROVIDER=gemini        # anthropic | gemini | ollama
 export ORCHESTRA_MODEL=gemini-2.5-flash
 ```
 
-Si les deux clés sont présentes, **Claude est préféré, Gemini sert de repli** automatique
-(réseau, surcharge, quota ou crédit épuisé) — sans interrompre l'Orchestrateur. Sans aucune
-clé (ou si tous les fournisseurs échouent), l'outil bascule en **mode simulé**, pleinement
-utilisable hors-ligne.
+Si les deux clés cloud sont présentes, **Claude est préféré, Gemini sert de repli**
+automatique (réseau, surcharge, quota ou crédit épuisé) — sans interrompre l'Orchestrateur.
+
+**Pas envie d'attendre une clé API ?** Un modèle tournant en local via
+[Ollama](https://ollama.com) fonctionne aussi bien, sans compte ni clé :
+
+```bash
+export ORCHESTRA_PROVIDER=ollama        # modèle qwen2.5-coder par défaut (le plus « code »)
+export ORCHESTRA_OLLAMA_MODEL=mistral   # optionnel : un autre modèle déjà tiré (`ollama pull`)
+```
+
+Sans forcer de fournisseur, Ollama ne rejoint la chaîne de repli automatique (après
+Claude/Gemini) que si `ORCHESTRA_OLLAMA_MODEL` est défini — jamais par défaut, pour ne rien
+changer aux installations qui n'ont pas Ollama. Sans aucune clé ni Ollama configuré (ou si
+tout échoue), l'outil bascule en **mode simulé**, pleinement utilisable hors-ligne.
 
 > ⚠️ Le Skill `Execute_Terminal_Command` exécute de vraies commandes shell dans le workspace
 > — capacité assumée pour un outil de dev, encadrée (confiné au workspace, délai max, sortie

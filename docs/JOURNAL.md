@@ -671,3 +671,35 @@ runtime — piloté par événements d'agents — ne pouvait pas fournir nativem
   honnête du fait que `orchestration.rs` (modèle `Plan`/`Task` avec tri topologique) n'est
   **plus câblé** au chemin d'exécution actuel (remplacé en pratique par
   `Set_Plan`/`Update_Step`), pour éviter de reproduire le même écart doc/code à l'avenir.
+
+## Fournisseur LLM local : Ollama, sans clé API ✅
+
+Ajout d'un troisième fournisseur dans `orchestra-core::llm` — **Ollama**, un serveur de
+modèles local (`http://localhost:11434` par défaut), qui ne demande **aucune clé API**.
+Motivé par un besoin concret : travailler avec des modèles déjà installés en local
+(ex. `qwen2.5-coder`) sans dépendre d'un compte cloud.
+
+- `Provider::Ollama` + rendu/parsing dédiés (`ollama_body`/`parse_ollama`) du format
+  `/api/chat` (proche d'OpenAI) : un message assistant fusionne texte + `tool_calls`, un
+  résultat d'outil devient un message `tool` par appel (Ollama n'accepte pas de résultats
+  groupés), `arguments` accepté en objet **ou** en chaîne JSON selon le modèle.
+- `ORCHESTRA_PROVIDER=ollama` (ou `local`) force Ollama en fournisseur unique — modèle
+  `qwen2.5-coder` par défaut (le plus orienté code du catalogue Ollama courant),
+  surchargeable par `ORCHESTRA_MODEL` ou `ORCHESTRA_OLLAMA_MODEL` ; `ORCHESTRA_OLLAMA_HOST`
+  pour un serveur distant.
+- **Repli automatique opt-in** : sans fournisseur forcé, Ollama ne rejoint la chaîne
+  Claude→Gemini que si `ORCHESTRA_OLLAMA_MODEL` est explicitement défini — jamais par défaut,
+  pour ne changer le comportement (mode simulé si aucune clé cloud) d'aucune installation
+  existante qui n'a pas Ollama.
+- 4 nouveaux tests (rendu de requête, parsing texte/tool_calls, `arguments` en chaîne,
+  contenu vide). `cargo test -p orchestra-core` : 72 tests verts, `clippy --workspace` propre
+  — et `orchestra-desktop` compile et passe clippy dans cet environnement (webview désormais
+  disponible ici), confirmant que le nouveau `Provider::Ollama` ne casse aucun `match`
+  exhaustif côté UI.
+- **Correctif de parité au passage** : le TUI affiche déjà le fournisseur actif via
+  `LlmClient::describe()` (source de vérité unique) ; le Desktop, lui, redérivait un libellé
+  **localement** à partir des seules variables `ANTHROPIC_API_KEY`/`GEMINI_API_KEY` — avec
+  Ollama, ça aurait affiché « mode simulé » dans la barre de statut alors que l'app utilise
+  bel et bien un modèle local. `state::llm_status()` délègue désormais à
+  `LlmClient::from_env().map(|c| c.describe())`, comme le TUI : « Ollama · qwen2.5-coder »
+  s'affiche correctement des deux côtés, sans dérive possible entre les deux heuristiques.

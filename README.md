@@ -43,18 +43,33 @@ Sans espace fourni : ouvre un dossier de code existant (l'outil l'« adopte » c
 Contexte) ou crée-en un nouveau. L'Orchestrateur déploie ensuite sa propre équipe à la volée
 — rien à pré-configurer côté agents/skills.
 
-### Activer le LLM — Claude **ou** Gemini, au choix
+### Activer le LLM — Claude, Gemini, **ou un modèle local (Ollama)**, au choix
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."   # Claude (préféré si les deux clés sont présentes)
+export ANTHROPIC_API_KEY="sk-ant-..."   # Claude (préféré si les deux clés cloud sont présentes)
 export GEMINI_API_KEY="..."             # Gemini (repli automatique si Claude est indisponible)
 # Optionnel :
-export ORCHESTRA_PROVIDER=gemini        # anthropic | gemini — force un fournisseur unique
+export ORCHESTRA_PROVIDER=gemini        # anthropic | gemini | ollama — force un fournisseur unique
 export ORCHESTRA_MODEL=gemini-2.5-flash
 ```
 
-Sans clé (ou si les deux fournisseurs échouent), l'outil bascule en **mode simulé** —
-pleinement utilisable hors-ligne, sans appel réseau.
+**Aucune clé API ? Utilise un modèle local via [Ollama](https://ollama.com)** — `ollama serve`
+tournant en local, aucun compte ni clé requis :
+
+```bash
+export ORCHESTRA_PROVIDER=ollama              # modèle qwen2.5-coder par défaut
+# Optionnel :
+export ORCHESTRA_OLLAMA_MODEL=mistral         # un autre modèle déjà `ollama pull`é (mistral, gpt-oss…)
+export ORCHESTRA_OLLAMA_HOST=http://localhost:11434   # défaut, à changer si Ollama tourne ailleurs
+
+cargo run -p orchestra-tui -- /chemin/vers/mon-projet
+```
+
+Sans `ORCHESTRA_PROVIDER=ollama` explicite, Ollama ne rejoint **jamais** la chaîne de repli
+automatique par défaut — sauf si tu définis `ORCHESTRA_OLLAMA_MODEL` sans forcer de
+fournisseur : il devient alors un repli local après Claude/Gemini. Sans clé ni Ollama
+configuré (ou si tout échoue), l'outil bascule en **mode simulé** — pleinement utilisable
+hors-ligne, sans appel réseau.
 
 ### Activer Git / GitHub
 

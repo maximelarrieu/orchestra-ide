@@ -1,12 +1,19 @@
-//! Clients LLM (Phase 4a) — Claude *ou* Gemini, au choix, en HTTP brut.
+//! Clients LLM — Claude, Gemini **ou un modèle local via Ollama**, au choix, en HTTP brut.
 //!
 //! Rust n'a pas de SDK officiel pour ces fournisseurs : on appelle donc directement leurs
 //! API REST via `reqwest`. Une représentation **neutre** ([`Msg`], [`Block`],
 //! [`ToolSpec`]) découple la boucle agentique du format de chaque fournisseur ; chaque
 //! provider sait *rendre* cette représentation dans son protocole et *parser* sa réponse.
 //!
-//! Le client est *optionnel* : sans clé API, [`LlmClient::from_env`] renvoie `None` et le
-//! runtime retombe sur les agents simulés. Les clés ne sont jamais codées en dur.
+//! **Ollama ne demande aucune clé API** (serveur local, `http://localhost:11434` par
+//! défaut) : `ORCHESTRA_PROVIDER=ollama` (ou `local`) l'utilise en fournisseur unique — voir
+//! [`push_ollama_backend`]. Sans forçage explicite, Ollama ne rejoint la chaîne de repli
+//! automatique (après Claude/Gemini) que si `ORCHESTRA_OLLAMA_MODEL` est défini, pour ne
+//! jamais changer le comportement des installations qui n'ont pas Ollama.
+//!
+//! Le client est *optionnel* : sans clé API ni Ollama configuré, [`LlmClient::from_env`]
+//! renvoie `None` et le runtime retombe sur les agents simulés. Les clés ne sont jamais
+//! codées en dur.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -14,9 +21,13 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 use thiserror::Error;
 
-/// Modèles par défaut (surchargés par `ORCHESTRA_MODEL`).
+/// Modèles par défaut (surchargés par `ORCHESTRA_MODEL`, ou `ORCHESTRA_OLLAMA_MODEL` pour Ollama).
 pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
+/// Modèle Ollama par défaut : le plus orienté code du catalogue Ollama courant.
+pub const DEFAULT_OLLAMA_MODEL: &str = "qwen2.5-coder";
+/// Hôte Ollama par défaut (serveur local), surchargé par `ORCHESTRA_OLLAMA_HOST`.
+pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
 
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -30,6 +41,8 @@ const THINKING_BUDGET: u32 = 2048;
 pub enum Provider {
     Anthropic,
     Gemini,
+    /// Modèle local servi par [Ollama](https://ollama.com) — aucune clé API, `/api/chat`.
+    Ollama,
 }
 
 impl Provider {
@@ -37,6 +50,7 @@ impl Provider {
         match self {
             Provider::Anthropic => "Claude",
             Provider::Gemini => "Gemini",
+            Provider::Ollama => "Ollama",
         }
     }
 }
@@ -85,11 +99,14 @@ pub enum Msg {
     Tool(Vec<ToolResult>),
 }
 
-/// Un backend LLM configuré : fournisseur + clé + modèle.
+/// Un backend LLM configuré : fournisseur + clé + modèle. `api_key` est vide et `host` non
+/// pertinent pour les fournisseurs cloud (Anthropic/Gemini, qui n'utilisent que la clé) ;
+/// à l'inverse `host` porte l'URL du serveur et `api_key` reste vide pour Ollama (pas de clé).
 struct Backend {
     provider: Provider,
     api_key: String,
     model: String,
+    host: String,
 }
 
 /// Client LLM avec **bascule automatique** de fournisseur.
@@ -109,10 +126,16 @@ pub struct LlmClient {
 impl LlmClient {
     /// Construit le client depuis l'environnement, ou `None` (→ mode simulé).
     ///
-    /// - `ORCHESTRA_PROVIDER` (`anthropic`/`claude` ou `gemini`) force un fournisseur **unique** ;
-    /// - sinon, on enregistre **tous** les fournisseurs dont la clé est présente — Claude en
-    ///   préférence, Gemini en repli (bascule auto si Claude est indisponible ou sans crédit) ;
-    /// - `ORCHESTRA_MODEL` surcharge le modèle du fournisseur principal.
+    /// - `ORCHESTRA_PROVIDER` (`anthropic`/`claude`, `gemini`, ou `ollama`/`local`) force un
+    ///   fournisseur **unique** — Ollama ainsi forcé ne demande **aucune clé API** ;
+    /// - sinon, on enregistre **tous** les fournisseurs cloud dont la clé est présente — Claude
+    ///   en préférence, Gemini en repli (bascule auto si Claude est indisponible ou sans crédit) —
+    ///   et, **seulement si `ORCHESTRA_OLLAMA_MODEL` est défini**, Ollama comme repli local
+    ///   supplémentaire (jamais ajouté par défaut, pour ne pas changer le comportement des
+    ///   installations qui n'ont pas Ollama) ;
+    /// - `ORCHESTRA_MODEL` surcharge le modèle du fournisseur principal ; `ORCHESTRA_OLLAMA_MODEL`
+    ///   choisit le modèle local (ex. `qwen2.5-coder`, `mistral`, `gpt-oss`) et
+    ///   `ORCHESTRA_OLLAMA_HOST` l'hôte du serveur Ollama (défaut `http://localhost:11434`).
     pub fn from_env() -> Option<Self> {
         let forced = std::env::var("ORCHESTRA_PROVIDER").ok().map(|p| p.trim().to_lowercase());
         let model_override = std::env::var("ORCHESTRA_MODEL").ok().filter(|m| !m.trim().is_empty());
@@ -123,11 +146,16 @@ impl LlmClient {
             Some("anthropic") | Some("claude") => {
                 push_backend(&mut backends, Provider::Anthropic, "ANTHROPIC_API_KEY", model_override.as_deref())
             }
+            Some("ollama") | Some("local") => push_ollama_backend(&mut backends, model_override.as_deref()),
             _ => {
                 push_backend(&mut backends, Provider::Anthropic, "ANTHROPIC_API_KEY", model_override.as_deref());
                 // Gemini en repli ; la surcharge de modèle ne vaut que pour le principal.
                 let gem_override = if backends.is_empty() { model_override.as_deref() } else { None };
                 push_backend(&mut backends, Provider::Gemini, "GEMINI_API_KEY", gem_override);
+                // Ollama en repli local optionnel : seulement si explicitement choisi.
+                if ollama_model_env().is_some() {
+                    push_ollama_backend(&mut backends, None);
+                }
             }
         }
         if backends.is_empty() {
@@ -252,6 +280,12 @@ impl LlmClient {
                 }
                 Err(last.unwrap_or_else(|| LlmError::Shape("Gemini : échec après plusieurs tentatives".into())))
             }
+            Provider::Ollama => {
+                let url = format!("{}/api/chat", backend.host);
+                let body = ollama_body(&backend.model, system, tools, conv);
+                let resp = self.http.post(&url).json(&body).send().await?;
+                parse_ollama(&checked_json(resp).await?)
+            }
         }
     }
 }
@@ -259,14 +293,38 @@ impl LlmClient {
 fn push_backend(backends: &mut Vec<Backend>, provider: Provider, key_var: &str, model_override: Option<&str>) {
     if let Some(k) = key(key_var) {
         let model = model_override.map(str::to_string).unwrap_or_else(|| default_model(provider));
-        backends.push(Backend { provider, api_key: k, model });
+        backends.push(Backend { provider, api_key: k, model, host: String::new() });
     }
+}
+
+/// Ajoute un backend Ollama — **jamais gardé par une clé** (serveur local). `model_override`
+/// a priorité (ex. `ORCHESTRA_MODEL` quand Ollama est le fournisseur forcé), sinon
+/// `ORCHESTRA_OLLAMA_MODEL`, sinon [`DEFAULT_OLLAMA_MODEL`].
+fn push_ollama_backend(backends: &mut Vec<Backend>, model_override: Option<&str>) {
+    let model = model_override
+        .map(str::to_string)
+        .or_else(ollama_model_env)
+        .unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_string());
+    backends.push(Backend { provider: Provider::Ollama, api_key: String::new(), model, host: ollama_host() });
+}
+
+fn ollama_model_env() -> Option<String> {
+    std::env::var("ORCHESTRA_OLLAMA_MODEL").ok().filter(|m| !m.trim().is_empty())
+}
+
+fn ollama_host() -> String {
+    std::env::var("ORCHESTRA_OLLAMA_HOST")
+        .ok()
+        .map(|h| h.trim().trim_end_matches('/').to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| DEFAULT_OLLAMA_HOST.to_string())
 }
 
 fn default_model(provider: Provider) -> String {
     match provider {
         Provider::Anthropic => DEFAULT_ANTHROPIC_MODEL.to_string(),
         Provider::Gemini => DEFAULT_GEMINI_MODEL.to_string(),
+        Provider::Ollama => DEFAULT_OLLAMA_MODEL.to_string(),
     }
 }
 
@@ -478,6 +536,96 @@ fn parse_gemini(v: &Value) -> Result<Vec<Block>, LlmError> {
     Ok(blocks)
 }
 
+// --- Rendu / parsing Ollama (local, /api/chat) ---------------------------------------
+
+/// Rend la conversation au format `/api/chat` d'Ollama (proche d'OpenAI) : un message
+/// `system`, puis un message par tour. Un [`Msg::Assistant`] est fusionné en **un seul**
+/// message (texte concaténé + `tool_calls`) ; un [`Msg::Tool`] devient **un message `tool`
+/// par résultat** (Ollama n'accepte pas de résultats groupés dans un seul message).
+fn ollama_body(model: &str, system: &str, tools: &[ToolSpec], conv: &[Msg]) -> Value {
+    let mut messages: Vec<Value> = vec![json!({ "role": "system", "content": system })];
+    for m in conv {
+        match m {
+            Msg::User(t) => messages.push(json!({ "role": "user", "content": t })),
+            Msg::Assistant(blocks) => {
+                let mut text = String::new();
+                let mut calls: Vec<Value> = Vec::new();
+                for b in blocks {
+                    match b {
+                        Block::Text(t) => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(t);
+                        }
+                        Block::ToolUse { name, input, .. } => {
+                            calls.push(json!({ "function": { "name": name, "arguments": input } }))
+                        }
+                    }
+                }
+                let mut msg = Map::new();
+                msg.insert("role".into(), json!("assistant"));
+                msg.insert("content".into(), json!(text));
+                if !calls.is_empty() {
+                    msg.insert("tool_calls".into(), json!(calls));
+                }
+                messages.push(Value::Object(msg));
+            }
+            Msg::Tool(results) => {
+                for r in results {
+                    messages.push(json!({ "role": "tool", "content": r.content, "tool_name": r.name }));
+                }
+            }
+        }
+    }
+
+    let mut body = Map::new();
+    body.insert("model".into(), json!(model));
+    // Réponse complète en un seul JSON (pas de streaming NDJSON) : plus simple à parser, et le
+    // reste du client (boucle agentique, événements) ne dépend pas du streaming.
+    body.insert("stream".into(), json!(false));
+    body.insert("messages".into(), json!(messages));
+    if !tools.is_empty() {
+        let defs: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": { "name": t.name, "description": t.description, "parameters": t.parameters }
+                })
+            })
+            .collect();
+        body.insert("tools".into(), json!(defs));
+    }
+    Value::Object(body)
+}
+
+fn parse_ollama(v: &Value) -> Result<Vec<Block>, LlmError> {
+    let message = v.get("message").ok_or_else(|| LlmError::Shape("champ `message` absent".into()))?;
+    let mut blocks = Vec::new();
+    if let Some(t) = message.get("content").and_then(Value::as_str) {
+        if !t.is_empty() {
+            blocks.push(Block::Text(t.to_string()));
+        }
+    }
+    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+        for (i, c) in calls.iter().enumerate() {
+            let f = c.get("function").cloned().unwrap_or_default();
+            let name = f.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+            // Certains modèles renvoient `arguments` en chaîne JSON plutôt qu'en objet (comme
+            // l'API OpenAI classique) : on gère les deux formes.
+            let input = match f.get("arguments") {
+                Some(Value::String(s)) => serde_json::from_str(s).unwrap_or_else(|_| json!({})),
+                Some(other) => other.clone(),
+                None => json!({}),
+            };
+            // Ollama n'attribue pas d'ID d'appel : on en synthétise un, comme pour Gemini.
+            blocks.push(Block::ToolUse { id: format!("{name}-{i}"), name, input });
+        }
+    }
+    Ok(blocks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,5 +739,53 @@ mod tests {
         let blocks = parse_gemini(&g).unwrap();
         assert!(matches!(blocks[0], Block::Text(_)));
         assert!(matches!(blocks[1], Block::ToolUse { .. }));
+    }
+
+    #[test]
+    fn ollama_body_shapes_tool_roundtrip() {
+        let b = ollama_body("qwen2.5-coder", "sys", &tools(), &sample_conv());
+        assert_eq!(b["model"], "qwen2.5-coder");
+        assert_eq!(b["stream"], false);
+        assert_eq!(b["messages"][0]["role"], "system");
+        assert_eq!(b["messages"][1]["role"], "user");
+        // Le tour assistant fusionne texte + tool_calls en UN seul message.
+        assert_eq!(b["messages"][2]["role"], "assistant");
+        assert_eq!(b["messages"][2]["tool_calls"][0]["function"]["name"], "Read_File");
+        // Le résultat d'outil devient un message "tool" séparé.
+        assert_eq!(b["messages"][3]["role"], "tool");
+        assert_eq!(b["messages"][3]["content"], "contenu");
+        assert_eq!(b["tools"][0]["type"], "function");
+        assert_eq!(b["tools"][0]["function"]["name"], "Read_File");
+    }
+
+    #[test]
+    fn parse_ollama_reads_text_and_tool_calls() {
+        let v = json!({
+            "message": {
+                "role": "assistant",
+                "content": "ok",
+                "tool_calls": [{ "function": { "name": "Read_File", "arguments": { "path": "a" } } }]
+            },
+            "done": true
+        });
+        let blocks = parse_ollama(&v).unwrap();
+        assert!(matches!(&blocks[0], Block::Text(t) if t == "ok"));
+        assert!(matches!(&blocks[1], Block::ToolUse { name, .. } if name == "Read_File"));
+    }
+
+    #[test]
+    fn parse_ollama_accepts_stringified_arguments() {
+        // Certains modèles renvoient `arguments` en chaîne JSON plutôt qu'en objet.
+        let v = json!({ "message": { "content": "", "tool_calls": [
+            { "function": { "name": "Read_File", "arguments": "{\"path\":\"a\"}" } }
+        ]}});
+        let blocks = parse_ollama(&v).unwrap();
+        assert!(matches!(&blocks[0], Block::ToolUse { input, .. } if input["path"] == "a"));
+    }
+
+    #[test]
+    fn parse_ollama_empty_content_yields_no_text_block() {
+        let v = json!({ "message": { "role": "assistant", "content": "" } });
+        assert!(parse_ollama(&v).unwrap().is_empty());
     }
 }
