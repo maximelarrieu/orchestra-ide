@@ -775,3 +775,30 @@ contexte à tenir : fichiers lus, historique, outils).
   dite. Le mode conversationnel (`[5]` Assistant) n'a aucune restriction fonctionnelle à ce
   sujet : c'est la même boucle Orchestrateur, avec accès à `Read_File`/`Recall`/`Web_Fetch`,
   qu'on lui demande de coder ou de discuter.
+
+## Ollama : appel d'outil « mimé » précédé de prose, aussi récupéré ✅
+
+Confirmé en usage réel (et sur le dépôt du projet lui-même — voir incident ci-dessous) : le
+correctif précédent (« appel d'outil mimé en texte ») exigeait que le message **entier** soit
+le JSON de l'appel. Or `qwen2.5-coder` produit aussi une forme mixte, très fréquente en
+pratique : une phrase d'explication **puis** l'appel dans un bloc ```json — ex. « D'accord,
+essayons une approche différente. Je vais créer des dossiers…\n\`\`\`json\n{"name": …}\n\`\`\` ».
+Cette forme n'était PAS récupérée : le message restait un simple texte affiché, jamais exécuté
+— d'où l'impression que l'agent « n'agit pas », alors qu'il pose bien l'appel, juste pas au bon
+endroit du message.
+
+`fake_tool_call_from_text` tente maintenant, dans l'ordre : (1) le contenu entier est le JSON
+(comportement précédent), (2) à défaut, le **premier bloc de code** ``` / ```json trouvé
+n'importe où dans le message. Toujours strict : seul l'intérieur d'un bloc de code délimité est
+scanné, jamais du texte libre (une accolade isolée dans une phrase normale ne déclenche rien —
+testé). 2 nouveaux tests, dont une reproduction directe du message observé.
+
+**Incident associé (corrigé manuellement, pas par ce correctif) :** avant ce correctif, une
+première tentative de l'agent (message JSON pur, donc déjà récupérée par le correctif
+précédent) a exécuté `Execute_Terminal_Command` avec `mv *.md docs/` sur **ce dépôt lui-même**
+— déplaçant `README.md` et `CLAUDE.md` hors de la racine. Restauré via `git checkout --
+CLAUDE.md README.md` + suppression des copies erronées dans `docs/`. Rappel pour l'utilisateur :
+`Execute_Terminal_Command` est une capacité **assumée, non sandboxée** (cf. `README.md`,
+`FONCTIONNEL.md`) — un agent local moins fiable peut générer des commandes destructrices avec
+des globs trop larges ; travailler dans un dépôt Git (recovery facile via `git checkout`/
+`git status`) est la meilleure protection actuelle, pas une garantie applicative.

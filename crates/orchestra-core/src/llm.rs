@@ -674,12 +674,20 @@ fn parse_ollama(v: &Value) -> Result<Vec<Block>, LlmError> {
 }
 
 /// Détecte un appel d'outil « mimé » en texte par un modèle sans support natif fiable des
-/// `tool_calls` : `content` (après un éventuel bloc ```/```json) est parsé comme JSON, et
-/// accepté seulement s'il expose un champ `name` — chaîne de caractères — c'est-à-dire s'il a
-/// vraiment la forme d'un appel d'outil, pas n'importe quel JSON.
+/// `tool_calls`. Deux formes acceptées, dans cet ordre :
+/// 1. le contenu ENTIER (après un éventuel bloc ```/```json englobant) est le JSON de l'appel ;
+/// 2. un bloc de code ```/```json quelque part dans un message par ailleurs narratif (fréquent
+///    quand le modèle « explique » avant d'agir, ex. « Essayons autrement :\n```json\n{...}\n``` »).
+///
+/// Dans les deux cas on ne scanne QUE l'intérieur d'un bloc de code (jamais du texte libre hors
+/// bloc) pour ne jamais confondre une accolade incidente d'une phrase normale avec un appel.
 fn fake_tool_call_from_text(content: &str) -> Option<(String, Value)> {
-    let stripped = strip_code_fence(content.trim());
-    let v: Value = serde_json::from_str(stripped).ok()?;
+    parse_tool_call_json(strip_code_fence(content.trim()))
+        .or_else(|| extract_fenced_block(content).and_then(parse_tool_call_json))
+}
+
+fn parse_tool_call_json(s: &str) -> Option<(String, Value)> {
+    let v: Value = serde_json::from_str(s).ok()?;
     let name = v.get("name")?.as_str()?.to_string();
     let input = v.get("arguments").cloned().unwrap_or_else(|| json!({}));
     Some((name, input))
@@ -695,6 +703,23 @@ fn strip_code_fence(s: &str) -> &str {
         Some((lang, body)) if lang.chars().all(|c| c.is_ascii_alphanumeric()) => body.trim(),
         _ => rest.trim(),
     }
+}
+
+/// Extrait le contenu du **premier** bloc de code ``` … ``` trouvé n'importe où dans `s` (pas
+/// nécessairement en tête/fin de message), langage optionnel sur la ligne d'ouverture ignoré.
+/// `None` si aucun bloc complet (ouverture + fermeture) n'est présent.
+fn extract_fenced_block(s: &str) -> Option<&str> {
+    let start = s.find("```")?;
+    let after_open = &s[start + 3..];
+    let body_start = after_open.find('\n').map(|i| i + 1).unwrap_or(0);
+    // La ligne d'ouverture ne doit porter qu'un identifiant de langage, sinon ce n'est pas la
+    // frontière d'un bloc (ex. une phrase qui contiendrait ``` par accident).
+    if !after_open[..body_start.saturating_sub(1)].chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let body = &after_open[body_start..];
+    let end = body.find("```")?;
+    Some(body[..end].trim())
 }
 
 #[cfg(test)]
@@ -881,6 +906,31 @@ mod tests {
         }});
         let blocks = parse_ollama(&v).unwrap();
         assert!(matches!(&blocks[0], Block::ToolUse { name, .. } if name == "Read_File"));
+    }
+
+    #[test]
+    fn parse_ollama_recovers_fenced_json_preceded_by_prose() {
+        // Cas réel observé : le modèle explique d'abord son intention, PUIS pose l'appel dans un
+        // bloc ```json — ni « content entier = JSON », ni `tool_calls` natif.
+        let v = json!({ "message": { "role": "assistant",
+            "content": "D'accord, essayons une approche différente. Je vais déplacer les fichiers.\n\n\
+                         ```json\n{\"name\": \"Execute_Terminal_Command\", \"arguments\": {\"command\": \"ls\"}}\n```"
+        }});
+        let blocks = parse_ollama(&v).unwrap();
+        assert_eq!(blocks.len(), 1, "le texte d'intro ne doit pas produire un bloc Text en plus");
+        assert!(matches!(&blocks[0],
+            Block::ToolUse { name, input, .. } if name == "Execute_Terminal_Command" && input["command"] == "ls"));
+    }
+
+    #[test]
+    fn parse_ollama_ignores_stray_triple_backtick_in_prose() {
+        // Une seule occurrence de ``` (pas de bloc complet ouverture+fermeture) → jamais pris
+        // pour un appel d'outil, reste du texte.
+        let v = json!({ "message": { "role": "assistant",
+            "content": "Le raccourci ``` n'est pas fermé ici, juste une remarque."
+        }});
+        let blocks = parse_ollama(&v).unwrap();
+        assert!(matches!(&blocks[0], Block::Text(_)));
     }
 
     #[test]
