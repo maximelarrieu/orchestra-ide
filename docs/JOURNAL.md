@@ -746,3 +746,32 @@ réflexion.
 - `orchestra-desktop/Cargo.toml` : feature `time` ajoutée à `tokio` (nécessaire à
   `tokio::time::sleep`, jusque-là seulement `sync`).
 - Workspace complet (core + TUI + desktop) vert en tests et clippy dans cet environnement.
+
+## Ollama : fenêtre de contexte explicite (`num_ctx`) — diagnostic d'usage réel ✅
+
+Retour d'usage : « il faut être très précis, qwen n'arrive pas à discuter/lire la doc pour
+suggérer une feature ». Ni un bug de tool-calling ni un modèle incapable — le suspect le plus
+probable est la **fenêtre de contexte**. Ollama utilise par défaut un `num_ctx` conservateur
+(souvent 2048-4096 selon le modèle) que `ollama_body` ne surchargeait pas jusqu'ici. Le seul
+system prompt PTAC (`orchestrator_prompt`) + les définitions de **tous** les outils de
+l'Orchestrateur (Skills exécutables, intégrations, mémoire, `spawn_agent`, `Set_Plan`/
+`Update_Step`, éventuellement `Load_Skill`) peuvent déjà approcher ou dépasser cette limite
+avant la moindre conversation — au-delà, le modèle perd le début du contexte, ce qui se
+manifeste exactement comme décrit : des messages courts et précis passent (peu de contexte à
+tenir), une conversation exploratoire (« relis la doc, suggère des évolutions ») échoue (gros
+contexte à tenir : fichiers lus, historique, outils).
+
+- `ollama_body` fixe désormais `options.num_ctx` à **8192** par défaut (au lieu de laisser
+  Ollama choisir), surchargeable par `ORCHESTRA_OLLAMA_NUM_CTX` — à monter si la RAM/VRAM le
+  permet (le cache KV grandit avec `num_ctx`), à baisser sur une machine contrainte.
+- Documenté comme le premier réflexe de diagnostic dans `FONCTIONNEL.md`/`ARCHITECTURE.md`.
+- Reste à confirmer en conditions réelles (pas d'Ollama dans cet environnement) : c'est un
+  correctif raisonné à partir d'une cause connue et très fréquente avec les agents outillés
+  sur Ollama, pas une reproduction directe du problème.
+- Question de fond distincte (non technique) : `qwen2.5-coder` est un modèle **spécialisé
+  code**, pas un modèle de chat généraliste — pour du brainstorming ouvert (« quelles features
+  ajouter »), un modèle plus généraliste du même poste (`mistral`, `gpt-oss`) peut donner de
+  meilleurs résultats, `qwen2.5-coder` restant préférable pour l'écriture de code proprement
+  dite. Le mode conversationnel (`[5]` Assistant) n'a aucune restriction fonctionnelle à ce
+  sujet : c'est la même boucle Orchestrateur, avec accès à `Read_File`/`Recall`/`Web_Fetch`,
+  qu'on lui demande de coder ou de discuter.

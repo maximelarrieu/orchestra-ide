@@ -336,6 +336,18 @@ fn ollama_timeout() -> Duration {
         .unwrap_or(Duration::from_secs(600))
 }
 
+/// Fenêtre de contexte Ollama (`num_ctx`, en tokens). Par défaut **8192** — un compromis entre
+/// mémoire (le cache KV grandit avec `num_ctx`, sensible sur un 7B en RAM limitée) et la
+/// capacité à tenir un system prompt outillé + une conversation ; surchargeable par
+/// `ORCHESTRA_OLLAMA_NUM_CTX` (monte-le si la RAM/VRAM le permet, baisse-le sinon).
+fn ollama_num_ctx() -> u64 {
+    std::env::var("ORCHESTRA_OLLAMA_NUM_CTX")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(8192)
+}
+
 fn default_model(provider: Provider) -> String {
     match provider {
         Provider::Anthropic => DEFAULT_ANTHROPIC_MODEL.to_string(),
@@ -600,6 +612,13 @@ fn ollama_body(model: &str, system: &str, tools: &[ToolSpec], conv: &[Msg]) -> V
     // Réponse complète en un seul JSON (pas de streaming NDJSON) : plus simple à parser, et le
     // reste du client (boucle agentique, événements) ne dépend pas du streaming.
     body.insert("stream".into(), json!(false));
+    // Fenêtre de contexte **explicite** : le défaut Ollama (souvent 2048-4096 selon le modèle)
+    // est bien trop court pour un agent outillé — le seul system prompt + les définitions
+    // d'outils (Skills, intégrations, mémoire, spawn_agent, plan…) peuvent déjà l'approcher ou
+    // le dépasser, avant même la conversation. Sans ça, le modèle « oublie » le début du
+    // contexte en cours de route (symptôme : il faut être anormalement précis/court pour
+    // obtenir un résultat correct). Surchargeable par `ORCHESTRA_OLLAMA_NUM_CTX`.
+    body.insert("options".into(), json!({ "num_ctx": ollama_num_ctx() }));
     body.insert("messages".into(), json!(messages));
     if !tools.is_empty() {
         let defs: Vec<Value> = tools
@@ -798,6 +817,8 @@ mod tests {
         let b = ollama_body("qwen2.5-coder", "sys", &tools(), &sample_conv());
         assert_eq!(b["model"], "qwen2.5-coder");
         assert_eq!(b["stream"], false);
+        // Fenêtre de contexte explicite (le défaut Ollama est bien trop court pour un agent outillé).
+        assert_eq!(b["options"]["num_ctx"], 8192);
         assert_eq!(b["messages"][0]["role"], "system");
         assert_eq!(b["messages"][1]["role"], "user");
         // Le tour assistant fusionne texte + tool_calls en UN seul message.

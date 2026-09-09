@@ -147,11 +147,19 @@ automatique (réseau, surcharge, quota ou crédit épuisé) — sans interrompre
 export ORCHESTRA_PROVIDER=ollama        # modèle qwen2.5-coder par défaut (le plus « code »)
 export ORCHESTRA_OLLAMA_MODEL=mistral   # optionnel : un autre modèle déjà tiré (`ollama pull`)
 export ORCHESTRA_OLLAMA_TIMEOUT_SECS=600  # optionnel : monte-le si le modèle est lent (CPU)
+export ORCHESTRA_OLLAMA_NUM_CTX=8192      # optionnel : fenêtre de contexte (voir note ci-dessous)
 ```
 
 > ⚠️ Le nom de modèle attendu est le nom **exact** listé par `ollama list` (souvent avec un
 > tag, ex. `qwen2.5-coder:7b`) — un nom approximatif renvoie une erreur 404 « model not
 > found ».
+
+> ⚠️ **Le modèle « oublie » le début de la conversation, ou faut être anormalement précis pour
+> obtenir un résultat correct ?** C'est presque toujours la fenêtre de contexte (`num_ctx`) —
+> le défaut Ollama (souvent 2048-4096 selon le modèle) est trop court pour un agent outillé
+> (le seul system prompt + les définitions d'outils peuvent déjà l'approcher). Orchestra fixe
+> `num_ctx` à **8192** par défaut ; monte `ORCHESTRA_OLLAMA_NUM_CTX` si ta machine a la RAM/VRAM
+> pour plus (une fenêtre plus large consomme davantage de mémoire pour le cache du modèle).
 
 Sans forcer de fournisseur, Ollama ne rejoint la chaîne de repli automatique (après
 Claude/Gemini) que si `ORCHESTRA_OLLAMA_MODEL` est défini — jamais par défaut, pour ne rien

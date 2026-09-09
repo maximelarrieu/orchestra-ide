@@ -234,7 +234,12 @@ surcharge l'hôte (utile si Ollama tourne sur une autre machine/port). Timeout p
 `RequestBuilder::timeout` — n'affecte pas les 120 s des backends cloud) : l'inférence locale,
 souvent CPU, est nettement plus lente qu'une API cloud, et un délai trop court s'y manifeste
 comme une « erreur réseau » trompeuse (connexion coupée en pleine génération) plutôt que comme
-un vrai signal d'indisponibilité. Sans aucun fournisseur
+un vrai signal d'indisponibilité. **Fenêtre de contexte explicite** (`options.num_ctx`,
+défaut **8192**, surchargeable par `ORCHESTRA_OLLAMA_NUM_CTX`) : le défaut Ollama
+(souvent 2048-4096) est trop court pour un agent outillé — system prompt PTAC + toutes les
+définitions d'outils peuvent déjà l'approcher avant même la conversation, causant une perte de
+contexte qui se manifeste comme un modèle anormalement peu fiable ou exigeant des instructions
+très courtes. Sans aucun fournisseur
 disponible → mode simulé (l'appli reste utilisable hors-ligne). `run_agent_turn` (mutualisé
 Orchestrateur/sous-agents) borne chaque message à `max_turns()` tours LLM ↔ outils
 (`DEFAULT_MAX_TURNS = 40`, surchargeable par `ORCHESTRA_MAX_TURNS`).
