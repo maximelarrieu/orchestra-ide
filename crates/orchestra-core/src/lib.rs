@@ -7,6 +7,8 @@ pub mod events;
 pub mod model;
 pub mod pricing;
 pub mod protocol;
+pub mod roles;
+pub mod schema;
 
 pub use error::{CoreError, Result};
 pub use events::{Event, EventKind, NewEvent};

@@ -127,7 +127,9 @@ pub struct ModelsConfig {
 impl Default for ModelsConfig {
     fn default() -> Self {
         ModelsConfig {
-            aliases: ["default", "fable", "opus", "sonnet", "haiku"]
+            // No `default` entry: leaving the model unset already means that,
+            // and offering both would put the same choice in the list twice.
+            aliases: ["fable", "opus", "sonnet", "haiku"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),

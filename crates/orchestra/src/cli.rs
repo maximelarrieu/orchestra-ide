@@ -46,6 +46,24 @@ enum Sub {
         #[command(subcommand)]
         action: ProjectAction,
     },
+    /// Installe le catalogue de rôles et la configuration.
+    Init {
+        /// Réécrit les rôles livrés, même modifiés. La configuration n'est
+        /// jamais écrasée.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Gestion des tickets de feature.
+    Ticket {
+        #[command(subcommand)]
+        action: TicketAction,
+    },
+    /// Liste les rôles disponibles.
+    Roles {
+        /// Inclut les rôles propres à ce projet.
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Consommation de tokens.
     Usage {
         /// Regroupement : project, ticket, agent, role, model, day.
@@ -58,6 +76,43 @@ enum Sub {
         #[arg(long)]
         managed_only: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum TicketAction {
+    /// Crée un ticket.
+    New {
+        /// Projet : identifiant ou fragment de son nom.
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        title: String,
+        /// Le brief, en ligne.
+        #[arg(long, conflicts_with = "brief_file")]
+        brief: Option<String>,
+        /// Le brief, depuis un fichier ; « - » pour l'entrée standard.
+        #[arg(long)]
+        brief_file: Option<String>,
+        /// Enchaîne la planification.
+        #[arg(long)]
+        plan: bool,
+    },
+    /// Liste les tickets.
+    List {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Affiche un ticket, son équipe et son coût.
+    Show { ticket: String },
+    /// Demande une proposition d'équipe à l'orchestrateur.
+    Plan {
+        ticket: String,
+        /// N'attend pas la fin de la planification.
+        #[arg(long)]
+        detach: bool,
+    },
+    /// Accepte la proposition telle quelle.
+    Accept { ticket: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -149,6 +204,55 @@ impl Cli {
                     },
                 }
             }
+            Sub::Init { force } => {
+                let report = orchestra_daemon::init::init(force)?;
+                for path in &report.written {
+                    println!("écrit   {}", path.display());
+                }
+                for path in &report.kept {
+                    println!("conservé {}", path.display());
+                }
+                if report.written.is_empty() {
+                    println!("\nRien à installer : tout est déjà en place.");
+                    println!("« orchestra init --force » restaure les rôles livrés.");
+                } else {
+                    println!(
+                        "\nCatalogue installé dans {}.",
+                        orchestra_core::config::Paths::roles_dir().display()
+                    );
+                    println!("Édite ces fichiers : ce sont les consignes que suivront tes agents.");
+                }
+                Ok(())
+            }
+            Sub::Roles { project } => {
+                let mut client = Client::connect_or_spawn(&socket).await?;
+                let project_id = match project {
+                    Some(name) => Some(resolve_project(&mut client, &name).await?.id),
+                    None => None,
+                };
+                match client.call(Cmd::ListRoles { project_id }).await? {
+                    Reply::Roles { roles } => {
+                        if roles.is_empty() {
+                            println!("aucun rôle — lance « orchestra init »");
+                        }
+                        for r in roles {
+                            let scope = match r.scope {
+                                orchestra_core::model::RoleScope::Project => " (projet)",
+                                orchestra_core::model::RoleScope::Global => "",
+                            };
+                            println!(
+                                "{:<12} {:<9} {}{scope}",
+                                r.name,
+                                r.model.as_deref().unwrap_or("défaut"),
+                                r.description
+                            );
+                        }
+                        Ok(())
+                    }
+                    other => bail!("réponse inattendue : {other:?}"),
+                }
+            }
+            Sub::Ticket { action } => run_ticket(action, &socket).await,
             Sub::Usage {
                 by,
                 since,
@@ -255,6 +359,329 @@ fn init_tracing(quiet: bool) -> Result<()> {
         builder.with_writer(std::io::stderr).init();
     }
     Ok(())
+}
+
+async fn run_ticket(action: TicketAction, socket: &std::path::Path) -> Result<()> {
+    let mut client = Client::connect_or_spawn(socket).await?;
+    match action {
+        TicketAction::New {
+            project,
+            title,
+            brief,
+            brief_file,
+            plan,
+        } => {
+            let brief = read_brief(brief, brief_file)?;
+            let project = resolve_project(&mut client, &project).await?;
+            let reply = client
+                .call(Cmd::CreateTicket {
+                    project_id: project.id,
+                    title: title.clone(),
+                    brief,
+                })
+                .await?;
+            let ticket = match reply {
+                Reply::Tickets { tickets } => tickets
+                    .into_iter()
+                    .next()
+                    .context("le daemon n'a pas renvoyé le ticket créé")?,
+                other => bail!("réponse inattendue : {other:?}"),
+            };
+            println!(
+                "ticket #{} « {} » créé dans {}",
+                ticket.ticket.number, ticket.ticket.title, project.name
+            );
+            if plan {
+                plan_ticket(&mut client, ticket.ticket.id, false).await?;
+            } else {
+                println!(
+                    "planifie-le : orchestra ticket plan {}",
+                    ticket.ticket.number
+                );
+            }
+            Ok(())
+        }
+        TicketAction::List { project } => {
+            let project_id = match project {
+                Some(name) => Some(resolve_project(&mut client, &name).await?.id),
+                None => None,
+            };
+            match client
+                .call(Cmd::ListTickets {
+                    project_id,
+                    status: None,
+                })
+                .await?
+            {
+                Reply::Tickets { tickets } => {
+                    if tickets.is_empty() {
+                        println!("aucun ticket — « orchestra ticket new --project <p> --title <t> --brief <b> »");
+                    }
+                    for t in tickets {
+                        let cost = t.cost_usd.map(fmt_usd).unwrap_or_else(|| "-".into());
+                        println!(
+                            "#{:<4} {:<10} {:<40} {:>10}",
+                            t.ticket.number,
+                            t.ticket.status.label_fr(),
+                            truncate(&t.ticket.title, 40),
+                            cost
+                        );
+                    }
+                    Ok(())
+                }
+                other => bail!("réponse inattendue : {other:?}"),
+            }
+        }
+        TicketAction::Show { ticket } => {
+            let id = resolve_ticket(&mut client, &ticket).await?;
+            show_ticket(&mut client, id).await
+        }
+        TicketAction::Plan { ticket, detach } => {
+            let id = resolve_ticket(&mut client, &ticket).await?;
+            plan_ticket(&mut client, id, detach).await
+        }
+        TicketAction::Accept { ticket } => {
+            let id = resolve_ticket(&mut client, &ticket).await?;
+            let detail = ticket_detail(&mut client, id).await?;
+            let proposal = detail
+                .ticket
+                .proposal
+                .clone()
+                .context("ce ticket n'a pas de proposition — lance d'abord « ticket plan »")?;
+            let team = orchestra_core::model::Team {
+                members: proposal.members.clone(),
+                stages: Vec::new(),
+            };
+            match client
+                .call(Cmd::AcceptProposal {
+                    ticket_id: id,
+                    team,
+                })
+                .await?
+            {
+                Reply::Ticket { detail } => {
+                    println!(
+                        "ticket #{} accepté — {} rôle(s), statut {}",
+                        detail.ticket.number,
+                        detail
+                            .ticket
+                            .team
+                            .as_ref()
+                            .map(|t| t.members.len())
+                            .unwrap_or(0),
+                        detail.ticket.status.label_fr()
+                    );
+                    Ok(())
+                }
+                other => bail!("réponse inattendue : {other:?}"),
+            }
+        }
+    }
+}
+
+/// Run the planning call and, unless detached, wait for its outcome.
+async fn plan_ticket(client: &mut Client, ticket_id: uuid::Uuid, detach: bool) -> Result<()> {
+    client.call(Cmd::PlanTicket { ticket_id }).await?;
+    if detach {
+        println!("planification lancée en arrière-plan.");
+        return Ok(());
+    }
+    println!("l'orchestrateur compose l'équipe… (cela prend souvent une minute)");
+
+    // Poll rather than subscribe: the CLI is short-lived and this keeps the
+    // command readable. The TUI uses the event stream.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let detail = ticket_detail(client, ticket_id).await?;
+        if let Some(proposal) = &detail.ticket.proposal {
+            print_proposal(proposal);
+            println!(
+                "\naccepte-la : orchestra ticket accept {}",
+                detail.ticket.number
+            );
+            return Ok(());
+        }
+        for event in detail.recent_events.iter().rev() {
+            if let orchestra_core::events::EventKind::ProposalFailed { error } = &event.kind {
+                bail!("la planification a échoué : {error}");
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            bail!("la planification n'a pas abouti dans le temps imparti");
+        }
+    }
+}
+
+fn print_proposal(proposal: &orchestra_core::model::TeamProposal) {
+    println!("\n{}", proposal.summary);
+    println!("\nampleur estimée : {}", proposal.estimated_size.as_str());
+    println!("\néquipe proposée :");
+    for m in &proposal.members {
+        let deps = if m.depends_on.is_empty() {
+            String::new()
+        } else {
+            format!("  (après {})", m.depends_on.join(", "))
+        };
+        println!("  {:<12}{}", m.role, deps);
+        println!("      {}", m.objective);
+    }
+    if !proposal.risks.is_empty() {
+        println!("\npoints d'attention :");
+        for r in &proposal.risks {
+            println!("  - {r}");
+        }
+    }
+}
+
+async fn show_ticket(client: &mut Client, ticket_id: uuid::Uuid) -> Result<()> {
+    let detail = ticket_detail(client, ticket_id).await?;
+    let t = &detail.ticket;
+    println!("#{} — {}", t.number, t.title);
+    println!("projet   {}", detail.project.name);
+    println!("statut   {}", t.status.label_fr());
+    if let Some(branch) = &t.branch {
+        println!("branche  {branch}");
+    }
+    println!(
+        "coût     {} ({} tokens)",
+        detail.cost_usd.map(fmt_usd).unwrap_or_else(|| "-".into()),
+        fmt_tokens(detail.tokens.total())
+    );
+    println!("\nbrief :\n{}", t.brief.trim());
+    if let Some(team) = &t.team {
+        println!("\néquipe acceptée :");
+        for (stage, m) in team.ordered() {
+            println!("  étape {stage}  {:<12} {}", m.role, m.objective);
+        }
+    } else if let Some(proposal) = &t.proposal {
+        println!("\nproposition en attente d'acceptation :");
+        print_proposal(proposal);
+    }
+    if !detail.agents.is_empty() {
+        println!("\nagents :");
+        for a in &detail.agents {
+            println!(
+                "  {:<12} {:<10} {:>8} tokens {:>10}",
+                a.agent.role,
+                a.agent.status.label_fr(),
+                fmt_tokens(a.tokens.total()),
+                a.cost_usd.map(fmt_usd).unwrap_or_else(|| "-".into())
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn ticket_detail(
+    client: &mut Client,
+    ticket_id: uuid::Uuid,
+) -> Result<orchestra_core::protocol::TicketDetail> {
+    match client.call(Cmd::GetTicket { ticket_id }).await? {
+        Reply::Ticket { detail } => Ok(*detail),
+        other => bail!("réponse inattendue : {other:?}"),
+    }
+}
+
+/// Accept an identifier, a `#12`, or a fragment of the title.
+async fn resolve_ticket(client: &mut Client, spec: &str) -> Result<uuid::Uuid> {
+    if let Ok(id) = uuid::Uuid::parse_str(spec) {
+        return Ok(id);
+    }
+    let tickets = match client
+        .call(Cmd::ListTickets {
+            project_id: None,
+            status: None,
+        })
+        .await?
+    {
+        Reply::Tickets { tickets } => tickets,
+        other => bail!("réponse inattendue : {other:?}"),
+    };
+    let needle = spec.trim_start_matches('#');
+    if let Ok(number) = needle.parse::<i64>() {
+        let matches: Vec<_> = tickets
+            .iter()
+            .filter(|t| t.ticket.number == number)
+            .collect();
+        match matches.as_slice() {
+            [one] => return Ok(one.ticket.id),
+            [] => bail!("aucun ticket #{number}"),
+            many => bail!(
+                "#{number} existe dans {} projets — précise l'identifiant",
+                many.len()
+            ),
+        }
+    }
+    let lowered = needle.to_lowercase();
+    let matches: Vec<_> = tickets
+        .iter()
+        .filter(|t| t.ticket.title.to_lowercase().contains(&lowered))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one.ticket.id),
+        [] => bail!("aucun ticket ne correspond à « {spec} »"),
+        many => bail!("« {spec} » correspond à {} tickets — précise", many.len()),
+    }
+}
+
+/// Accept an identifier, a path, or a fragment of the project name.
+async fn resolve_project(
+    client: &mut Client,
+    spec: &str,
+) -> Result<orchestra_core::model::Project> {
+    let projects = match client.call(Cmd::ListProjects).await? {
+        Reply::Projects { projects } => projects,
+        other => bail!("réponse inattendue : {other:?}"),
+    };
+    if let Ok(id) = uuid::Uuid::parse_str(spec) {
+        return projects
+            .into_iter()
+            .find(|p| p.id == id)
+            .context("aucun projet avec cet identifiant");
+    }
+    let lowered = spec.to_lowercase();
+    let matches: Vec<_> = projects
+        .into_iter()
+        .filter(|p| {
+            p.name.to_lowercase().contains(&lowered)
+                || p.path.to_string_lossy().to_lowercase().contains(&lowered)
+        })
+        .collect();
+    match matches.len() {
+        1 => Ok(matches.into_iter().next().unwrap()),
+        0 => bail!("aucun projet ne correspond à « {spec} » — « orchestra project list »"),
+        _ => bail!(
+            "« {spec} » correspond à {} projets : {}",
+            matches.len(),
+            matches
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn read_brief(inline: Option<String>, file: Option<String>) -> Result<String> {
+    let brief = match (inline, file) {
+        (Some(text), _) => text,
+        (None, Some(path)) if path == "-" => {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .context("lecture du brief sur l'entrée standard")?;
+            buf
+        }
+        (None, Some(path)) => {
+            std::fs::read_to_string(&path).with_context(|| format!("lecture de {path}"))?
+        }
+        (None, None) => bail!("donne un brief : --brief \"…\" ou --brief-file <fichier>"),
+    };
+    let brief = brief.trim().to_string();
+    anyhow::ensure!(!brief.is_empty(), "le brief est vide");
+    Ok(brief)
 }
 
 /// `7d`, `24h`, `90m`, `today`, `all`.

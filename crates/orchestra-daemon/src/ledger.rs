@@ -9,13 +9,21 @@ use anyhow::Result;
 use orchestra_core::config::Config;
 use orchestra_core::model::{AgentId, TicketId, Tokens, UsageSample};
 use orchestra_core::pricing::PriceTable;
-use orchestra_core::protocol::{UsageQuery, UsageRow, UsageTotals};
+use orchestra_core::protocol::{GroupBy, UsageQuery, UsageRow, UsageTotals};
 
 use crate::store::{Recorded, Store, UsageBreakdown};
 
+/// Tokens and price of one scope.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgentCost {
+    pub tokens: Tokens,
+    pub messages: u64,
+    pub cost_usd: Option<f64>,
+}
+
 #[derive(Clone)]
 pub struct UsageLedger {
-    store: Store,
+    pub(crate) store: Store,
     prices: PriceTable,
 }
 
@@ -106,14 +114,49 @@ impl UsageLedger {
         Ok((rows, totals))
     }
 
-    /// Tokens and turns of one agent, priced with that agent's model.
-    pub async fn agent_cost(
-        &self,
-        agent_id: AgentId,
-        model: &str,
-    ) -> Result<(Tokens, u32, Option<f64>)> {
-        let (tokens, turns) = self.store.agent_usage(agent_id).await?;
-        Ok((tokens, turns, self.prices.cost(model, &tokens)))
+    /// Tokens, turns and cost of one agent.
+    ///
+    /// Priced from the models the agent actually used, not from the model it
+    /// was configured with: the configuration holds an alias such as `haiku`,
+    /// while the samples hold `claude-haiku-4-5-20251001`. Pricing the alias
+    /// misses the table, falls through to the fallback rate, and had the same
+    /// agent costing five times more on one screen than on another.
+    pub async fn agent_cost(&self, agent_id: AgentId) -> Result<AgentCost> {
+        self.cost_of(UsageQuery {
+            agent_id: Some(agent_id),
+            group_by: vec![GroupBy::Model],
+            limit: 200,
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// Same, for every agent of a ticket at once.
+    pub async fn ticket_cost(&self, ticket_id: TicketId) -> Result<AgentCost> {
+        self.cost_of(UsageQuery {
+            ticket_id: Some(ticket_id),
+            group_by: vec![GroupBy::Model],
+            limit: 200,
+            ..Default::default()
+        })
+        .await
+    }
+
+    async fn cost_of(&self, query: UsageQuery) -> Result<AgentCost> {
+        let breakdown = self.store.usage_breakdown(query).await?;
+        let mut out = AgentCost::default();
+        let mut cost = 0.0;
+        let mut priced = false;
+        for part in &breakdown {
+            out.tokens += part.tokens;
+            out.messages += part.messages;
+            if let Some(c) = self.prices.cost(&part.model, &part.tokens) {
+                cost += c;
+                priced = true;
+            }
+        }
+        out.cost_usd = priced.then_some(cost);
+        Ok(out)
     }
 
     pub async fn ticket_tokens(&self, ticket_id: TicketId) -> Result<Tokens> {
@@ -125,7 +168,7 @@ impl UsageLedger {
 mod tests {
     use super::*;
     use orchestra_core::model::UsageSource;
-    use orchestra_core::protocol::{GroupBy, TimeRange};
+    use orchestra_core::protocol::TimeRange;
     use time::OffsetDateTime;
     use uuid::Uuid;
 
@@ -290,6 +333,52 @@ mod tests {
         };
         let (_, recent) = l.rollup(week).await.unwrap();
         assert_eq!(recent.messages, 1);
+    }
+
+    #[tokio::test]
+    async fn an_agent_is_priced_by_the_models_it_used() {
+        // Regression: pricing by the configured alias ("haiku") missed the
+        // table and fell back to the expensive default rate, so the same agent
+        // showed two different costs depending on the screen.
+        let l = ledger().await;
+        let store = l.store.clone();
+        let agent_id = Uuid::new_v4();
+        let ticket_id = Uuid::new_v4();
+
+        let mut s = sample(
+            "msg_1",
+            "claude-haiku-4-5-20251001",
+            1_000_000,
+            Uuid::new_v4(),
+        );
+        s.tokens = Tokens {
+            input: 0,
+            output: 1_000_000,
+            cache_read: 0,
+            cache_creation: 0,
+            thinking: 0,
+        };
+        s.agent_id = Some(agent_id);
+        s.ticket_id = Some(ticket_id);
+        store.record_usage(s).await.unwrap();
+
+        // One million haiku output tokens is 5 USD, not the 25 of the fallback.
+        let cost = l.agent_cost(agent_id).await.unwrap();
+        assert_eq!(cost.messages, 1);
+        assert_eq!(cost.tokens.output, 1_000_000);
+        assert!(
+            (cost.cost_usd.unwrap() - 5.0).abs() < 1e-6,
+            "{:?}",
+            cost.cost_usd
+        );
+
+        // The ticket agrees with its agents.
+        let ticket = l.ticket_cost(ticket_id).await.unwrap();
+        assert_eq!(ticket.cost_usd, cost.cost_usd);
+
+        // And so does the general rollup.
+        let (_, totals) = l.rollup(UsageQuery::default()).await.unwrap();
+        assert!((totals.cost_usd.unwrap() - 5.0).abs() < 1e-6);
     }
 
     #[tokio::test]

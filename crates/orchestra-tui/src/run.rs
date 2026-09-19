@@ -79,7 +79,7 @@ pub async fn run(socket: &Path) -> Result<()> {
             key = keys.next() => {
                 match key {
                     Some(Ok(TermEvent::Key(k))) if k.kind == KeyEventKind::Press => {
-                        let action = if app.palette.is_some() {
+                        let action = if app.is_typing() {
                             keymap::map_input(k)
                         } else {
                             keymap::map(k)

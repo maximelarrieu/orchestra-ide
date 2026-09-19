@@ -32,6 +32,9 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
     match app.screen {
         Screen::Board => render_board(app, frame, chunks[1]),
         Screen::Cost => super::cost::render(app, frame, chunks[1]),
+        Screen::Ticket => super::ticket::render(app, frame, chunks[1]),
+        Screen::NewTicket => super::new_ticket::render(app, frame, chunks[1]),
+        Screen::Proposal => super::proposal::render(app, frame, chunks[1]),
         other => render_placeholder(other, frame, chunks[1]),
     }
     render_activity(app, frame, chunks[2]);

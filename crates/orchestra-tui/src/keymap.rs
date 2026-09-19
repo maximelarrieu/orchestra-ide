@@ -28,7 +28,12 @@ pub enum Action {
     /// A printable character while a text field has focus.
     Char(char),
     Backspace,
+    /// Enter: newline in a multi-line field, validation elsewhere.
     Submit,
+    /// Ctrl-S: confirm the whole form.
+    Accept,
+    /// Tab: next field of a form.
+    NextField,
     Cancel,
 }
 
@@ -74,7 +79,10 @@ pub fn map_input(key: KeyEvent) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     Some(match (key.code, ctrl) {
         (KeyCode::Char('c'), true) => Action::Quit,
+        // Ctrl-S confirms: Ctrl-Enter is not distinguishable in most terminals.
+        (KeyCode::Char('s'), true) => Action::Accept,
         (KeyCode::Esc, _) => Action::Cancel,
+        (KeyCode::Tab, _) => Action::NextField,
         (KeyCode::Enter, _) => Action::Submit,
         (KeyCode::Backspace, _) => Action::Backspace,
         (KeyCode::Char(c), false) => Action::Char(c),
@@ -99,6 +107,16 @@ pub const HELP: &[(&str, &str)] = &[
     ("m", "changer le regroupement"),
     ("p", "changer la période"),
     ("u", "inclure/exclure les sessions libres"),
+    ("", ""),
+    ("Tableau / Ticket", ""),
+    ("n", "nouveau ticket"),
+    ("p", "planifier le ticket"),
+    ("a", "relire l'équipe proposée"),
+    ("", ""),
+    ("saisie", ""),
+    ("Tab", "champ suivant"),
+    ("Ctrl-S", "valider"),
+    ("Échap", "annuler"),
 ];
 
 #[cfg(test)]
@@ -160,6 +178,20 @@ mod tests {
         assert_eq!(map(key('6')), Some(Action::Screen(6)));
         // There is no seventh screen; the digit falls through to the screen.
         assert_eq!(map(key('7')), Some(Action::Char('7')));
+    }
+
+    #[test]
+    fn forms_have_their_own_keys() {
+        assert_eq!(map_input(ctrl('s')), Some(Action::Accept));
+        assert_eq!(
+            map_input(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            Some(Action::NextField)
+        );
+        // Enter stays available for a newline inside a brief.
+        assert_eq!(
+            map_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Action::Submit)
+        );
     }
 
     #[test]

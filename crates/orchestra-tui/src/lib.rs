@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod client;
+pub mod forms;
 pub mod keymap;
 mod run;
 pub mod screens;

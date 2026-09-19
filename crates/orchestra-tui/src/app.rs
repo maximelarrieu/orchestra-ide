@@ -3,11 +3,13 @@
 //! whole state machine is testable without a terminal.
 
 use orchestra_core::events::{Event, EventKind};
-use orchestra_core::model::{ProjectId, TicketId};
+use orchestra_core::model::{ProjectId, RoleDefinition, TicketId};
 use orchestra_core::protocol::{
-    Command, GroupBy, Reply, TicketSummary, TimeRange, UsageQuery, UsageRow, UsageTotals,
+    Command, GroupBy, Reply, TicketDetail, TicketSummary, TimeRange, UsageQuery, UsageRow,
+    UsageTotals,
 };
 
+use crate::forms::{NewTicketForm, TeamEditor, TicketField};
 use crate::keymap::Action;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +49,7 @@ impl Screen {
 
     /// Screens that exist today; the others announce the phase they arrive in.
     pub fn is_implemented(self) -> bool {
-        matches!(self, Screen::Board | Screen::Cost)
+        !matches!(self, Screen::Agent)
     }
 
     fn index(self) -> usize {
@@ -203,6 +205,16 @@ impl CostView {
 
 pub struct App {
     pub screen: Screen,
+    /// The ticket currently open, when one is.
+    pub ticket: Option<Box<TicketDetail>>,
+    /// True while the orchestrator is composing a team.
+    pub planning: bool,
+    pub form: NewTicketForm,
+    pub form_field: TicketField,
+    pub editor: TeamEditor,
+    pub roles: Vec<RoleDefinition>,
+    /// Model aliases offered when cycling a member's model.
+    pub model_aliases: Vec<String>,
     pub board_pane: BoardPane,
     pub projects: Vec<ProjectRow>,
     pub project_selected: usize,
@@ -230,6 +242,16 @@ impl Default for App {
     fn default() -> Self {
         App {
             screen: Screen::Board,
+            ticket: None,
+            planning: false,
+            form: NewTicketForm::default(),
+            form_field: TicketField::Title,
+            editor: TeamEditor::default(),
+            roles: Vec::new(),
+            model_aliases: ["fable", "opus", "sonnet", "haiku"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             board_pane: BoardPane::Projects,
             projects: Vec::new(),
             project_selected: 0,
@@ -300,8 +322,18 @@ impl App {
                 self.request_usage();
                 self.request_tickets();
             }
+            // While the orchestrator works there is nothing to stream, so the
+            // ticket is polled until its proposal lands.
+            Screen::Ticket if self.planning => self.refresh_open_ticket(None),
             _ => {}
         }
+    }
+
+    /// True when a text field has focus, so the caller uses the input keymap.
+    pub fn is_typing(&self) -> bool {
+        self.palette.is_some()
+            || self.screen == Screen::NewTicket
+            || (self.screen == Screen::Proposal && self.editor.is_editing())
     }
 
     fn on_key(&mut self, action: Action) {
@@ -331,9 +363,18 @@ impl App {
             return;
         }
 
+        if self.screen == Screen::NewTicket {
+            self.on_form_key(action);
+            return;
+        }
+        if self.screen == Screen::Proposal && self.editor.is_editing() {
+            self.on_objective_key(action);
+            return;
+        }
+
         match action {
             Action::Quit => self.should_quit = true,
-            Action::Back => self.should_quit = true,
+            Action::Back => self.on_back(),
             Action::Help => self.show_help = true,
             Action::CommandPalette => self.palette = Some(String::new()),
             Action::Refresh => self.refresh(),
@@ -356,10 +397,186 @@ impl App {
         }
     }
 
+    /// Escape and `q` step back one screen rather than quitting outright, so a
+    /// half-written ticket is not lost to a reflex.
+    fn on_back(&mut self) {
+        match self.screen {
+            Screen::Board => self.should_quit = true,
+            Screen::Ticket => {
+                self.ticket = None;
+                self.screen = Screen::Board;
+            }
+            Screen::Proposal => self.screen = Screen::Ticket,
+            _ => self.screen = Screen::Board,
+        }
+    }
+
+    fn on_form_key(&mut self, action: Action) {
+        match action {
+            Action::Char(c) => self.form.type_char(self.form_field, c),
+            Action::Backspace => self.form.backspace(self.form_field),
+            Action::NextField => self.form_field = self.form_field.next(),
+            Action::Submit => self.form.newline(self.form_field),
+            Action::Accept => self.submit_form(),
+            Action::Cancel => {
+                self.form.clear();
+                self.screen = Screen::Board;
+            }
+            Action::Quit => self.should_quit = true,
+            _ => {}
+        }
+    }
+
+    fn submit_form(&mut self) {
+        let Some(project) = self.selected_project().map(|p| p.id) else {
+            self.form.error = Some("choisis d'abord un projet sur le tableau".into());
+            return;
+        };
+        match self.form.validated() {
+            Ok((title, brief)) => {
+                self.outbox.push(Command::CreateTicket {
+                    project_id: project,
+                    title,
+                    brief,
+                });
+                self.form.clear();
+                self.screen = Screen::Board;
+                self.status = "ticket créé".into();
+            }
+            Err(e) => self.form.error = Some(e),
+        }
+    }
+
+    fn on_objective_key(&mut self, action: Action) {
+        match action {
+            Action::Char(c) => self.editor.type_char(c),
+            Action::Backspace => self.editor.backspace(),
+            Action::Submit | Action::Accept => self.editor.finish_editing(true),
+            Action::Cancel => self.editor.finish_editing(false),
+            Action::Quit => self.should_quit = true,
+            _ => {}
+        }
+    }
+
     fn on_char(&mut self, c: char) {
-        if self.screen != Screen::Cost {
+        match self.screen {
+            Screen::Cost => self.on_cost_char(c),
+            Screen::Board => self.on_board_char(c),
+            Screen::Ticket => self.on_ticket_char(c),
+            Screen::Proposal => self.on_proposal_char(c),
+            _ => {}
+        }
+    }
+
+    fn on_board_char(&mut self, c: char) {
+        if c == 'n' {
+            self.open_new_ticket();
+        }
+    }
+
+    fn open_new_ticket(&mut self) {
+        if self.selected_project().is_none() {
+            self.status = "ajoute d'abord un projet : `:project add <chemin>`".into();
             return;
         }
+        self.form.clear();
+        self.form_field = TicketField::Title;
+        self.screen = Screen::NewTicket;
+    }
+
+    fn on_ticket_char(&mut self, c: char) {
+        let Some(detail) = self.ticket.as_ref() else {
+            return;
+        };
+        let ticket_id = detail.ticket.id;
+        match c {
+            'p' => {
+                self.outbox.push(Command::PlanTicket { ticket_id });
+                self.planning = true;
+                self.status = "l'orchestrateur compose l'équipe…".into();
+            }
+            'a' => self.open_editor(),
+            'n' => self.open_new_ticket(),
+            _ => {}
+        }
+    }
+
+    /// Open the team editor on the ticket's proposal, or its accepted team.
+    fn open_editor(&mut self) {
+        let Some(detail) = self.ticket.as_ref() else {
+            return;
+        };
+        let proposal = detail.ticket.proposal.clone().or_else(|| {
+            detail
+                .ticket
+                .team
+                .as_ref()
+                .map(|t| orchestra_core::model::TeamProposal {
+                    summary: String::new(),
+                    members: t.members.clone(),
+                    risks: Vec::new(),
+                    estimated_size: orchestra_core::model::Size::M,
+                })
+        });
+        match proposal {
+            Some(p) => {
+                self.editor.load(&p, self.roles.clone());
+                self.screen = Screen::Proposal;
+            }
+            None => {
+                self.status = "pas encore de proposition — « p » pour planifier".into();
+            }
+        }
+    }
+
+    fn on_proposal_char(&mut self, c: char) {
+        match c {
+            'm' => {
+                let aliases = self.model_aliases.clone();
+                self.editor.cycle_model(&aliases);
+            }
+            'e' => self.editor.cycle_effort(),
+            'd' => self.editor.remove_selected(),
+            'a' => self.editor.add_next_role(),
+            'J' => self.editor.reorder(1),
+            'K' => self.editor.reorder(-1),
+            'o' => self.editor.start_editing_objective(),
+            'y' => self.accept_team(),
+            'r' => {
+                if let Some(detail) = self.ticket.as_ref() {
+                    self.outbox.push(Command::PlanTicket {
+                        ticket_id: detail.ticket.id,
+                    });
+                    self.planning = true;
+                    self.screen = Screen::Ticket;
+                    self.status = "nouvelle proposition demandée…".into();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn accept_team(&mut self) {
+        let Some(detail) = self.ticket.as_ref() else {
+            return;
+        };
+        match self.editor.stages() {
+            Ok(stages) => {
+                self.outbox.push(Command::AcceptProposal {
+                    ticket_id: detail.ticket.id,
+                    team: orchestra_core::model::Team {
+                        members: self.editor.members.clone(),
+                        stages,
+                    },
+                });
+                self.screen = Screen::Ticket;
+                self.status = "équipe acceptée".into();
+            }
+            Err(e) => self.editor.error = Some(e),
+        }
+    }
+
+    fn on_cost_char(&mut self, c: char) {
         match c {
             'm' => {
                 self.cost.group = self.cost.next_group();
@@ -395,6 +612,10 @@ impl App {
             }
             (Screen::Board, BoardPane::Tickets) => (self.tickets.len(), &mut self.ticket_selected),
             (Screen::Cost, _) => (self.cost.rows.len(), &mut self.cost.selected),
+            (Screen::Proposal, _) => {
+                self.editor.move_selection(delta);
+                return;
+            }
             _ => return,
         };
         if len == 0 {
@@ -429,9 +650,13 @@ impl App {
                 self.board_pane = BoardPane::Tickets;
                 self.request_tickets();
             }
-            (Screen::Board, BoardPane::Tickets) if self.selected_ticket().is_some() => {
-                self.go(Screen::Ticket);
+            (Screen::Board, BoardPane::Tickets) => {
+                if let Some(ticket_id) = self.selected_ticket_id() {
+                    self.outbox.push(Command::GetTicket { ticket_id });
+                    self.go(Screen::Ticket);
+                }
             }
+            (Screen::Proposal, _) => self.editor.start_editing_objective(),
             _ => {}
         }
     }
@@ -469,6 +694,9 @@ impl App {
     /// Ask the daemon for everything the current screen shows.
     pub fn refresh(&mut self) {
         self.outbox.push(Command::ListProjects);
+        self.outbox.push(Command::ListRoles {
+            project_id: self.selected_project().map(|p| p.id),
+        });
         self.request_tickets();
         self.request_usage();
     }
@@ -478,6 +706,16 @@ impl App {
             project_id: self.selected_project().map(|p| p.id),
             status: None,
         });
+    }
+
+    /// Reload the open ticket when an event concerns it.
+    fn refresh_open_ticket(&mut self, ticket_id: Option<TicketId>) {
+        let Some(open) = self.ticket.as_ref().map(|d| d.ticket.id) else {
+            return;
+        };
+        if ticket_id.is_none_or(|id| id == open) {
+            self.outbox.push(Command::GetTicket { ticket_id: open });
+        }
     }
 
     fn request_usage(&mut self) {
@@ -546,6 +784,13 @@ impl App {
                         .min(self.cost.rows.len().saturating_sub(1));
                 }
             }
+            Reply::Ticket { detail } => {
+                self.planning = false;
+                self.ticket = Some(detail);
+            }
+            Reply::Roles { roles } => {
+                self.roles = roles;
+            }
             Reply::Status { status } => {
                 self.daemon_version = Some(status.version.clone());
             }
@@ -568,7 +813,19 @@ impl App {
             }
             EventKind::TicketCreated { .. }
             | EventKind::TicketStatusChanged { .. }
-            | EventKind::AgentStatusChanged { .. } => self.request_tickets(),
+            | EventKind::AgentStatusChanged { .. } => {
+                self.request_tickets();
+                self.refresh_open_ticket(e.ticket_id);
+            }
+            EventKind::ProposalReady { .. } => {
+                self.planning = false;
+                self.status = "proposition prête — « a » pour la relire".into();
+                self.refresh_open_ticket(e.ticket_id);
+            }
+            EventKind::ProposalFailed { error } => {
+                self.planning = false;
+                self.status = format!("planification échouée : {error}");
+            }
             // A managed agent reports every response. The cost view is polled
             // instead, so a busy agent cannot spin the loop with queries.
             EventKind::Usage { .. } => {}
@@ -821,15 +1078,17 @@ mod tests {
 
     #[test]
     fn unimplemented_screens_say_so() {
+        // Only the live agent view is still to come.
         let mut app = App::new();
-        app.update(Msg::Key(Action::Screen(2)));
-        assert_eq!(app.screen, Screen::Ticket);
+        app.update(Msg::Key(Action::Screen(3)));
+        assert_eq!(app.screen, Screen::Agent);
         assert!(app.status.contains("phase"), "{}", app.status);
 
-        // The cost screen exists, so it announces nothing.
-        app.update(Msg::Key(Action::Screen(4)));
-        assert_eq!(app.screen, Screen::Cost);
-        assert!(!app.status.contains("phase"), "{}", app.status);
+        for n in [1, 2, 4, 5, 6] {
+            let mut app = App::new();
+            app.update(Msg::Key(Action::Screen(n)));
+            assert!(!app.status.contains("phase"), "écran {n} : {}", app.status);
+        }
     }
 
     #[test]

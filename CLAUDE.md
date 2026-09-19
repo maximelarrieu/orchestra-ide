@@ -13,6 +13,10 @@ Dashboard de dev pilotant une ferme d'agents **Claude Code**. Plan de référenc
 5. **Les agents ne travaillent que dans un worktree git** créé par le daemon. Jamais dans le dépôt principal.
 6. **Tokens bruts = vérité.** Le `$` est indicatif, calculé à la requête depuis la grille de `config.toml`.
 7. Un seul type `Event` (`orchestra-core/src/events.rs`) : persisté dans SQLite puis diffusé. Rien n'est affiché qui ne soit un événement ou une lecture de la base.
+8. **Le coût se tarifie depuis les modèles réellement utilisés**, jamais depuis
+   l'alias configuré : `haiku` n'est pas dans la grille, `claude-haiku-4-5-…` l'est.
+9. **L'orchestrateur propose, l'utilisateur décide.** Aucune équipe ne démarre sans
+   passage par l'écran de relecture.
 
 ## Checklist avant de considérer une tâche terminée
 

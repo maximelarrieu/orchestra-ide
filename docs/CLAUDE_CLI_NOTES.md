@@ -25,9 +25,32 @@ claude -p "<prompt>" --output-format stream-json --verbose [--input-format strea
 `message.usage` contient `input_tokens`, `output_tokens`, `cache_creation_input_tokens`,
 `cache_read_input_tokens` et `output_tokens_details.thinking_tokens`.
 
-**À confirmer en phase 2** : où atterrit exactement la sortie de `--json-schema`
-(champ `structured_output` du `result`, ou `result` à parser en JSON) et le nom exact
-des `subtype` d'erreur (`error_max_turns`, budget dépassé…).
+### Sortie structurée (`--json-schema`) — confirmé
+
+La ligne `result` porte **deux** copies de la réponse :
+
+- `structured_output` : l'objet déjà analysé, conforme au schéma ;
+- `result` : le même JSON sous forme de chaîne.
+
+Orchestra lit `structured_output` et retombe sur `result` analysé en JSON si le champ
+manque, ce qui couvre une version antérieure ou une future disparition du champ.
+
+Le `result` complet expose aussi `stop_reason`, `terminal_reason`, `num_turns`,
+`total_cost_usd`, `usage`, `modelUsage`, `permission_denials`, `subagent_stats`,
+`duration_ms`, `duration_api_ms` et quelques mesures de latence (`ttft_ms`…).
+
+**Le schéma ne contraint pas les valeurs par lui-même.** Sur un essai avec un champ
+`role` libre, le modèle a inventé « Backend Engineer » et « Performance Engineer »
+plutôt que de reprendre les rôles du catalogue. Orchestra génère donc le schéma avec
+un `enum` des rôles réellement disponibles, et valide de toute façon la réponse avant
+de l'accepter.
+
+Autre observation : le flux contient des lignes `system` de sous-type inattendu, par
+exemple `thinking_tokens`. Le parseur les ignore sans broncher, ce qui est exactement
+la raison pour laquelle il est tolérant.
+
+**Reste à confirmer en phase 3** : le nom exact des `subtype` d'erreur
+(`error_max_turns`, dépassement de budget…).
 
 ## Pilotage
 

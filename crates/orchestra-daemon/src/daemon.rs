@@ -4,19 +4,22 @@
 //! mpsc channel with a oneshot to reply on, so there is exactly one writer and
 //! no `Arc<Mutex<Daemon>>` anywhere.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use orchestra_core::config::{Config, ResolvedPaths};
+use orchestra_core::config::{Config, Paths, ResolvedPaths};
 use orchestra_core::events::{EventFilter, EventKind, NewEvent};
 use orchestra_core::model::{
-    can_transition, AgentStatus, Project, ProjectId, ProjectKind, Ticket, TicketStatus, Tokens,
+    can_transition, AgentStatus, Project, ProjectId, ProjectKind, Team, TeamProposal, Ticket,
+    TicketId, TicketStatus,
 };
 use orchestra_core::protocol::{
     AgentSummary, ApiError, Command, DaemonStatus, Reply, TicketDetail, TicketSummary, UsageQuery,
     PROTOCOL_VERSION,
 };
+use orchestra_core::roles::Catalog;
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -55,6 +58,11 @@ impl DaemonHandle {
 }
 
 pub struct Daemon {
+    /// Tickets whose planning run is in flight, so a second request is refused
+    /// instead of spending tokens twice.
+    planning: HashSet<TicketId>,
+    planning_done: mpsc::Sender<TicketId>,
+    planning_rx: mpsc::Receiver<TicketId>,
     cfg: Arc<Config>,
     paths: ResolvedPaths,
     store: Store,
@@ -74,7 +82,11 @@ impl Daemon {
             tx,
             bus: bus.clone(),
         };
+        let (planning_done, planning_rx) = mpsc::channel(16);
         Daemon {
+            planning: HashSet::new(),
+            planning_done,
+            planning_rx,
             ledger: UsageLedger::new(store.clone(), &cfg),
             cfg: Arc::new(cfg),
             paths,
@@ -84,6 +96,44 @@ impl Daemon {
             rx,
             handle,
         }
+    }
+
+    /// Agents die with the daemon that spawned them, so anything still marked
+    /// as running on boot is a leftover from a crash or a kill. Left alone it
+    /// would show as an eternally starting agent.
+    pub async fn recover_on_boot(&self) -> Result<usize> {
+        let stale = self
+            .store
+            .agents_with_status(vec![
+                AgentStatus::Starting,
+                AgentStatus::Running,
+                AgentStatus::WaitingInput,
+            ])
+            .await?;
+        let count = stale.len();
+        for agent in stale {
+            let mut recovered = agent.clone();
+            recovered.status = AgentStatus::Crashed;
+            recovered.exit_reason = Some(orchestra_core::model::ExitReason::Killed);
+            recovered.ended_at = Some(orchestra_core::now());
+            self.store.update_agent(recovered).await?;
+            let _ = self
+                .bus
+                .publish(NewEvent::for_agent(
+                    EventKind::AgentStatusChanged {
+                        status: AgentStatus::Crashed,
+                        reason: Some(orchestra_core::model::ExitReason::Killed),
+                    },
+                    agent.project_id,
+                    agent.ticket_id,
+                    agent.id,
+                ))
+                .await;
+        }
+        if count > 0 {
+            tracing::info!(agents = count, "agents orphelins marqués comme arrêtés");
+        }
+        Ok(count)
     }
 
     pub fn handle(&self) -> DaemonHandle {
@@ -112,10 +162,20 @@ impl Daemon {
 
     /// Consume jobs until every handle is dropped.
     pub async fn run(mut self) {
-        while let Some(job) = self.rx.recv().await {
-            let result = self.dispatch(job.cmd).await;
-            // A client that hung up mid-command is normal.
-            let _ = job.reply.send(result);
+        loop {
+            tokio::select! {
+                job = self.rx.recv() => {
+                    let Some(job) = job else { break };
+                    let result = self.dispatch(job.cmd).await;
+                    // A client that hung up mid-command is normal.
+                    let _ = job.reply.send(result);
+                }
+                finished = self.planning_rx.recv() => {
+                    if let Some(ticket_id) = finished {
+                        self.planning.remove(&ticket_id);
+                    }
+                }
+            }
         }
         tracing::info!("boucle du daemon terminée");
     }
@@ -136,21 +196,23 @@ impl Daemon {
                 brief,
             } => self.create_ticket(project_id, title, brief).await,
             Command::GetUsage { query } => self.get_usage(query).await,
+            Command::PlanTicket { ticket_id } => self.plan_ticket(ticket_id).await,
+            Command::AcceptProposal { ticket_id, team } => {
+                self.accept_proposal(ticket_id, team).await
+            }
+            Command::ListRoles { project_id } => self.list_roles(project_id).await,
             // Subscribe is handled by the connection itself, never here.
             Command::Subscribe { .. } | Command::Unsubscribe => Err(ApiError::internal(
                 "abonnement traité par la connexion, pas par le cœur",
             )),
-            // Phases 2 and 3.
-            Command::PlanTicket { .. }
-            | Command::AcceptProposal { .. }
-            | Command::LaunchTicket { .. }
+            // Phase 3.
+            Command::LaunchTicket { .. }
             | Command::CancelTicket { .. }
             | Command::SteerAgent { .. }
             | Command::CancelAgent { .. }
             | Command::OpenPane { .. }
-            | Command::ListRoles { .. }
             | Command::Hook { .. } => Err(ApiError::unsupported(
-                "commande pas encore disponible (phases 2 et 3)",
+                "commande pas encore disponible (phase 3)",
             )),
         }
     }
@@ -273,7 +335,7 @@ impl Daemon {
 
     async fn summarise(&self, ticket: Ticket) -> Result<TicketSummary> {
         let agents = self.store.agents_of_ticket(ticket.id).await?;
-        let tokens = self.store.ticket_usage(ticket.id).await?;
+        let cost = self.ledger.ticket_cost(ticket.id).await?;
         Ok(TicketSummary {
             agents_total: agents.len(),
             agents_active: agents.iter().filter(|a| a.status.is_active()).count(),
@@ -281,8 +343,8 @@ impl Daemon {
                 .iter()
                 .filter(|a| a.status == AgentStatus::Done)
                 .count(),
-            cost_usd: self.ledger.prices().cost(&dominant_model(&agents), &tokens),
-            tokens,
+            cost_usd: cost.cost_usd,
+            tokens: cost.tokens,
             ticket,
         })
     }
@@ -307,24 +369,18 @@ impl Daemon {
             .map_err(internal)?;
 
         let mut summaries = Vec::with_capacity(agents.len());
-        let mut tokens = Tokens::default();
-        let mut cost = 0.0;
-        let mut priced = false;
         for agent in agents {
-            let (t, turns) = self.store.agent_usage(agent.id).await.map_err(internal)?;
-            tokens += t;
-            let c = self.ledger.prices().cost(&agent.model, &t);
-            if let Some(c) = c {
-                cost += c;
-                priced = true;
-            }
+            let cost = self.ledger.agent_cost(agent.id).await.map_err(internal)?;
             summaries.push(AgentSummary {
                 agent,
-                tokens: t,
-                cost_usd: c,
-                turns,
+                tokens: cost.tokens,
+                cost_usd: cost.cost_usd,
+                turns: cost.messages as u32,
             });
         }
+        // Read once for the whole ticket rather than summing the rows: the
+        // ticket may also carry usage from an agent that no longer exists.
+        let ticket_cost = self.ledger.ticket_cost(ticket_id).await.map_err(internal)?;
         let recent_events = self
             .store
             .recent_events(EventFilter::for_ticket(ticket_id), 50)
@@ -336,8 +392,8 @@ impl Daemon {
                 ticket,
                 project,
                 agents: summaries,
-                tokens,
-                cost_usd: priced.then_some(cost),
+                tokens: ticket_cost.tokens,
+                cost_usd: ticket_cost.cost_usd,
                 recent_events,
             }),
         })
@@ -400,6 +456,177 @@ impl Daemon {
         })
     }
 
+    /// Load the catalog a project sees: global roles plus its own overrides.
+    fn catalog_for(&self, project: Option<&Project>) -> Catalog {
+        let project_dir = project.map(|p| Paths::project_roles_dir(&p.path));
+        Catalog::load(&self.paths.roles_dir, project_dir.as_deref())
+    }
+
+    async fn list_roles(&self, project_id: Option<ProjectId>) -> Result<Reply, ApiError> {
+        let project = match project_id {
+            Some(id) => self.store.project(id).await.map_err(internal)?,
+            None => None,
+        };
+        let catalog = self.catalog_for(project.as_ref());
+        for (path, err) in &catalog.errors {
+            self.bus
+                .warn(format!("rôle illisible {} : {err}", path.display()))
+                .await;
+        }
+        Ok(Reply::Roles {
+            roles: catalog.roles,
+        })
+    }
+
+    /// Start the planning run. Replies at once; the proposal arrives as an
+    /// event, because the call takes tens of seconds.
+    async fn plan_ticket(&mut self, ticket_id: TicketId) -> Result<Reply, ApiError> {
+        let ticket = self
+            .store
+            .ticket(ticket_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("ticket"))?;
+        if !matches!(ticket.status, TicketStatus::Draft | TicketStatus::Planned) {
+            return Err(ApiError::invalid(format!(
+                "un ticket « {} » ne se planifie pas",
+                ticket.status.label_fr()
+            )));
+        }
+        if self.planning.contains(&ticket_id) {
+            return Err(ApiError::conflict(
+                "la planification de ce ticket est déjà en cours",
+            ));
+        }
+        let project = self
+            .store
+            .project(ticket.project_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("projet du ticket"))?;
+        let catalog = self.catalog_for(Some(&project));
+        if catalog.is_empty() {
+            return Err(ApiError::invalid(
+                "aucun rôle disponible : lance « orchestra init » pour installer le catalogue",
+            ));
+        }
+
+        self.planning.insert(ticket_id);
+        let bus = self.bus.clone();
+        let store = self.store.clone();
+        let cfg = Arc::clone(&self.cfg);
+        let cache_dir = self.paths.cache_dir.clone();
+        let ledger = self.ledger.clone();
+        let done = self.planning_done.clone();
+
+        tokio::spawn(async move {
+            let outcome = crate::orchestrator::plan(
+                &ticket, &project, &catalog, &cfg, &cache_dir, &bus, &ledger,
+            )
+            .await;
+            match outcome {
+                Ok(plan) => {
+                    let mut updated = ticket.clone();
+                    updated.proposal = Some(plan.proposal.clone());
+                    updated.updated_at = orchestra_core::now();
+                    if let Err(e) = store.update_ticket(updated).await {
+                        tracing::error!("proposition non enregistrée : {e:#}");
+                    }
+                    if let Some(reason) = &plan.validation_error {
+                        bus.warn(format!("proposition à corriger : {reason}")).await;
+                    }
+                    let _ = bus
+                        .publish(
+                            NewEvent::new(EventKind::ProposalReady {
+                                proposal: Box::new(plan.proposal),
+                            })
+                            .project(project.id)
+                            .ticket(ticket.id),
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    let _ = bus
+                        .publish(
+                            NewEvent::new(EventKind::ProposalFailed {
+                                error: format!("{e:#}"),
+                            })
+                            .project(project.id)
+                            .ticket(ticket.id),
+                        )
+                        .await;
+                }
+            }
+            let _ = done.send(ticket.id).await;
+        });
+
+        Ok(Reply::Ack)
+    }
+
+    /// Accept a team, possibly edited by the user, and move the ticket on.
+    async fn accept_proposal(&self, ticket_id: TicketId, team: Team) -> Result<Reply, ApiError> {
+        let mut ticket = self
+            .store
+            .ticket(ticket_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("ticket"))?;
+        ensure_transition(ticket.status, TicketStatus::Planned)?;
+
+        let project = self
+            .store
+            .project(ticket.project_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("projet du ticket"))?;
+        let catalog = self.catalog_for(Some(&project));
+
+        // The user can edit the proposal, so it is validated again here rather
+        // than trusted because the orchestrator produced it.
+        let proposal = TeamProposal {
+            summary: ticket
+                .proposal
+                .as_ref()
+                .map(|p| p.summary.clone())
+                .unwrap_or_default(),
+            members: team.members.clone(),
+            risks: ticket
+                .proposal
+                .as_ref()
+                .map(|p| p.risks.clone())
+                .unwrap_or_default(),
+            estimated_size: ticket
+                .proposal
+                .as_ref()
+                .map(|p| p.estimated_size)
+                .unwrap_or(orchestra_core::model::Size::M),
+        };
+        let validated = Team::from_proposal(&proposal, &catalog.names())
+            .map_err(|e| ApiError::invalid(e.to_string()))?;
+
+        let from = ticket.status;
+        ticket.team = Some(validated);
+        ticket.status = TicketStatus::Planned;
+        ticket.updated_at = orchestra_core::now();
+        self.store
+            .update_ticket(ticket.clone())
+            .await
+            .map_err(internal)?;
+        self.bus
+            .publish(
+                NewEvent::new(EventKind::TicketStatusChanged {
+                    from,
+                    to: TicketStatus::Planned,
+                })
+                .project(ticket.project_id)
+                .ticket(ticket.id),
+            )
+            .await
+            .map_err(internal)?;
+
+        self.get_ticket(ticket_id).await
+    }
+
     async fn get_usage(&self, query: UsageQuery) -> Result<Reply, ApiError> {
         let (rows, totals) = self.ledger.rollup(query).await.map_err(internal)?;
         Ok(Reply::Usage { rows, totals })
@@ -437,16 +664,6 @@ fn detect_default_branch(path: &Path) -> Option<String> {
     }
     let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!branch.is_empty()).then_some(branch)
-}
-
-/// Model used to price a ticket whose agents may differ; the first agent's
-/// model is a good enough proxy for the board column.
-fn dominant_model(agents: &[orchestra_core::model::Agent]) -> String {
-    agents
-        .iter()
-        .find(|a| !a.model.is_empty())
-        .map(|a| a.model.clone())
-        .unwrap_or_default()
 }
 
 /// Guard used by the ticket lifecycle once phases 2 and 3 land.

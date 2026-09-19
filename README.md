@@ -9,24 +9,53 @@ token par token.
 
 ## État
 
-**Phases 0 et 1 livrées** : le daemon, la base, le tableau de bord, et le suivi des
-coûts. Les tickets et l'orchestrateur (phase 2) puis l'exécution des agents (phase 3)
-arrivent ensuite. Le plan complet est dans
+**Phases 0 à 2 livrées** : le daemon, le suivi des coûts, les tickets et
+l'orchestrateur qui compose l'équipe. L'exécution des agents (phase 3) arrive
+ensuite. Le plan complet est dans
 `~/.claude/plans/jai-un-projet-orchestra-ide-wise-salamander.md`.
-
-Orchestra compte déjà **toutes** tes sessions Claude Code, y compris celles que tu
-lances toi-même, groupées par dépôt :
 
 ```sh
 cargo install --path crates/orchestra
-orchestra tui                    # tableau de bord ; touche 4 pour les coûts
-orchestra usage --by model --since 7d
-orchestra usage --by project
+orchestra init                   # installe le catalogue de rôles
 orchestra project add ~/mon-projet
+orchestra tui                    # tableau de bord
 ```
 
-`orchestra ping` et `orchestra status` complètent la ligne de commande. Le daemon
-démarre tout seul au premier appel.
+Dans le tableau de bord : `n` crée un ticket, `Entrée` l'ouvre, `p` demande une
+équipe à l'orchestrateur, `a` la relit et l'ajuste, `y` l'accepte. La touche `4`
+ouvre les coûts, `?` l'aide.
+
+En ligne de commande :
+
+```sh
+orchestra ticket new --project mon-projet --title "…" --brief-file brief.md --plan
+orchestra ticket show 12
+orchestra ticket accept 12
+orchestra usage --by model --since 7d
+orchestra roles
+```
+
+Orchestra compte **toutes** tes sessions Claude Code, y compris celles que tu lances
+toi-même, groupées par dépôt. Le daemon démarre tout seul au premier appel.
+
+## Les rôles
+
+`orchestra init` installe six rôles dans `~/.config/orchestra/roles` : architecte,
+backend, frontend, tests, relecteur, documentation. Ce sont de simples fichiers
+Markdown avec une entête, dans l'esprit des sous-agents de Claude Code :
+
+```markdown
+---
+name: backend
+description: Implémente la logique serveur et les migrations.
+model: sonnet
+effort: high
+---
+Tu es l'ingénieur backend de l'équipe…
+```
+
+Édite-les : ce sont les consignes que suivront tes agents. Un projet peut redéfinir
+n'importe quel rôle dans `<projet>/.orchestra/roles/`.
 
 ## Principes
 
@@ -35,6 +64,8 @@ démarre tout seul au premier appel.
 - **Une seule interface**, en terminal (ratatui), pensée pour vivre dans un pane zellij.
   Le daemon détient tout l'état ; toute autre interface serait un simple client du socket.
 - **Isolation par Git.** Chaque ticket travaille dans son propre worktree, sur sa branche.
+- **L'orchestrateur propose, tu décides.** Aucune équipe ne démarre sans que tu aies
+  relu ses rôles, ses objectifs et son ordre d'exécution.
 - **Tokens bruts = vérité.** Le montant en dollars est indicatif, calculé à l'affichage
   depuis une grille tarifaire que tu édites.
 

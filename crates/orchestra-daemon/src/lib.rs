@@ -6,10 +6,14 @@
 
 pub mod bus;
 pub mod daemon;
+pub mod init;
 pub mod ledger;
+pub mod orchestrator;
+pub mod repo_summary;
 pub mod server;
 pub mod store;
 pub mod watcher;
+pub mod worker;
 
 use std::path::Path;
 
@@ -40,6 +44,9 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     // Bind before spawning the core so a second instance fails fast.
     let guard = server::bind(&paths.socket, &paths.lock_file)?;
 
+    if let Err(e) = daemon.recover_on_boot().await {
+        tracing::warn!("reprise des agents orphelins impossible : {e:#}");
+    }
     let core = tokio::spawn(daemon.run());
     bus.publish_kind(EventKind::DaemonStarted {
         version: orchestra_core::VERSION.to_string(),

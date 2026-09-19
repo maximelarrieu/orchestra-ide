@@ -65,6 +65,14 @@ toucher au disque ni au réseau.
 - `server.rs` — socket Unix, une tâche par connexion. Un `flock` garantit un seul
   daemon. Un client en retard est resynchronisé depuis la base.
 - `daemon.rs` — la boucle qui traite les commandes.
+- `orchestrator.rs` — la composition d'équipe. C'est elle-même un `claude -p` :
+  outils en lecture seule, schéma JSON construit depuis le catalogue, budget borné.
+  Elle propose ; l'utilisateur décide.
+- `worker/` — le lancement et la lecture d'un processus `claude`. `claude.rs` est le
+  seul endroit qui connaît la ligne de commande ; `translate.rs` transforme le flux en
+  événements et masque au passage ce qui ressemble à un secret.
+- `init.rs` — installe le catalogue de rôles et la configuration d'exemple, sans
+  jamais écraser ce que l'utilisateur a modifié.
 
 ### `orchestra-tui`
 
@@ -102,6 +110,17 @@ réponse ne sont pas identiques : les premières annoncent un `output_tokens` pa
 Garder la première aurait sous-compté d'un facteur cent. Chaque champ garde donc le
 maximum vu, ce qui est commutatif et idempotent. Détails et mesures dans
 `docs/CLAUDE_CLI_NOTES.md`.
+
+**Le schéma est construit, pas écrit.** Le champ `role` de la proposition porte une
+énumération des rôles qui existent vraiment. Sans elle, le modèle invente des
+intitulés plausibles au lieu de choisir dans le catalogue, ce qui s'est produit au
+premier essai. La réponse est revalidée à l'arrivée : un schéma est une indication
+forte, pas une garantie.
+
+**Un appel unique ferme son entrée.** Avec `--input-format stream-json`, `claude`
+attend d'autres tours de conversation ; sans fermeture de stdin, la planification
+n'aurait jamais rendu la main. Les agents de la phase 3, eux, gardent cette entrée
+ouverte pour recevoir des consignes.
 
 **Le dépôt git prime sur le chemin.** Pour rattacher une session à un projet, la
 racine du dépôt est consultée avant tout préfixe de chemin. Sans cela, une seule
