@@ -11,7 +11,10 @@ use orchestra_core::model::{
     Agent, AgentStatus, Effort, Project, ProjectKind, RoleDefinition, RoleScope, Size, Team,
     TeamMember, TeamProposal, Ticket, TicketStatus, Tokens,
 };
-use orchestra_core::protocol::{AgentSummary, Command, Reply, TicketDetail, TicketSummary};
+use orchestra_core::protocol::{
+    AgentSummary, Command, Reply, ReviewOutcome, TicketDetail, TicketSummary,
+};
+use orchestra_core::review::Verdict;
 use orchestra_tui::app::{App, Screen};
 use orchestra_tui::forms::TicketField;
 use orchestra_tui::keymap::Action;
@@ -140,6 +143,7 @@ fn detail(with_proposal: bool, with_team: bool) -> TicketDetail {
         },
         cost_usd: Some(0.097),
         recent_events: vec![],
+        review: None,
     }
 }
 
@@ -198,6 +202,143 @@ fn planning_is_visible_while_it_runs() {
     );
     let out = draw(&app, 120, 30);
     assert!(out.contains("réfléchit") || out.contains("compose"));
+}
+
+/// An event of the open ticket, whoever produced it.
+fn ticket_event(app: &App, kind: EventKind) -> Event {
+    let mut e = Event::from_new(1, NewEvent::new(kind));
+    e.ticket_id = app.ticket.as_ref().map(|d| d.ticket.id);
+    e
+}
+
+#[test]
+fn a_verdict_and_a_fusion_are_seen_without_leaving_the_screen() {
+    let mut app = app_on_ticket(false, true);
+    let e = ticket_event(
+        &app,
+        EventKind::ReviewVerdict {
+            round: 1,
+            verdict: Verdict::Changes,
+            blocking: vec!["backend : la boucle".into()],
+            roles: vec!["backend".into()],
+        },
+    );
+    let cmds = app.update(Msg::Event(Box::new(e)));
+    assert!(app.status.contains("corrections"), "{}", app.status);
+    assert!(cmds.iter().any(|c| matches!(c, Command::GetTicket { .. })));
+
+    let e = ticket_event(
+        &app,
+        EventKind::TicketMerged {
+            branch: "orch/12-cache".into(),
+            into: "main".into(),
+            commits: 3,
+        },
+    );
+    let cmds = app.update(Msg::Event(Box::new(e)));
+    assert!(app.status.contains("fusionnée"), "{}", app.status);
+    assert!(cmds.iter().any(|c| matches!(c, Command::GetTicket { .. })));
+}
+
+#[test]
+fn the_open_ticket_refreshes_itself_while_it_is_shown() {
+    // Everything on this screen — statut, agents, coût, temps écoulé — comes
+    // from the ticket. Without the tick it only moved when an event happened
+    // to arrive, so a status changed elsewhere was seen by leaving and coming
+    // back.
+    let mut app = app_on_ticket(false, true);
+    let cmds = app.update(Msg::Tick);
+    assert!(
+        cmds.iter().any(|c| matches!(c, Command::GetTicket { .. })),
+        "{cmds:?}"
+    );
+
+    // And while watching an agent, so its header stops saying « démarrage ».
+    app.update(Msg::Key(Action::Select));
+    assert_eq!(app.screen, Screen::Agent);
+    let cmds = app.update(Msg::Tick);
+    assert!(
+        cmds.iter().any(|c| matches!(c, Command::GetTicket { .. })),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn while_it_thinks_the_screen_says_what_it_is_reading() {
+    let mut app = app_on_ticket(false, false);
+    let cmds = app.update(Msg::Key(Action::Char('p')));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Subscribe { filter, .. } if filter.ticket_id.is_some() && !filter.exclude_verbose
+        )),
+        "l'écran suit les événements du ticket, y compris les bavards"
+    );
+
+    for kind in [
+        EventKind::ToolStarted {
+            tool_use_id: "1".into(),
+            tool: "Read".into(),
+            summary: "src/store/rows.rs".into(),
+        },
+        EventKind::AgentThinking { chars: 1200 },
+        EventKind::ToolStarted {
+            tool_use_id: "2".into(),
+            tool: "Grep".into(),
+            summary: "« cache » dans src/".into(),
+        },
+    ] {
+        let e = ticket_event(&app, kind);
+        app.update(Msg::Event(Box::new(e)));
+    }
+
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("lit src/store/rows.rs"), "{out}");
+    assert!(out.contains("réfléchit (1.2k caractères)"), "{out}");
+    assert!(out.contains("cherche"), "{out}");
+}
+
+#[test]
+fn a_refresh_no_longer_stops_the_thinking() {
+    // The indicator used to vanish a second after the key was pressed: any
+    // ticket refresh cleared it, while the orchestrator ran for another minute.
+    let mut app = app_on_ticket(false, false);
+    app.update(Msg::Key(Action::Char('p')));
+    assert!(app.planning);
+
+    let mut d = detail(false, false);
+    d.agents[0].agent.status = AgentStatus::Running;
+    d.agents[0].agent.ended_at = None;
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(d),
+    })));
+
+    assert!(app.planning, "il travaille encore");
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("réfléchit"), "{out}");
+}
+
+#[test]
+fn a_finished_orchestrator_run_ends_the_wait() {
+    let mut app = app_on_ticket(false, false);
+    app.update(Msg::Key(Action::Char('p')));
+
+    // The run ends without the event reaching us: the ticket says so.
+    let mut d = detail(false, false);
+    d.agents[0].agent.status = AgentStatus::Done;
+    d.agents[0].agent.ended_at = Some(orchestra_core::now());
+    let cmds = app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(d),
+    })));
+
+    assert!(!app.planning);
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Subscribe { filter, .. } if filter.exclude_verbose
+        )),
+        "on revient au flux du tableau"
+    );
 }
 
 #[test]
@@ -508,6 +649,61 @@ fn a_deliberate_choice_of_agent_is_respected() {
 }
 
 #[test]
+fn on_a_finished_ticket_the_chosen_agent_is_the_one_that_opens() {
+    // Three agents, all done: whichever row the user picked, the screen used
+    // to open the last one that ran.
+    let mut app = App::new();
+    let mut d = detail_with_team_agent(AgentStatus::Done);
+    let mut docs = d.agents[1].clone();
+    docs.agent.id = Uuid::new_v4();
+    docs.agent.role = "docs".into();
+    docs.agent.status = AgentStatus::Done;
+    docs.agent.started_at = Some(orchestra_core::now());
+    d.agents.push(docs);
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(d),
+    })));
+    app.screen = Screen::Ticket;
+
+    // Down to "frontend", the middle row, deliberately.
+    app.update(Msg::Key(Action::Down));
+    app.update(Msg::Key(Action::Select));
+    assert_eq!(app.watched_agent().unwrap().agent.role, "frontend");
+
+    // And a refresh does not drag the screen back to the last agent.
+    let mut again = detail_with_team_agent(AgentStatus::Done);
+    let mut docs = again.agents[1].clone();
+    docs.agent.id = app.ticket.as_ref().unwrap().agents[2].agent.id;
+    docs.agent.role = "docs".into();
+    docs.agent.status = AgentStatus::Done;
+    again.agents[1].agent.id = app.ticket.as_ref().unwrap().agents[1].agent.id;
+    again.agents.push(docs);
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(again),
+    })));
+    assert_eq!(app.watched_agent().unwrap().agent.role, "frontend");
+}
+
+#[test]
+fn a_role_that_came_back_after_the_relecture_is_told_apart() {
+    let mut app = App::new();
+    let mut d = detail_with_team_agent(AgentStatus::Done);
+    let mut again = d.agents[1].clone();
+    again.agent.id = Uuid::new_v4();
+    again.agent.status = AgentStatus::Running;
+    d.agents.push(again);
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(d),
+    })));
+    app.screen = Screen::Ticket;
+    let out = draw(&app, 120, 30);
+    assert!(
+        out.contains("frontend · reprise 1"),
+        "deux lignes « frontend » identiques seraient illisibles :\n{out}"
+    );
+}
+
+#[test]
 fn the_screen_follows_the_team_from_one_agent_to_the_next() {
     let mut app = App::new();
     app.update(Msg::Reply(Box::new(Reply::Ticket {
@@ -783,6 +979,79 @@ fn typing_exit_out_of_reflex_cancels_nothing() {
         out.contains("#12"),
         "la question nomme ce qu'elle va arrêter"
     );
+}
+
+/// A ticket back from its team, with the verdict the relecture rendered.
+fn app_on_reviewed_ticket(verdict: Verdict) -> App {
+    let mut d = detail(false, true);
+    d.ticket.status = TicketStatus::Review;
+    d.ticket.branch = Some("orch/12-cache".into());
+    d.review = Some(ReviewOutcome {
+        round: 1,
+        verdict,
+        blocking: match verdict {
+            Verdict::Ready => vec![],
+            Verdict::Changes => vec!["backend : la boucle".into()],
+        },
+    });
+    let mut app = App::new();
+    app.connected = true;
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(d),
+    })));
+    app.screen = Screen::Ticket;
+    app
+}
+
+#[test]
+fn a_cleared_ticket_offers_the_integration_and_asks_before_merging() {
+    let mut app = app_on_reviewed_ticket(Verdict::Ready);
+    assert!(app.can_integrate());
+    let out = draw(&app, 120, 30);
+    assert!(
+        out.contains("f intégrer"),
+        "la touche est annoncée :\n{out}"
+    );
+    assert!(
+        out.contains("rien ne bloque"),
+        "le verdict est lisible :\n{out}"
+    );
+
+    let cmds = app.update(Msg::Key(Action::Char('f')));
+    assert!(cmds.is_empty(), "une fusion ne part pas sans confirmation");
+    assert!(app.confirm.is_some());
+    let cmds = app.update(Msg::Key(Action::Char('o')));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Command::IntegrateTicket { .. })),
+        "« o » lance l'intégrateur"
+    );
+}
+
+#[test]
+fn a_ticket_the_relecture_blocks_does_not_offer_the_integration() {
+    let mut app = app_on_reviewed_ticket(Verdict::Changes);
+    assert!(!app.can_integrate());
+    let out = draw(&app, 120, 30);
+    assert!(!out.contains("f intégrer"), "{out}");
+    assert!(out.contains("corrections demandées"), "{out}");
+
+    let cmds = app.update(Msg::Key(Action::Char('f')));
+    assert!(cmds.is_empty());
+    assert!(app.confirm.is_none(), "la touche ne fait rien");
+}
+
+#[test]
+fn a_branch_merged_by_hand_is_closed_from_the_ticket() {
+    let mut app = app_on_reviewed_ticket(Verdict::Changes);
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("t marquer terminé"), "{out}");
+    app.update(Msg::Key(Action::Char('t')));
+    assert!(app.confirm.is_some());
+    let cmds = app.update(Msg::Key(Action::Char('o')));
+    assert!(cmds
+        .iter()
+        .any(|c| matches!(c, Command::FinishTicket { .. })));
 }
 
 #[test]

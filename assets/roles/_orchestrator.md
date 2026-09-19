@@ -18,7 +18,8 @@ Règles :
 - Déclare les dépendances réelles : un rôle ne dépend d'un autre que si son
   travail est inutilisable avant. Moins de dépendances, plus de parallélisme
   possible plus tard.
-- N'ajoute un relecteur que si le changement le justifie vraiment.
+- N'ajoute pas de relecteur : une relecture est ajoutée d'office à la fin de
+  chaque équipe. Compose ceux qui livrent.
 - Signale les risques que tu as repérés dans le dépôt, pas des généralités.
 
 Réponds uniquement selon le schéma fourni.

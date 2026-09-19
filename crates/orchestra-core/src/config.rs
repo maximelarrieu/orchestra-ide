@@ -18,6 +18,8 @@ pub struct Config {
     pub daemon: DaemonConfig,
     pub defaults: AgentDefaults,
     pub orchestrator: AgentDefaults,
+    pub review: ReviewConfig,
+    pub integration: IntegrationConfig,
     pub zellij: ZellijConfig,
     pub models: ModelsConfig,
     pub pricing: PriceTable,
@@ -33,6 +35,8 @@ impl Default for Config {
                 effort: Effort::High,
                 max_budget_usd: Some(2.0),
             },
+            review: ReviewConfig::default(),
+            integration: IntegrationConfig::default(),
             zellij: ZellijConfig::default(),
             models: ModelsConfig::default(),
             pricing: PriceTable::defaults(),
@@ -96,6 +100,68 @@ impl AgentDefaults {
             None
         } else {
             Some(m)
+        }
+    }
+}
+
+/// The relecture that closes every ticket.
+///
+/// It is not left to the orchestrator's judgement: a ticket nobody read is a
+/// ticket whose author is the only one who has seen the code. The reviewer is
+/// appended to every proposal, where the user can still take it out before
+/// accepting — the orchestrator proposes, the user decides.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReviewConfig {
+    /// Append the reviewer to every team.
+    pub enabled: bool,
+    /// The role it uses, which must exist in the catalog.
+    pub role: String,
+    /// How many correction rounds a blocking verdict may trigger. Zero means
+    /// the relecture reports and stops.
+    pub max_rounds: u32,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        ReviewConfig {
+            enabled: true,
+            role: "reviewer".into(),
+            // Two rounds catch what one round misses; past that the reviewer
+            // and the team are usually disagreeing rather than converging, and
+            // that is a call for the user.
+            max_rounds: 2,
+        }
+    }
+}
+
+/// The one role allowed to run git for real.
+///
+/// It is not part of the team: it is launched from the ticket screen, only
+/// once the relecture said nothing blocks. Even then it stays in the worktree
+/// — it brings the default branch into the ticket's branch and settles the
+/// conflicts there. The fusion itself is a `--ff-only` run by the daemon, so
+/// no agent ever holds a shell in the main repository.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IntegrationConfig {
+    pub enabled: bool,
+    /// The role it uses, which must exist in the catalog.
+    pub role: String,
+    /// Let it push the branch to the remote. Off by default: pushing is
+    /// visible outside this machine, and that is the user's call.
+    pub push: bool,
+    /// Delete the worktree once the branch is merged. The branch is kept.
+    pub remove_worktree: bool,
+}
+
+impl Default for IntegrationConfig {
+    fn default() -> Self {
+        IntegrationConfig {
+            enabled: true,
+            role: "integrator".into(),
+            push: false,
+            remove_worktree: true,
         }
     }
 }

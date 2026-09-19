@@ -75,6 +75,16 @@ pub enum Command {
     CancelTicket {
         ticket_id: TicketId,
     },
+    /// Runs the integrator on a ticket the relecture cleared, then fuses its
+    /// branch into the project's default branch. Replies immediately; the
+    /// outcome arrives as events.
+    IntegrateTicket {
+        ticket_id: TicketId,
+    },
+    /// Close a ticket by hand, for a branch the user merged himself.
+    FinishTicket {
+        ticket_id: TicketId,
+    },
     SteerAgent {
         agent_id: AgentId,
         text: String,
@@ -307,6 +317,26 @@ pub struct TicketDetail {
     pub cost_usd: Option<f64>,
     /// Most recent events of the ticket, oldest first.
     pub recent_events: Vec<Event>,
+    /// What the last relecture concluded, when one has run. This is what makes
+    /// the integration offer itself, so it is read from the ticket's whole
+    /// history rather than from the events that happen to be recent.
+    #[serde(default)]
+    pub review: Option<ReviewOutcome>,
+}
+
+/// The last relecture verdict of a ticket.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewOutcome {
+    pub round: u32,
+    pub verdict: crate::review::Verdict,
+    #[serde(default)]
+    pub blocking: Vec<String>,
+}
+
+impl ReviewOutcome {
+    pub fn is_ready(&self) -> bool {
+        self.verdict.is_ready()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

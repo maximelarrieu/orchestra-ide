@@ -105,9 +105,26 @@ pub async fn plan(
 
     match outcome {
         Ok(result) => {
-            let proposal =
+            let mut proposal =
                 proposal_from_result(result.structured_output.as_ref(), result.text.as_deref())?;
             let known: BTreeSet<String> = catalog.names();
+            // Every ticket ends on a relecture, whatever the orchestrator
+            // thought of the change. It lands in the proposal the user reads
+            // before accepting, so he can still take it out.
+            if cfg.review.enabled && !known.contains(&cfg.review.role) {
+                bus.warn(format!(
+                    "relecture demandée mais le rôle « {} » est absent du catalogue : \
+                     l'équipe partira sans relecteur",
+                    cfg.review.role
+                ))
+                .await;
+            }
+            orchestra_core::review::append_reviewer(
+                &mut proposal,
+                &cfg.review,
+                &known,
+                &ticket.title,
+            );
             let (team, validation_error) = match Team::from_proposal(&proposal, &known) {
                 Ok(team) => (Some(team), None),
                 Err(e) => (None, Some(e.to_string())),

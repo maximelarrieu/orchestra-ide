@@ -18,12 +18,14 @@
 use std::io::Read;
 use std::path::PathBuf;
 
-use orchestra_core::guard::{check, Boundary, Verdict};
+use orchestra_core::guard::{check, Boundary, GitPolicy, Verdict};
 
 /// Set by the daemon on every agent it spawns.
 const WORKTREE_VAR: &str = "ORCHESTRA_WORKTREE";
 /// Extra directories the agent may also write to, separated by `:`.
 const EXTRA_VAR: &str = "ORCHESTRA_EXTRA_DIRS";
+/// `full` for the one role whose job is git. Absent or unknown means confined.
+const GIT_VAR: &str = "ORCHESTRA_GIT";
 
 fn main() {
     // Whatever happens, a failure here must not fail the agent.
@@ -78,6 +80,9 @@ fn run() -> Verdict {
         .unwrap_or(serde_json::Value::Null);
 
     let mut boundary = Boundary::new(worktree);
+    boundary.git = std::env::var(GIT_VAR)
+        .map(|v| GitPolicy::parse(&v))
+        .unwrap_or_default();
     if let Some(extra) = std::env::var_os(EXTRA_VAR) {
         boundary.extra = std::env::split_paths(&extra)
             .filter(|p| !p.as_os_str().is_empty())

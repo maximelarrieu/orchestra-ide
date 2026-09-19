@@ -132,6 +132,57 @@ pub fn dirty_files(worktree: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The branch checked out in a repository, when it is on one.
+pub fn current_branch(repo: &Path) -> Option<String> {
+    git(
+        repo,
+        &["rev-parse".into(), "--abbrev-ref".into(), "HEAD".into()],
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty() && s != "HEAD")
+}
+
+/// Bring a ticket's branch into the project's default branch, in fast-forward.
+///
+/// Fast-forward only, and refused outright unless the main repository is on its
+/// default branch with a clean working tree. A merge commit made here would be
+/// a merge nobody watched, and a dirty tree means the user is in the middle of
+/// something: in both cases the answer is to say so, not to be clever. The
+/// integrator has already brought the default branch into the ticket's branch,
+/// so a fast-forward is exactly what should be possible.
+pub fn merge_fast_forward(project: &Project, branch: &str) -> Result<usize> {
+    let head = current_branch(&project.path);
+    if head.as_deref() != Some(project.default_branch.as_str()) {
+        bail!(
+            "le dépôt principal est sur « {} », pas sur « {} » : place-le sur sa branche \
+             par défaut avant d'intégrer",
+            head.unwrap_or_else(|| "un commit détaché".into()),
+            project.default_branch
+        );
+    }
+    let dirty = dirty_files(&project.path);
+    if !dirty.is_empty() {
+        bail!(
+            "le dépôt principal a {} fichier(s) non commité(s) : la fusion attendra que \
+             tu aies rangé",
+            dirty.len()
+        );
+    }
+    let commits = commits_ahead(project, branch).len();
+    git(
+        &project.path,
+        &["merge".into(), "--ff-only".into(), branch.to_string()],
+    )
+    .with_context(|| {
+        format!(
+            "fusion en avance rapide de {branch} dans {}",
+            project.default_branch
+        )
+    })?;
+    Ok(commits)
+}
+
 fn branch_exists(repo: &Path, branch: &str) -> bool {
     git(
         repo,
@@ -278,6 +329,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(main_branch, "main");
+    }
+
+    /// Commit a file in a worktree, the way an agent would.
+    fn commit(path: &Path, name: &str, body: &str) {
+        std::fs::write(path.join(name), body).unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-q", "-m", name]] {
+            Command::new("git")
+                .arg("-C")
+                .arg(path)
+                .args(&args)
+                .output()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_finished_branch_goes_into_the_default_one_in_fast_forward() {
+        let f = fixture();
+        let plan = plan_for(&f.project, &ticket(1, "cache"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        commit(&wt.path, "cache.rs", "le cache");
+
+        let commits = merge_fast_forward(&f.project, &wt.branch).unwrap();
+        assert_eq!(commits, 1);
+        assert!(
+            f.project.path.join("cache.rs").exists(),
+            "le travail est arrivé dans la branche par défaut"
+        );
+        assert_eq!(current_branch(&f.project.path).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_fusion_that_would_need_a_merge_commit_is_refused() {
+        let f = fixture();
+        let plan = plan_for(&f.project, &ticket(1, "cache"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        commit(&wt.path, "cache.rs", "le cache");
+        // Main moves on its own: la branche n'est plus en avance rapide.
+        commit(&f.project.path, "autre.rs", "ailleurs");
+
+        let err = merge_fast_forward(&f.project, &wt.branch).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("avance rapide"),
+            "la raison doit être lisible : {err:#}"
+        );
+    }
+
+    #[test]
+    fn a_dirty_or_misplaced_main_repository_stops_the_fusion() {
+        let f = fixture();
+        let plan = plan_for(&f.project, &ticket(1, "cache"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        commit(&wt.path, "cache.rs", "le cache");
+
+        std::fs::write(f.project.path.join("brouillon.txt"), "en cours").unwrap();
+        let err = merge_fast_forward(&f.project, &wt.branch).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("non commité"),
+            "on dit pourquoi on ne fusionne pas : {err:#}"
+        );
     }
 
     #[test]

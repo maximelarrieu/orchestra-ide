@@ -52,7 +52,7 @@ pub async fn run(socket: &Path) -> Result<()> {
     let client = Client::connect_or_spawn(socket).await?;
     let version = client.daemon_version.clone();
     // A small backlog so the activity strip is not empty on open.
-    let (mut events, handle) = client.subscribe(EventFilter::board(), 50).await?;
+    let (mut events, mut handle) = client.subscribe(EventFilter::board(), 50).await?;
 
     // Replies arrive out of band and are folded back into the app as messages.
     let (reply_tx, mut replies) = mpsc::channel::<Result<Reply>>(64);
@@ -124,8 +124,30 @@ pub async fn run(socket: &Path) -> Result<()> {
                 }
             }
             _ = ticker.tick() => {
-                if !handle.is_connected() && app.connected {
-                    app.update(Msg::Disconnected);
+                // The tick is what polls: the board's list, the open ticket,
+                // the cost view, and every counter that has to advance on its
+                // own. Redrawing without it only repaints stale state — which
+                // is exactly what it did, so nothing moved until an event
+                // happened to arrive.
+                let cmds = app.update(Msg::Tick);
+                // The tick still turns the spinners when the socket is down;
+                // its queries would only fill the status line with errors.
+                if handle.is_connected() {
+                    dispatch(&handle, &reply_tx, cmds);
+                } else {
+                    if app.connected {
+                        app.update(Msg::Disconnected);
+                    }
+                    // A daemon that came back gets picked up on its own: the
+                    // alternative is a screen that stays frozen until the user
+                    // quits and starts again.
+                    if let Some((new_events, new_handle, version)) = reconnect(socket).await {
+                        events = new_events;
+                        handle = new_handle;
+                        app.update(Msg::Reconnected(version));
+                        app.refresh();
+                        dispatch(&handle, &reply_tx, app.take_outbox());
+                    }
                 }
                 dirty = true;
             }
@@ -136,6 +158,23 @@ pub async fn run(socket: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Reconnect to a daemon that came back, without starting one.
+///
+/// Deliberately not `connect_or_spawn`: a daemon the user stopped must stay
+/// stopped, and a restarted one is found at the next tick anyway.
+async fn reconnect(
+    socket: &Path,
+) -> Option<(
+    mpsc::Receiver<orchestra_core::events::Event>,
+    ClientHandle,
+    String,
+)> {
+    let client = Client::connect(socket).await.ok()?;
+    let version = client.daemon_version.clone();
+    let (events, handle) = client.subscribe(EventFilter::board(), 50).await.ok()?;
+    Some((events, handle, version))
 }
 
 /// Fire off commands without blocking the loop; each reply comes back on

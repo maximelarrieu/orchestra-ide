@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use orchestra_core::guard::GitPolicy;
 use serde_json::{json, Value};
 
 /// Name of the guard binary. Installed next to `orchestra`, so the same
@@ -51,6 +52,7 @@ pub fn agent_env(
     agent_id: &str,
     ticket_id: &str,
     extra_dirs: &[String],
+    git: GitPolicy,
 ) -> Vec<(String, String)> {
     let mut env = vec![
         (
@@ -59,6 +61,7 @@ pub fn agent_env(
         ),
         ("ORCHESTRA_AGENT_ID".to_string(), agent_id.to_string()),
         ("ORCHESTRA_TICKET_ID".to_string(), ticket_id.to_string()),
+        ("ORCHESTRA_GIT".to_string(), git.as_str().to_string()),
     ];
     if !extra_dirs.is_empty() {
         env.push(("ORCHESTRA_EXTRA_DIRS".to_string(), extra_dirs.join(":")));
@@ -85,7 +88,11 @@ pub fn blocked_reason(tool_result_text: &str) -> Option<String> {
 }
 
 /// Tools an agent may never use, whatever its role asks for.
-pub fn always_disallowed() -> Vec<String> {
+pub fn always_disallowed(git: GitPolicy) -> Vec<String> {
+    if git == GitPolicy::Full {
+        // The integrator's whole job is these commands.
+        return Vec::new();
+    }
     vec![
         // The guard already refuses these, but saying so up front saves the
         // agent a wasted turn discovering it.
@@ -104,6 +111,24 @@ pub fn parse(settings: &str) -> Option<Value> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn only_the_integrator_carries_the_open_git_policy() {
+        let confined = agent_env(&PathBuf::from("/w"), "a", "t", &[], GitPolicy::Confined);
+        assert!(confined
+            .iter()
+            .any(|(n, v)| n == "ORCHESTRA_GIT" && v == "confined"));
+        assert!(!always_disallowed(GitPolicy::Confined).is_empty());
+
+        let full = agent_env(&PathBuf::from("/w"), "a", "t", &[], GitPolicy::Full);
+        assert!(full
+            .iter()
+            .any(|(n, v)| n == "ORCHESTRA_GIT" && v == "full"));
+        assert!(
+            always_disallowed(GitPolicy::Full).is_empty(),
+            "l'intégrateur n'a pas à se voir refuser ce qui est son travail"
+        );
+    }
 
     #[test]
     fn the_settings_wire_the_guard_to_the_writing_tools() {
@@ -131,6 +156,7 @@ mod tests {
             "agent-1",
             "ticket-1",
             &[],
+            GitPolicy::Confined,
         );
         let get = |k: &str| {
             env.iter()
@@ -147,6 +173,7 @@ mod tests {
             "a",
             "t",
             &["/tmp/scratch".into(), "/tmp/autre".into()],
+            GitPolicy::Confined,
         );
         assert!(with_extra
             .iter()

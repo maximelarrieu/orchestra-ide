@@ -8,6 +8,7 @@ pub mod guard;
 pub mod model;
 pub mod pricing;
 pub mod protocol;
+pub mod review;
 pub mod roles;
 pub mod schema;
 

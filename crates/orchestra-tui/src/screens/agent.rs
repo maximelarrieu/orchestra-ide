@@ -38,7 +38,13 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
         ])
         .split(area);
 
-    render_header(app, frame, chunks[0], &agent.agent.role);
+    let label = app
+        .ticket
+        .as_ref()
+        .map(|d| crate::app::agent_label(&d.agents, app.agent_selected))
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| agent.agent.role.clone());
+    render_header(app, frame, chunks[0], &label);
     render_log(app, frame, chunks[1]);
     if app.steer.is_some() {
         render_steer(app, frame, chunks[2]);

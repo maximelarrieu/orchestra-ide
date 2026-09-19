@@ -242,6 +242,8 @@ impl Daemon {
                     .map_err(internal)?;
                 Ok(Reply::Ack)
             }
+            Command::IntegrateTicket { ticket_id } => self.integrate_ticket(ticket_id).await,
+            Command::FinishTicket { ticket_id } => self.finish_ticket(ticket_id).await,
             Command::SteerAgent {
                 agent_id,
                 text,
@@ -441,6 +443,8 @@ impl Daemon {
             .await
             .map_err(internal)?;
 
+        let review = self.last_review(ticket_id).await?;
+
         Ok(Reply::Ticket {
             detail: Box::new(TicketDetail {
                 ticket,
@@ -449,6 +453,7 @@ impl Daemon {
                 tokens: ticket_cost.tokens,
                 cost_usd: ticket_cost.cost_usd,
                 recent_events,
+                review,
             }),
         })
     }
@@ -675,6 +680,112 @@ impl Daemon {
         Ok(Reply::Ack)
     }
 
+    /// Run the integrator, then fuse the branch.
+    ///
+    /// Refused unless the last relecture said nothing blocks: the whole point
+    /// of the role is that it comes after a green verdict, and a check made
+    /// here holds for every client, not only for the screen that hides the key.
+    async fn integrate_ticket(&self, ticket_id: TicketId) -> Result<Reply, ApiError> {
+        let ticket = self
+            .store
+            .ticket(ticket_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("ticket"))?;
+        if ticket.status != TicketStatus::Review {
+            return Err(ApiError::invalid(format!(
+                "ce ticket est « {} » : seul un ticket à relire s'intègre",
+                ticket.status.label_fr()
+            )));
+        }
+        match self.last_review(ticket_id).await? {
+            Some(review) if review.is_ready() => {}
+            Some(_) => {
+                return Err(ApiError::invalid(
+                    "la relecture bloque encore : corrige d'abord ce qu'elle a listé",
+                ))
+            }
+            None => {
+                return Err(ApiError::invalid(
+                    "aucune relecture n'a rendu de verdict sur ce ticket",
+                ))
+            }
+        }
+        let project = self
+            .store
+            .project(ticket.project_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("projet du ticket"))?;
+        let catalog = self.catalog_for(Some(&project));
+
+        self.supervisor
+            .integrate(ticket, project, catalog)
+            .await
+            .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+        Ok(Reply::Ack)
+    }
+
+    /// Close a ticket the user merged himself.
+    async fn finish_ticket(&self, ticket_id: TicketId) -> Result<Reply, ApiError> {
+        let mut ticket = self
+            .store
+            .ticket(ticket_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("ticket"))?;
+        ensure_transition(ticket.status, TicketStatus::Done)?;
+        let from = ticket.status;
+        ticket.status = TicketStatus::Done;
+        ticket.updated_at = orchestra_core::now();
+        self.store
+            .update_ticket(ticket.clone())
+            .await
+            .map_err(internal)?;
+        self.bus
+            .publish(
+                NewEvent::new(EventKind::TicketStatusChanged {
+                    from,
+                    to: TicketStatus::Done,
+                })
+                .project(ticket.project_id)
+                .ticket(ticket.id),
+            )
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
+    /// The last verdict a relecture rendered on this ticket.
+    async fn last_review(
+        &self,
+        ticket_id: TicketId,
+    ) -> Result<Option<orchestra_core::protocol::ReviewOutcome>, ApiError> {
+        let filter = EventFilter {
+            ticket_id: Some(ticket_id),
+            tags: vec![orchestra_core::events::EventTag::ReviewVerdict],
+            ..Default::default()
+        };
+        let events = self
+            .store
+            .recent_events(filter, 1)
+            .await
+            .map_err(internal)?;
+        Ok(events.into_iter().rev().find_map(|e| match e.kind {
+            EventKind::ReviewVerdict {
+                round,
+                verdict,
+                blocking,
+                ..
+            } => Some(orchestra_core::protocol::ReviewOutcome {
+                round,
+                verdict,
+                blocking,
+            }),
+            _ => None,
+        }))
+    }
+
     /// Accept a team, possibly edited by the user, and move the ticket on.
     async fn accept_proposal(&self, ticket_id: TicketId, team: Team) -> Result<Reply, ApiError> {
         let mut ticket = self
@@ -788,5 +899,108 @@ pub fn ensure_transition(from: TicketStatus, to: TicketStatus) -> Result<(), Api
             from.label_fr(),
             to.label_fr()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orchestra_core::model::{Project, ProjectKind};
+    use orchestra_core::review::Verdict;
+    use uuid::Uuid;
+
+    /// A daemon on an in-memory store, holding one ticket in the given state.
+    async fn daemon_with_ticket(status: TicketStatus) -> (Daemon, Ticket) {
+        let store = crate::store::Store::open_memory().unwrap();
+        let project = Project {
+            id: Uuid::new_v4(),
+            name: "depot".into(),
+            path: std::path::PathBuf::from("/tmp/depot"),
+            default_branch: "main".into(),
+            zellij_tab: None,
+            kind: ProjectKind::Managed,
+            created_at: orchestra_core::now(),
+        };
+        store.insert_project(project.clone()).await.unwrap();
+        let ticket = Ticket {
+            id: Uuid::new_v4(),
+            project_id: project.id,
+            number: 1,
+            title: "cache".into(),
+            brief: "b".into(),
+            status,
+            branch: Some("orch/1-cache".into()),
+            worktree_path: Some(std::path::PathBuf::from("/tmp/wt/1-cache")),
+            proposal: None,
+            team: None,
+            created_at: orchestra_core::now(),
+            updated_at: orchestra_core::now(),
+        };
+        store.insert_ticket(ticket.clone()).await.unwrap();
+        (Daemon::new(Config::default(), store), ticket)
+    }
+
+    async fn record_verdict(daemon: &Daemon, ticket: &Ticket, verdict: Verdict) {
+        daemon
+            .bus
+            .publish(
+                NewEvent::new(EventKind::ReviewVerdict {
+                    round: 1,
+                    verdict,
+                    blocking: vec![],
+                    roles: vec![],
+                })
+                .project(ticket.project_id)
+                .ticket(ticket.id),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_ticket_still_running_is_not_integrated() {
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Running).await;
+        record_verdict(&daemon, &ticket, Verdict::Ready).await;
+        let err = daemon.integrate_ticket(ticket.id).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("à relire"),
+            "on dit pourquoi : {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_verdict_nothing_is_merged() {
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Review).await;
+        let err = daemon.integrate_ticket(ticket.id).await.unwrap_err();
+        assert!(format!("{err:?}").contains("relecture"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_blocking_verdict_stops_the_integration() {
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Review).await;
+        record_verdict(&daemon, &ticket, Verdict::Changes).await;
+        let err = daemon.integrate_ticket(ticket.id).await.unwrap_err();
+        assert!(format!("{err:?}").contains("bloque"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn the_last_verdict_is_the_one_that_counts() {
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Review).await;
+        record_verdict(&daemon, &ticket, Verdict::Changes).await;
+        record_verdict(&daemon, &ticket, Verdict::Ready).await;
+        let review = daemon.last_review(ticket.id).await.unwrap().unwrap();
+        assert!(review.is_ready(), "le dernier tour fait foi");
+    }
+
+    #[tokio::test]
+    async fn a_ticket_merged_by_hand_can_be_closed() {
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Review).await;
+        daemon.finish_ticket(ticket.id).await.unwrap();
+        let back = daemon.store.ticket(ticket.id).await.unwrap().unwrap();
+        assert_eq!(back.status, TicketStatus::Done);
+
+        // But a ticket that is still working is not closed behind its agents.
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Running).await;
+        assert!(daemon.finish_ticket(ticket.id).await.is_err());
     }
 }

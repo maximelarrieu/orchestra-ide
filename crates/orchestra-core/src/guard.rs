@@ -36,6 +36,38 @@ impl Verdict {
     }
 }
 
+/// What an agent may do with git.
+///
+/// Confined is what every role that writes code gets: it commits, it reads
+/// history, and that is all. `Full` exists for the one role whose job *is*
+/// git — fusionner, pousser, régler un conflit. It lifts the subcommand list,
+/// nothing else: the path rules still hold, so even an integrator cannot reach
+/// the main repository. That is what keeps the worktree rule true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GitPolicy {
+    #[default]
+    Confined,
+    Full,
+}
+
+impl GitPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GitPolicy::Confined => "confined",
+            GitPolicy::Full => "full",
+        }
+    }
+
+    /// Unknown values read as the confined policy: a typo in the environment
+    /// must never widen what an agent may do.
+    pub fn parse(s: &str) -> Self {
+        match s.trim() {
+            "full" => GitPolicy::Full,
+            _ => GitPolicy::Confined,
+        }
+    }
+}
+
 /// The box an agent is allowed to touch.
 #[derive(Debug, Clone)]
 pub struct Boundary {
@@ -43,6 +75,8 @@ pub struct Boundary {
     pub worktree: PathBuf,
     /// Extra directories it may read and write, such as a scratch space.
     pub extra: Vec<PathBuf>,
+    /// What this agent may do with git.
+    pub git: GitPolicy,
 }
 
 impl Boundary {
@@ -50,7 +84,14 @@ impl Boundary {
         Boundary {
             worktree: worktree.into(),
             extra: Vec::new(),
+            git: GitPolicy::Confined,
         }
+    }
+
+    /// The same box, for the role whose job is git.
+    pub fn with_full_git(mut self) -> Self {
+        self.git = GitPolicy::Full;
+        self
     }
 
     fn contains(&self, path: &Path) -> bool {
@@ -128,7 +169,27 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
     }
 
     if let Some(sub) = git_subcommand(scanned) {
-        if FORBIDDEN_GIT.contains(&sub.as_str()) {
+        // Whatever the policy, git is not a way out of the box: `-C`,
+        // `--git-dir` and `--work-tree` name a directory, and a relative one is
+        // not caught by the path scan above. Only git's own flags are read this
+        // way — `make -C build` and `tar -C /tmp/x` mean something else.
+        for dir in git_directories(scanned) {
+            let path = expand(&dir);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                boundary.worktree.join(path)
+            };
+            if !boundary.contains(&path) && !writable_system_path(&path) {
+                return Verdict::Deny(format!(
+                    "« git -C {dir} » sort du worktree du ticket ({}). \
+                     Le dépôt principal n'appartient à aucun agent.",
+                    boundary.worktree.display()
+                ));
+            }
+        }
+
+        if boundary.git == GitPolicy::Confined && FORBIDDEN_GIT.contains(&sub.as_str()) {
             return Verdict::Deny(format!(
                 "« git {sub} » est interdit : ta branche est relue avant toute fusion, \
                  et changer de branche ferait perdre le travail en cours."
@@ -137,6 +198,27 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
     }
 
     Verdict::Allow
+}
+
+/// Every directory a `git …` invocation points itself at.
+fn git_directories(command: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let words = tokens(command);
+    let mut i = 0;
+    while i < words.len() {
+        let word = &words[i];
+        for flag in ["-C", "--git-dir", "--work-tree"] {
+            if word == flag {
+                if let Some(next) = words.get(i + 1) {
+                    out.push(next.clone());
+                }
+            } else if let Some(rest) = word.strip_prefix(&format!("{flag}=")) {
+                out.push(rest.to_string());
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 /// The part of a command line that is still command, not heredoc content.
@@ -318,6 +400,9 @@ mod tests {
     fn ordinary_work_inside_the_worktree_is_allowed() {
         for command in [
             "cargo test --workspace",
+            // `-C` belongs to plenty of commands that are not git.
+            "make -C build",
+            "tar -C /tmp/paquet -xf archive.tar",
             "ls src",
             "grep -r TODO .",
             "git status",
@@ -424,6 +509,43 @@ mod tests {
         // Committing and reading history stay allowed.
         assert_eq!(bash("git log --oneline -5"), Verdict::Allow);
         assert_eq!(bash("git commit -am wip"), Verdict::Allow);
+    }
+
+    #[test]
+    fn the_integrator_may_use_git_but_still_only_here() {
+        let b = boundary().with_full_git();
+        let bash = |c: &str| check(&b, "Bash", &json!({ "command": c }));
+        for command in [
+            "git fetch origin",
+            "git merge origin/main",
+            "git rebase main",
+            "git push origin HEAD",
+            "git checkout --theirs src/lib.rs",
+            "gh pr create --fill",
+        ] {
+            assert_eq!(bash(command), Verdict::Allow, "refusé à tort : {command}");
+        }
+        // Git does not become a way out of the box.
+        for command in [
+            "git -C /home/u/projets/depot merge orch/1-cache",
+            "git -C ../../projets/depot push",
+            "git --git-dir=/home/u/projets/depot/.git log",
+            "cp x /home/u/projets/depot/y",
+        ] {
+            assert!(
+                bash(command).is_denied(),
+                "aurait dû être refusé : {command}"
+            );
+        }
+        assert_eq!(bash("git -C . push"), Verdict::Allow, "son propre worktree");
+    }
+
+    #[test]
+    fn an_unknown_policy_confines_rather_than_opens() {
+        assert_eq!(GitPolicy::parse("full"), GitPolicy::Full);
+        for s in ["", "Full", "oui", "confined", "n'importe quoi"] {
+            assert_eq!(GitPolicy::parse(s), GitPolicy::Confined, "{s}");
+        }
     }
 
     #[test]

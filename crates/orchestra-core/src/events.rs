@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::model::{
     AgentId, AgentStatus, ExitReason, ProjectId, TeamProposal, TicketId, TicketStatus, UsageSample,
 };
+use crate::review::Verdict;
 
 /// An event on its way to the store: same as [`Event`] without `seq`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +119,8 @@ pub enum EventTag {
     Usage,
     AgentSteered,
     AgentResult,
+    ReviewVerdict,
+    TicketMerged,
     HookBlocked,
     PaneOpened,
     PaneClosed,
@@ -127,7 +130,7 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 23] = [
+    pub const ALL: [EventTag; 25] = [
         EventTag::ProjectAdded,
         EventTag::TicketCreated,
         EventTag::TicketStatusChanged,
@@ -145,6 +148,8 @@ impl EventTag {
         EventTag::Usage,
         EventTag::AgentSteered,
         EventTag::AgentResult,
+        EventTag::ReviewVerdict,
+        EventTag::TicketMerged,
         EventTag::HookBlocked,
         EventTag::PaneOpened,
         EventTag::PaneClosed,
@@ -172,6 +177,8 @@ impl EventTag {
             EventTag::Usage => "usage",
             EventTag::AgentSteered => "agent_steered",
             EventTag::AgentResult => "agent_result",
+            EventTag::ReviewVerdict => "review_verdict",
+            EventTag::TicketMerged => "ticket_merged",
             EventTag::HookBlocked => "hook_blocked",
             EventTag::PaneOpened => "pane_opened",
             EventTag::PaneClosed => "pane_closed",
@@ -279,6 +286,25 @@ pub enum EventKind {
         total_cost_usd: Option<f64>,
         text: String,
     },
+    /// What the relecture concluded, and who goes back to work.
+    ReviewVerdict {
+        /// 1 for the first relecture, 2 after one correction round, …
+        round: u32,
+        verdict: Verdict,
+        /// What blocks, one line each. Empty when nothing does.
+        #[serde(default)]
+        blocking: Vec<String>,
+        /// Roles sent back to work by this verdict.
+        #[serde(default)]
+        roles: Vec<String>,
+    },
+    /// The ticket's branch went into the default branch, in fast-forward.
+    TicketMerged {
+        branch: String,
+        into: String,
+        /// Commits the branch brought in.
+        commits: usize,
+    },
     /// The `PreToolUse` guard refused a call.
     HookBlocked {
         tool: String,
@@ -323,6 +349,8 @@ impl EventKind {
             EventKind::Usage { .. } => EventTag::Usage,
             EventKind::AgentSteered { .. } => EventTag::AgentSteered,
             EventKind::AgentResult { .. } => EventTag::AgentResult,
+            EventKind::ReviewVerdict { .. } => EventTag::ReviewVerdict,
+            EventKind::TicketMerged { .. } => EventTag::TicketMerged,
             EventKind::HookBlocked { .. } => EventTag::HookBlocked,
             EventKind::PaneOpened { .. } => EventTag::PaneOpened,
             EventKind::PaneClosed { .. } => EventTag::PaneClosed,

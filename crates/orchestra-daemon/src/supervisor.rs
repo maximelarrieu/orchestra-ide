@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use orchestra_core::claude::StreamLine;
 use orchestra_core::config::Config;
 use orchestra_core::events::{EventKind, NewEvent};
+use orchestra_core::guard::GitPolicy;
 use orchestra_core::model::{
     check_transition, Agent, AgentId, AgentStatus, Effort, ExitReason, Project, RoleDefinition,
     Team, Ticket, TicketId, TicketStatus,
@@ -164,7 +165,166 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Walk the stages, one role at a time.
+    /// Launch the integrator on a ticket the relecture cleared.
+    ///
+    /// It is the only agent that runs after a ticket has left `Running`, and
+    /// the only one whose guard opens git. It still works in the worktree: the
+    /// fusion into the default branch is done here, in Rust, once the agent has
+    /// made the branch ready.
+    pub async fn integrate(
+        &self,
+        ticket: Ticket,
+        project: Project,
+        catalog: Catalog,
+    ) -> Result<()> {
+        let cfg = self.cfg.integration.clone();
+        anyhow::ensure!(
+            cfg.enabled,
+            "l'intégration est désactivée dans la configuration"
+        );
+        anyhow::ensure!(
+            catalog.get(&cfg.role).is_some(),
+            "le rôle « {} » est absent du catalogue : lance « orchestra init »",
+            cfg.role
+        );
+        anyhow::ensure!(!self.is_running(ticket.id).await, "ce ticket tourne déjà");
+        let branch = ticket
+            .branch
+            .clone()
+            .context("ce ticket n'a pas de branche : rien à intégrer")?;
+        let worktree_path = ticket
+            .worktree_path
+            .clone()
+            .context("ce ticket n'a pas de worktree")?;
+        anyhow::ensure!(
+            worktree_path.exists(),
+            "le worktree {} a disparu : relance le ticket avant de l'intégrer",
+            worktree_path.display()
+        );
+
+        let me = self.clone();
+        let ticket_id = ticket.id;
+        let handle = tokio::spawn(async move {
+            let outcome = me
+                .run_integration(ticket, project, catalog, worktree_path, branch)
+                .await;
+            if let Err(e) = outcome {
+                tracing::error!("intégration interrompue : {e:#}");
+            }
+            me.tickets.lock().await.remove(&ticket_id);
+        });
+        self.tickets.lock().await.insert(ticket_id, handle);
+        Ok(())
+    }
+
+    async fn run_integration(
+        &self,
+        ticket: Ticket,
+        project: Project,
+        catalog: Catalog,
+        worktree_path: PathBuf,
+        branch: String,
+    ) -> Result<()> {
+        let cfg = self.cfg.integration.clone();
+        // What the team said, read back from the store: the task that held it
+        // in memory ended when the ticket went to relecture.
+        let past = self.store.agents_of_ticket(ticket.id).await?;
+        let stage = past.iter().map(|a| a.stage).max().unwrap_or(0) + 1;
+        let mut handoffs: Vec<(String, String)> = past
+            .into_iter()
+            .filter_map(|a| a.handoff.map(|h| (a.role, h)))
+            .collect();
+
+        let member = orchestra_core::model::TeamMember {
+            role: cfg.role.clone(),
+            objective: integration_objective(&project.default_branch, &branch, cfg.push),
+            depends_on: Vec::new(),
+            model: None,
+            effort: None,
+            max_budget_usd: None,
+            parallel_ok: false,
+        };
+
+        let step = self
+            .run_member(Step {
+                ticket: &ticket,
+                project: &project,
+                catalog: &catalog,
+                member,
+                stage,
+                worktree_path: &worktree_path,
+                handoffs: &mut handoffs,
+                blocking: &[],
+                // The one place this is not `Confined`.
+                git: GitPolicy::Full,
+            })
+            .await;
+        if !matches!(step, StepOutcome::Done) {
+            self.warn_ticket(
+                ticket.id,
+                project.id,
+                "l'intégration s'est arrêtée avant d'avoir préparé la branche : \
+                 le ticket reste à relire"
+                    .into(),
+            )
+            .await;
+            return Ok(());
+        }
+
+        // The fusion itself is ours. An agent that fails leaves the default
+        // branch exactly where it was.
+        let commits = match worktree::merge_fast_forward(&project, &branch) {
+            Ok(commits) => commits,
+            Err(e) => {
+                self.warn_ticket(
+                    ticket.id,
+                    project.id,
+                    format!("la fusion n'a pas eu lieu : {e:#}"),
+                )
+                .await;
+                return Ok(());
+            }
+        };
+
+        let _ = self
+            .bus
+            .publish(
+                NewEvent::new(EventKind::TicketMerged {
+                    branch: branch.clone(),
+                    into: project.default_branch.clone(),
+                    commits,
+                })
+                .project(project.id)
+                .ticket(ticket.id),
+            )
+            .await;
+
+        if cfg.remove_worktree {
+            match worktree::remove(&project, &worktree_path) {
+                Ok(()) => {
+                    // Nothing must keep pointing at a directory that is gone.
+                    if let Ok(Some(mut current)) = self.store.ticket(ticket.id).await {
+                        current.worktree_path = None;
+                        current.updated_at = orchestra_core::now();
+                        let _ = self.store.update_ticket(current).await;
+                    }
+                }
+                Err(e) => {
+                    self.warn_ticket(
+                        ticket.id,
+                        project.id,
+                        format!("worktree non supprimé : {e:#}"),
+                    )
+                    .await;
+                }
+            }
+        }
+
+        self.finish_ticket(&ticket, TicketStatus::Done).await;
+        Ok(())
+    }
+
+    /// Walk the stages, one role at a time, then hold the relecture loop.
     async fn run_team(
         &self,
         ticket: Ticket,
@@ -175,62 +335,55 @@ impl Supervisor {
     ) -> Result<()> {
         let mut handoffs: Vec<(String, String)> = Vec::new();
         let mut failed = false;
+        let mut next_stage = 0u32;
 
         for (stage, member) in team.ordered() {
-            let Some(role) = catalog.get(&member.role) else {
-                self.warn_ticket(
-                    ticket.id,
-                    project.id,
-                    format!(
-                        "rôle « {} » absent du catalogue : étape ignorée",
-                        member.role
-                    ),
-                )
-                .await;
-                failed = true;
-                break;
-            };
-
-            let outcome = self
-                .run_role(RoleRun {
+            next_stage = stage + 1;
+            let step = self
+                .run_member(Step {
                     ticket: &ticket,
                     project: &project,
-                    role,
-                    member,
+                    catalog: &catalog,
+                    member: member.clone(),
                     stage,
                     worktree_path: &worktree_path,
-                    handoffs: &handoffs,
+                    handoffs: &mut handoffs,
+                    blocking: &[],
+                    git: GitPolicy::Confined,
                 })
                 .await;
-
-            match outcome {
-                Ok(AgentOutcome::Done { handoff }) => {
-                    handoffs.push((member.role.clone(), handoff));
-                }
-                Ok(AgentOutcome::Cancelled) => {
+            match step {
+                StepOutcome::Done => {}
+                StepOutcome::Cancelled => {
                     self.finish_ticket(&ticket, TicketStatus::Cancelled).await;
                     return Ok(());
                 }
-                Ok(AgentOutcome::Failed { reason }) => {
-                    self.bus
-                        .warn(format!(
-                            "l'agent « {} » s'est arrêté : {reason}",
-                            member.role
-                        ))
-                        .await;
+                StepOutcome::Failed => {
                     failed = true;
                     break;
                 }
-                Err(e) => {
-                    self.bus
-                        .warn(format!(
-                            "l'agent « {} » n'a pas pu tourner : {e:#}",
-                            member.role
-                        ))
-                        .await;
-                    failed = true;
-                    break;
+            }
+        }
+
+        if !failed {
+            match self
+                .review_rounds(
+                    &ticket,
+                    &project,
+                    &team,
+                    &catalog,
+                    &worktree_path,
+                    &mut handoffs,
+                    next_stage,
+                )
+                .await
+            {
+                StepOutcome::Done => {}
+                StepOutcome::Cancelled => {
+                    self.finish_ticket(&ticket, TicketStatus::Cancelled).await;
+                    return Ok(());
                 }
+                StepOutcome::Failed => failed = true,
             }
         }
 
@@ -243,6 +396,226 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Run one member, and fold its handoff into the ticket's memory.
+    async fn run_member(&self, step: Step<'_>) -> StepOutcome {
+        let Step {
+            ticket,
+            project,
+            catalog,
+            member,
+            stage,
+            worktree_path,
+            handoffs,
+            blocking,
+            git,
+        } = step;
+        let Some(role) = catalog.get(&member.role) else {
+            self.warn_ticket(
+                ticket.id,
+                project.id,
+                format!(
+                    "rôle « {} » absent du catalogue : étape ignorée",
+                    member.role
+                ),
+            )
+            .await;
+            return StepOutcome::Failed;
+        };
+
+        let outcome = self
+            .run_role(RoleRun {
+                ticket,
+                project,
+                role,
+                member: &member,
+                stage,
+                worktree_path,
+                handoffs,
+                blocking,
+                git,
+            })
+            .await;
+
+        match outcome {
+            Ok(AgentOutcome::Done { handoff }) => {
+                handoffs.push((member.role.clone(), handoff));
+                StepOutcome::Done
+            }
+            Ok(AgentOutcome::Cancelled) => StepOutcome::Cancelled,
+            Ok(AgentOutcome::Failed { reason }) => {
+                self.bus
+                    .warn(format!(
+                        "l'agent « {} » s'est arrêté : {reason}",
+                        member.role
+                    ))
+                    .await;
+                StepOutcome::Failed
+            }
+            Err(e) => {
+                self.bus
+                    .warn(format!(
+                        "l'agent « {} » n'a pas pu tourner : {e:#}",
+                        member.role
+                    ))
+                    .await;
+                StepOutcome::Failed
+            }
+        }
+    }
+
+    /// Read the relecture's verdict and, while it blocks, send the named roles
+    /// back to work and have it read the branch again.
+    ///
+    /// The loop is bounded twice over: by `review.max_rounds`, and by the
+    /// verdict itself — a relecture that says nothing readable ends it, because
+    /// silence must never be read as an approval.
+    #[allow(clippy::too_many_arguments)]
+    async fn review_rounds(
+        &self,
+        ticket: &Ticket,
+        project: &Project,
+        team: &Team,
+        catalog: &Catalog,
+        worktree_path: &Path,
+        handoffs: &mut Vec<(String, String)>,
+        first_stage: u32,
+    ) -> StepOutcome {
+        let cfg = &self.cfg.review;
+        let Some(reviewer) = team.member(&cfg.role).cloned() else {
+            return StepOutcome::Done;
+        };
+        if !cfg.enabled {
+            return StepOutcome::Done;
+        }
+        let workers: Vec<String> = team
+            .members
+            .iter()
+            .map(|m| m.role.clone())
+            .filter(|r| r != &cfg.role)
+            .collect();
+        if workers.is_empty() {
+            return StepOutcome::Done;
+        }
+
+        let mut stage = first_stage;
+        let mut rounds_done = 0u32;
+        loop {
+            let Some(text) = handoffs
+                .iter()
+                .rev()
+                .find(|(r, _)| r == &cfg.role)
+                .map(|(_, t)| t.clone())
+            else {
+                return StepOutcome::Done;
+            };
+            let Some(review) = orchestra_core::review::parse_review(&text) else {
+                self.warn_ticket(
+                    ticket.id,
+                    project.id,
+                    "la relecture n'a pas terminé par un verdict lisible : le ticket s'arrête \
+                     ici plutôt que de relancer l'équipe sur une lecture incertaine"
+                        .into(),
+                )
+                .await;
+                return StepOutcome::Done;
+            };
+
+            // Who goes back to work. A blocking point that names nobody is for
+            // the last role that wrote code: it holds the freshest context, and
+            // waking the whole team on an unattributed remark costs more than
+            // it repairs.
+            let named = review.roles_to_fix(&workers);
+            let to_fix: Vec<String> = if review.verdict.is_ready() {
+                Vec::new()
+            } else if named.is_empty() {
+                workers.last().cloned().into_iter().collect()
+            } else {
+                named
+            };
+
+            let _ = self
+                .bus
+                .publish(
+                    NewEvent::new(EventKind::ReviewVerdict {
+                        round: rounds_done + 1,
+                        verdict: review.verdict,
+                        blocking: review.blocking_lines(),
+                        roles: to_fix.clone(),
+                    })
+                    .project(project.id)
+                    .ticket(ticket.id),
+                )
+                .await;
+
+            if review.verdict.is_ready() {
+                return StepOutcome::Done;
+            }
+            if rounds_done >= cfg.max_rounds {
+                self.warn_ticket(
+                    ticket.id,
+                    project.id,
+                    format!(
+                        "la relecture bloque encore après {rounds_done} tour(s) de \
+                         correction : le ticket passe en relecture humaine"
+                    ),
+                )
+                .await;
+                return StepOutcome::Done;
+            }
+            rounds_done += 1;
+
+            for role in &to_fix {
+                let Some(base) = team.member(role) else {
+                    continue;
+                };
+                let items = blocking_for(&review, role, &to_fix);
+                let mut member = base.clone();
+                member.objective = correction_objective(&base.objective, &items);
+                let step = self
+                    .run_member(Step {
+                        ticket,
+                        project,
+                        catalog,
+                        member,
+                        stage,
+                        worktree_path,
+                        handoffs,
+                        blocking: &items,
+                        git: GitPolicy::Confined,
+                    })
+                    .await;
+                if !matches!(step, StepOutcome::Done) {
+                    return step;
+                }
+                stage += 1;
+            }
+
+            let mut again = reviewer.clone();
+            again.objective = format!(
+                "Relire à nouveau la branche après le tour de correction {rounds_done} : \
+                 vérifier que chaque point que tu avais bloqué est levé, refaire tourner \
+                 les vérifications du dépôt, puis rendre ton verdict.",
+            );
+            let step = self
+                .run_member(Step {
+                    ticket,
+                    project,
+                    catalog,
+                    member: again,
+                    stage,
+                    worktree_path,
+                    handoffs,
+                    blocking: &[],
+                    git: GitPolicy::Confined,
+                })
+                .await;
+            if !matches!(step, StepOutcome::Done) {
+                return step;
+            }
+            stage += 1;
+        }
+    }
+
     /// Everything one role needs to run, grouped so the call stays readable.
     async fn run_role(&self, spec: RoleRun<'_>) -> Result<AgentOutcome> {
         let RoleRun {
@@ -253,6 +626,8 @@ impl Supervisor {
             stage,
             worktree_path,
             handoffs,
+            blocking,
+            git,
         } = spec;
         let model = member
             .model
@@ -290,7 +665,7 @@ impl Supervisor {
         };
         self.store.insert_agent(agent.clone()).await?;
 
-        let prompt = build_prompt(ticket, member, worktree_path, handoffs);
+        let prompt = build_prompt(ticket, member, worktree_path, handoffs, blocking);
         let prompt_file = write_prompt_file(
             &self.cache_dir,
             &role.name,
@@ -320,6 +695,7 @@ impl Supervisor {
                     effort,
                     budget,
                     resume,
+                    git,
                 )
                 .await?;
 
@@ -359,6 +735,7 @@ impl Supervisor {
         effort: Effort,
         budget: Option<f64>,
         resume: Option<Uuid>,
+        git: GitPolicy,
     ) -> Result<AgentOutcome> {
         let mut cmd = ClaudeCommand::new(&self.cfg.daemon.claude_bin, worktree_path, prompt);
         cmd.session_id = Some(agent.session_id);
@@ -378,7 +755,7 @@ impl Supervisor {
             .disallowed_tools
             .iter()
             .cloned()
-            .chain(hooks::always_disallowed())
+            .chain(hooks::always_disallowed(git))
             .collect();
         cmd.max_budget_usd = budget;
         cmd.settings_json = Some(hooks::settings_json(&hooks::hook_binary()));
@@ -391,6 +768,7 @@ impl Supervisor {
             &agent.id.to_string(),
             &agent.ticket_id.to_string(),
             &[],
+            git,
         );
 
         let (mut process, mut rx) = ClaudeProcess::spawn(&cmd).await?;
@@ -731,6 +1109,67 @@ struct RoleRun<'a> {
     stage: u32,
     worktree_path: &'a Path,
     handoffs: &'a [(String, String)],
+    /// What the relecture blocked on, when this run is a correction round.
+    blocking: &'a [String],
+    /// What this run may do with git. Only the integrator gets more than the
+    /// confined policy.
+    git: GitPolicy,
+}
+
+/// One step of the walk: a member to run, and the ticket's memory to fold its
+/// handoff into.
+struct Step<'a> {
+    ticket: &'a Ticket,
+    project: &'a Project,
+    catalog: &'a Catalog,
+    /// Owned, because a correction round runs a member whose objective was
+    /// rewritten from the verdict rather than one the user accepted.
+    member: orchestra_core::model::TeamMember,
+    stage: u32,
+    worktree_path: &'a Path,
+    handoffs: &'a mut Vec<(String, String)>,
+    blocking: &'a [String],
+    git: GitPolicy,
+}
+
+/// What one step left the ticket in.
+enum StepOutcome {
+    Done,
+    Cancelled,
+    Failed,
+}
+
+/// The blocking points this role has to answer for. A role the relecture named
+/// gets its own lines; the one that catches the unattributed remarks gets all
+/// of them.
+fn blocking_for(
+    review: &orchestra_core::review::Review,
+    role: &str,
+    named: &[String],
+) -> Vec<String> {
+    let mine: Vec<String> = review
+        .changes
+        .iter()
+        .filter(|c| c.role.as_deref().is_some_and(|r| r == role))
+        .map(|c| c.detail.clone())
+        .collect();
+    if mine.is_empty() || named.len() == 1 {
+        review.blocking_lines()
+    } else {
+        mine
+    }
+}
+
+/// What a role is asked to do when it comes back after a verdict.
+fn correction_objective(original: &str, blocking: &[String]) -> String {
+    let list = blocking
+        .iter()
+        .map(|l| format!("- {l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Lever ce que la relecture a bloqué, et rien d'autre :\n{list}\n\n         (ton objectif initial était : {original})"
+    )
 }
 
 enum AgentOutcome {
@@ -758,6 +1197,21 @@ pub fn resume_prompt(member: &orchestra_core::model::TeamMember, worktree: &Path
     )
 }
 
+/// What the integrator is told to do, in one sentence it can act on.
+fn integration_objective(default_branch: &str, branch: &str, push: bool) -> String {
+    let push = if push {
+        " Pousse ensuite la branche sur son remote."
+    } else {
+        " Ne pousse rien : ce dépôt s'intègre en local."
+    };
+    format!(
+        "Rendre « {branch} » fusionnable en avance rapide dans « {default_branch} » : \
+         rapatrier {default_branch} dans ta branche, régler les conflits, rejouer les \
+         vérifications du projet et laisser un historique propre.{push} La fusion \
+         finale ne t'appartient pas : c'est le daemon qui la fait.",
+    )
+}
+
 /// The first message an agent receives: the ticket, its own objective, what
 /// the team did before it, and the rules of the worktree.
 pub fn build_prompt(
@@ -765,6 +1219,7 @@ pub fn build_prompt(
     member: &orchestra_core::model::TeamMember,
     worktree: &std::path::Path,
     handoffs: &[(String, String)],
+    blocking: &[String],
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -785,6 +1240,21 @@ pub fn build_prompt(
             let capped = orchestra_core::claude::stream::truncate(text.trim(), 4000);
             out.push_str(&format!("\n### {role}\n\n{capped}\n"));
         }
+    }
+
+    if !blocking.is_empty() {
+        // Repeated even though the objective already carries them: an agent
+        // that has just read three handoffs needs the blocking list where it
+        // cannot be missed.
+        out.push_str("\n## Ce que la relecture bloque\n\n");
+        for line in blocking {
+            out.push_str(&format!("- {line}\n"));
+        }
+        out.push_str(
+            "\nCorrige exactement ces points. Ne refais pas le reste, n'en profite pas \
+             pour autre chose, et si tu penses qu'un point n'en est pas un, dis-le dans \
+             ton résumé au lieu de l'ignorer en silence.\n",
+        );
     }
 
     out.push_str(&format!(
@@ -837,6 +1307,7 @@ mod tests {
             &member("backend"),
             Path::new("/home/u/wt/7-cache"),
             &[],
+            &[],
         );
         assert!(prompt.contains("#7 — Ajouter un cache"));
         assert!(prompt.contains("On veut un cache"));
@@ -865,6 +1336,7 @@ mod tests {
             &member("tests"),
             Path::new("/home/u/wt/7-cache"),
             &handoffs,
+            &[],
         );
         assert!(prompt.contains("### architect"));
         assert!(prompt.contains("Plan écrit dans docs/."));
@@ -873,6 +1345,55 @@ mod tests {
             prompt.len() < 12_000,
             "un relais bavard ne doit pas noyer le prompt : {} caractères",
             prompt.len()
+        );
+    }
+
+    #[test]
+    fn a_correction_round_says_what_to_fix_and_what_not_to_touch() {
+        let blocking = vec![
+            "store/rows.rs:88 boucle quand offset dépasse le total".to_string(),
+            "rien ne couvre la liste vide".to_string(),
+        ];
+        let mut m = member("backend");
+        m.objective = correction_objective(&m.objective, &blocking);
+        let prompt = build_prompt(
+            &ticket(),
+            &m,
+            Path::new("/home/u/wt/7-cache"),
+            &[("reviewer".to_string(), "VERDICT: corrections".to_string())],
+            &blocking,
+        );
+        assert!(prompt.contains("Ce que la relecture bloque"));
+        assert!(prompt.contains("boucle quand offset"));
+        assert!(prompt.contains("liste vide"));
+        assert!(
+            prompt.contains("Ne refais pas le reste"),
+            "un tour de correction n'est pas une réécriture : {prompt}"
+        );
+        assert!(
+            m.objective.contains("écrire le cache dans store/rows.rs"),
+            "l'objectif initial reste lisible"
+        );
+    }
+
+    #[test]
+    fn each_role_gets_its_own_blocking_points() {
+        let review = orchestra_core::review::parse_review(
+            "VERDICT: corrections\n- backend: la boucle\n- tests: le cas vide",
+        )
+        .unwrap();
+        let named = vec!["backend".to_string(), "tests".to_string()];
+        assert_eq!(blocking_for(&review, "backend", &named), vec!["la boucle"]);
+        assert_eq!(blocking_for(&review, "tests", &named), vec!["le cas vide"]);
+
+        // One role alone carries the whole list, including what named nobody.
+        let review =
+            orchestra_core::review::parse_review("VERDICT: corrections\n- ça casse au bord")
+                .unwrap();
+        let alone = vec!["backend".to_string()];
+        assert_eq!(
+            blocking_for(&review, "backend", &alone),
+            vec!["ça casse au bord"]
         );
     }
 

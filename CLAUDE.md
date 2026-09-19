@@ -11,6 +11,9 @@ Dashboard de dev pilotant une ferme d'agents **Claude Code**. Plan de référenc
 4. **Parsing tolérant** du stream-json et des transcripts : `#[serde(default)]`, `#[serde(flatten)] rest`, `#[serde(other)]`.
    Toute évolution du parseur s'accompagne d'une fixture réelle dans `crates/orchestra-core/tests/fixtures/`.
 5. **Les agents ne travaillent que dans un worktree git** créé par le daemon. Jamais dans le dépôt principal.
+   L'intégrateur (`config.integration`) est le seul à qui git est ouvert, et il reste
+   lui aussi dans son worktree : la fusion dans la branche par défaut est faite par le
+   daemon en `--ff-only`, pas par un agent.
 6. **Tokens bruts = vérité.** Le `$` est indicatif, calculé à la requête depuis la grille de `config.toml`.
 7. Un seul type `Event` (`orchestra-core/src/events.rs`) : persisté dans SQLite puis diffusé. Rien n'est affiché qui ne soit un événement ou une lecture de la base.
 8. **Le coût se tarifie depuis les modèles réellement utilisés**, jamais depuis
@@ -21,7 +24,11 @@ Dashboard de dev pilotant une ferme d'agents **Claude Code**. Plan de référenc
     dupliquées : le daemon et `orchestra-hook` doivent en avoir la même lecture.
 11. **La couleur ne porte jamais une information seule** : toujours un symbole avec,
     et pas de distinction qui repose sur l'opposition rouge / vert (`tui/src/theme.rs`).
-12. **Le superviseur décide du statut d'un agent, pas le flux.** Une interruption y
+12. **Toute équipe se termine par une relecture** ajoutée d'office à la proposition
+    (`orchestra-core/src/review.rs`). Son verdict est lu par la machine : il peut
+    relancer des tours de correction, bornés par `review.max_rounds`. Un verdict
+    illisible arrête la boucle — le silence ne vaut pas accord.
+13. **Le superviseur décide du statut d'un agent, pas le flux.** Une interruption y
     ressemble à un échec ; seul celui qui a envoyé le signal sait ce qui s'est passé.
 
 ## Checklist avant de considérer une tâche terminée

@@ -44,6 +44,12 @@ toucher au disque ni au réseau.
   `UsageRow`…). Une trame tient sur une ligne.
 - `pricing.rs` — tokens vers dollars indicatifs, par plus long préfixe de modèle.
 - `config.rs` — `config.toml` et tous les chemins XDG.
+- `guard.rs` — les règles du garde-fou, dont `GitPolicy` : `Confined` pour tout le
+  monde, `Full` pour le seul intégrateur. La politique ne lève que la liste des
+  sous-commandes interdites ; le confinement des chemins vaut pour tous.
+- `review.rs` — la relecture : ajout du relecteur en fin de proposition, et lecture
+  du verdict qu'il écrit (`VERDICT: prêt` / `VERDICT: corrections` suivi des points
+  bloquants). Le silence n'y vaut jamais accord.
 
 ### `orchestra-daemon`
 
@@ -148,6 +154,42 @@ maximum vu, ce qui est commutatif et idempotent. Détails et mesures dans
 intitulés plausibles au lieu de choisir dans le catalogue, ce qui s'est produit au
 premier essai. La réponse est revalidée à l'arrivée : un schéma est une indication
 forte, pas une garantie.
+
+**Toute équipe finit par une relecture.** Le relecteur n'est pas laissé au jugement
+de l'orchestrateur : le daemon l'ajoute à la fin de chaque proposition, où
+l'utilisateur peut encore l'enlever avant d'accepter. Son verdict est lu par la
+machine : bloquant, il renvoie au travail les rôles qu'il nomme — un point bloquant
+qui ne nomme personne va au dernier rôle qui a écrit du code, parce qu'il a le
+contexte le plus frais — puis il relit. La boucle est bornée par
+`review.max_rounds` et par le verdict lui-même : une relecture qui ne termine pas
+par un verdict lisible arrête tout et rend le ticket en « à relire ». Un tour de
+correction est un nouvel agent, pas une reprise de session : il apparaît sur le
+ticket sous le même rôle, suffixé « reprise N ».
+
+**L'écran interroge, il n'attend pas.** La boucle reçoit un tic par seconde ; elle ne
+faisait que redessiner avec lui, sans le passer à l'application. Donc rien n'était
+interrogé : le tableau, le ticket ouvert et les compteurs ne bougeaient que si un
+événement passait par là, et un statut changé ailleurs ne se voyait qu'en quittant
+l'écran pour y revenir. Le tic va maintenant à l'application, qui interroge ce que
+l'écran montre chaque seconde et l'agrégat de coût toutes les deux. Et une connexion
+perdue est reprise toute seule au tic suivant, sans relancer de daemon.
+
+**Une attente doit se voir.** La planification est une minute de silence : le run lit
+le dépôt avant de répondre. L'écran Ticket s'abonne donc aux événements du ticket,
+verbeux compris, et montre ce que l'orchestrateur lit, cherche et pèse, avec le temps
+écoulé et les tokens dépensés. Et ce n'est plus un rafraîchissement qui décide que la
+réflexion est finie — il l'effaçait une seconde après la touche — mais l'agent
+orchestrateur lui-même : actif, il pense ; terminé après notre demande, c'est fini.
+
+**Un seul rôle fait du git, et jamais dans le dépôt principal.** L'intégrateur est
+lancé à la main depuis l'écran Ticket, et seulement si la relecture n'a rien bloqué.
+Son garde-fou ouvre les sous-commandes git (`GitPolicy::Full`) mais **pas** les
+chemins : `git -C <dépôt principal>` reste refusé comme n'importe quelle sortie de
+boîte. Il travaille donc dans son worktree — il rapatrie la branche par défaut chez
+lui, règle les conflits, rejoue les vérifications — et c'est le daemon qui fait
+ensuite la fusion, en `--ff-only`, dans un dépôt principal qu'il exige propre et sur
+sa branche par défaut. Une intégration ratée laisse l'historique principal intact.
+La règle 5 tient donc sans exception : aucun agent n'a jamais de shell dans le dépôt.
 
 **Le superviseur tranche, pas le flux.** Une interruption produit une ligne `result`
 en erreur, exactement comme un vrai échec. Le flux ne peut donc pas dire si un agent

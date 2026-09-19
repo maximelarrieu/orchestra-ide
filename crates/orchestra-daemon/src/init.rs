@@ -31,6 +31,10 @@ const ROLES: &[(&str, &str)] = &[
     ),
     ("docs.md", include_str!("../../../assets/roles/docs.md")),
     (
+        "integrator.md",
+        include_str!("../../../assets/roles/integrator.md"),
+    ),
+    (
         "_footer.md",
         include_str!("../../../assets/roles/_footer.md"),
     ),
@@ -155,6 +159,7 @@ mod tests {
                     "backend",
                     "docs",
                     "frontend",
+                    "integrator",
                     "reviewer",
                     "tests"
                 ]

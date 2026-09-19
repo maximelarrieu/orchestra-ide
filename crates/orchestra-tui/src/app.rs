@@ -221,11 +221,20 @@ pub struct App {
     pub ticket: Option<Box<TicketDetail>>,
     /// True while the orchestrator is composing a team.
     pub planning: bool,
+    /// When the planning was asked for, so the screen can say how long it has
+    /// been going.
+    pub planning_since: Option<time::OffsetDateTime>,
+    /// What the orchestrator has been doing, newest last. Thinking is long and
+    /// silent; without this the screen looks frozen and the user presses keys.
+    pub planning_trace: Vec<String>,
     pub form: NewTicketForm,
     pub form_field: TicketField,
     pub editor: TeamEditor,
     /// Index of the agent being watched, within the open ticket.
     pub agent_selected: usize,
+    /// True once the user has picked a row himself: the screen then stops
+    /// choosing for him.
+    pub agent_pinned: bool,
     /// Live log of the watched agent.
     pub log: LiveLog,
     /// Agent to open as soon as its ticket arrives.
@@ -270,10 +279,13 @@ impl Default for App {
             screen: Screen::Board,
             ticket: None,
             planning: false,
+            planning_since: None,
+            planning_trace: Vec::new(),
             form: NewTicketForm::default(),
             form_field: TicketField::Title,
             editor: TeamEditor::default(),
             agent_selected: 0,
+            agent_pinned: false,
             log: LiveLog::default(),
             pending_agent: None,
             confirm: None,
@@ -355,23 +367,21 @@ impl App {
     /// which is a read of the store like any other.
     fn on_tick(&mut self) {
         self.ticks += 1;
-        if !self.ticks.is_multiple_of(2) {
-            return;
+        // What the screen shows is polled every second; the aggregate behind
+        // the cost figures is heavier, so it keeps the slower beat. It is
+        // polled on every screen, not only on its own: the running total sits
+        // in the bar at the bottom, which is drawn everywhere.
+        let slow = self.ticks.is_multiple_of(2);
+        if slow {
+            self.request_usage();
         }
         match self.screen {
-            Screen::Cost => self.request_usage(),
-            Screen::Board => {
-                self.request_usage();
-                self.request_tickets();
-            }
-            // While the orchestrator works there is nothing to stream, so the
-            // ticket is polled until its proposal lands.
-            Screen::Ticket if self.planning => self.refresh_open_ticket(None),
-            // The log streams, but the agent's status and cost come from the
-            // ticket: without this the header stays on "démarrage" while the
-            // agent is plainly working.
-            Screen::Agent => self.refresh_open_ticket(None),
-            Screen::Ticket => self.refresh_open_ticket(None),
+            Screen::Board => self.request_tickets(),
+            // The log streams, but a status, a cost and an elapsed time come
+            // from the ticket: without this the header stays on "démarrage"
+            // while the agent is plainly working, and a ticket that changed
+            // state is only discovered by leaving the screen and coming back.
+            Screen::Ticket | Screen::Agent => self.refresh_open_ticket(None),
             _ => {}
         }
     }
@@ -468,6 +478,8 @@ impl App {
             Screen::Board => self.should_quit = true,
             Screen::Ticket => {
                 self.ticket = None;
+                self.agent_selected = 0;
+                self.agent_pinned = false;
                 self.screen = Screen::Board;
             }
             Screen::Proposal | Screen::Agent => {
@@ -626,11 +638,7 @@ impl App {
         };
         let ticket_id = detail.ticket.id;
         match c {
-            'p' => {
-                self.outbox.push(Command::PlanTicket { ticket_id });
-                self.planning = true;
-                self.status = "l'orchestrateur compose l'équipe…".into();
-            }
+            'p' => self.start_planning(ticket_id),
             'a' => self.open_editor(),
             'n' => self.open_new_ticket(),
             'L' => {
@@ -647,8 +655,97 @@ impl App {
                     Command::CancelTicket { ticket_id },
                 );
             }
+            // Only offered on a branch the relecture cleared; the daemon
+            // refuses it in every other case anyway.
+            'f' if self.can_integrate() => {
+                let branch = detail.ticket.branch.clone().unwrap_or_default();
+                let into = detail.project.default_branch.clone();
+                self.ask(
+                    format!("Intégrer « {branch} » dans « {into} » et terminer le ticket ?"),
+                    Command::IntegrateTicket { ticket_id },
+                );
+            }
+            't' if detail.ticket.status == orchestra_core::model::TicketStatus::Review => {
+                let number = detail.ticket.number;
+                self.ask(
+                    format!("Marquer le ticket #{number} terminé, sans rien fusionner ?"),
+                    Command::FinishTicket { ticket_id },
+                );
+            }
             _ => {}
         }
+    }
+
+    /// True when the open ticket can be handed to the integrator: relu, rien
+    /// ne bloque, et une branche à fusionner.
+    pub fn can_integrate(&self) -> bool {
+        let Some(detail) = self.ticket.as_ref() else {
+            return false;
+        };
+        detail.ticket.status == orchestra_core::model::TicketStatus::Review
+            && detail.ticket.branch.is_some()
+            && detail.review.as_ref().is_some_and(|r| r.is_ready())
+    }
+
+    /// Ask for a team, and start following what the orchestrator does.
+    ///
+    /// Planning is one long silence: the run reads files for half a minute
+    /// before answering. So the screen subscribes to the ticket's own events —
+    /// verbose ones included — and shows them while it waits.
+    fn start_planning(&mut self, ticket_id: TicketId) {
+        self.outbox.push(Command::PlanTicket { ticket_id });
+        self.planning = true;
+        self.planning_since = Some(orchestra_core::now());
+        self.planning_trace.clear();
+        self.outbox.push(Command::Subscribe {
+            filter: orchestra_core::events::EventFilter::for_ticket(ticket_id),
+            since_seq: None,
+            backlog: 0,
+        });
+        self.status = "l'orchestrateur compose l'équipe…".into();
+    }
+
+    /// Planning is over, whatever its outcome: back to the board's stream.
+    fn stop_planning(&mut self) {
+        if !self.planning {
+            return;
+        }
+        self.planning = false;
+        self.planning_since = None;
+        // An agent being watched has its own subscription; leave it alone.
+        if self.screen != Screen::Agent {
+            self.outbox.push(Command::Subscribe {
+                filter: orchestra_core::events::EventFilter::board(),
+                since_seq: None,
+                backlog: 0,
+            });
+        }
+    }
+
+    /// Fold one event into the planning trace.
+    fn trace_planning(&mut self, e: &Event) {
+        if !self.planning || e.ticket_id.is_none() {
+            return;
+        }
+        if e.ticket_id != self.ticket.as_ref().map(|d| d.ticket.id) {
+            return;
+        }
+        if let Some(line) = plan_line(e) {
+            if self.planning_trace.len() == PLAN_TRACE_MAX {
+                self.planning_trace.remove(0);
+            }
+            self.planning_trace.push(line);
+        }
+    }
+
+    /// The orchestrator run of the open ticket, most recent first.
+    pub fn orchestrator_agent(&self) -> Option<&orchestra_core::protocol::AgentSummary> {
+        self.ticket
+            .as_ref()?
+            .agents
+            .iter()
+            .filter(|a| a.agent.role == orchestra_core::model::ORCHESTRATOR_ROLE)
+            .max_by_key(|a| a.agent.started_at)
     }
 
     /// Watch an agent of the open ticket.
@@ -677,7 +774,6 @@ impl App {
         let Some(detail) = self.ticket.as_ref() else {
             return;
         };
-        // An agent the user picked deliberately is left alone.
         if self
             .watched_agent()
             .is_some_and(|a| a.agent.status.is_active())
@@ -688,6 +784,12 @@ impl App {
             .agents
             .iter()
             .position(|a| a.agent.status.is_active());
+        // Nothing is working: there is no team to follow, so the row the user
+        // chose himself wins. Without this, every row of a finished ticket
+        // opened the last agent that ran.
+        if self.agent_pinned && running.is_none() {
+            return;
+        }
         let fallback = || {
             detail
                 .agents
@@ -771,11 +873,8 @@ impl App {
             'o' => self.editor.start_editing_objective(),
             'y' => self.accept_team(),
             'r' => {
-                if let Some(detail) = self.ticket.as_ref() {
-                    self.outbox.push(Command::PlanTicket {
-                        ticket_id: detail.ticket.id,
-                    });
-                    self.planning = true;
+                if let Some(ticket_id) = self.ticket.as_ref().map(|d| d.ticket.id) {
+                    self.start_planning(ticket_id);
                     self.screen = Screen::Ticket;
                     self.status = "nouvelle proposition demandée…".into();
                 }
@@ -856,6 +955,7 @@ impl App {
                 if count > 0 {
                     let next = (self.agent_selected as isize + delta).clamp(0, count as isize - 1);
                     self.agent_selected = next as usize;
+                    self.agent_pinned = true;
                 }
                 return;
             }
@@ -904,6 +1004,8 @@ impl App {
             }
             (Screen::Board, BoardPane::Tickets) => {
                 if let Some(ticket_id) = self.selected_ticket_id() {
+                    self.agent_selected = 0;
+                    self.agent_pinned = false;
                     self.outbox.push(Command::GetTicket { ticket_id });
                     self.go(Screen::Ticket);
                 }
@@ -1061,9 +1163,21 @@ impl App {
                 }
             }
             Reply::Ticket { detail } => {
-                self.planning = false;
                 let previous = self.watched_agent_id();
                 self.ticket = Some(detail);
+                // A refresh used to clear this, so the indicator vanished a
+                // second after the key was pressed while the orchestrator ran
+                // for another minute. Only its own agent says when it is over.
+                match self.orchestrator_agent().map(|a| a.agent.clone()) {
+                    Some(a) if a.status.is_active() => {
+                        self.planning = true;
+                        self.planning_since.get_or_insert_with(|| {
+                            a.started_at.unwrap_or_else(orchestra_core::now)
+                        });
+                    }
+                    Some(a) if a.ended_at >= self.planning_since => self.stop_planning(),
+                    _ => {}
+                }
                 // A ticket fetched to reach one particular agent.
                 if let Some(wanted) = self.pending_agent.take() {
                     if let Some(index) = self
@@ -1128,6 +1242,8 @@ impl App {
     }
 
     fn on_event(&mut self, e: Event) {
+        // What the orchestrator does while it composes the team.
+        self.trace_planning(&e);
         // While watching one agent, its events feed the live log.
         if self.screen == Screen::Agent && e.agent_id == self.watched_agent_id() {
             if self.log.push_event(&e) {
@@ -1159,19 +1275,88 @@ impl App {
                 self.refresh_open_ticket(e.ticket_id);
             }
             EventKind::ProposalReady { .. } => {
-                self.planning = false;
+                self.stop_planning();
                 self.status = "proposition prête — « a » pour la relire".into();
                 self.refresh_open_ticket(e.ticket_id);
             }
             EventKind::ProposalFailed { error } => {
-                self.planning = false;
+                self.stop_planning();
                 self.status = format!("planification échouée : {error}");
+            }
+            // Two moments the user must not have to go looking for.
+            EventKind::ReviewVerdict { round, verdict, .. } => {
+                self.status = format!("relecture {round} : {}", verdict.label_fr());
+                self.request_tickets();
+                self.refresh_open_ticket(e.ticket_id);
+            }
+            EventKind::TicketMerged { branch, into, .. } => {
+                self.status = format!("{branch} fusionnée dans {into}");
+                self.request_tickets();
+                self.refresh_open_ticket(e.ticket_id);
             }
             // A managed agent reports every response. The cost view is polled
             // instead, so a busy agent cannot spin the loop with queries.
             EventKind::Usage { .. } => {}
             _ => {}
         }
+    }
+}
+
+/// How an agent is named on screen.
+///
+/// A relecture can send a role back to work, so the same role appears several
+/// times on one ticket. Two identical rows would be unreadable, hence the run
+/// number on every one but the first.
+pub fn agent_label(agents: &[orchestra_core::protocol::AgentSummary], index: usize) -> String {
+    let Some(agent) = agents.get(index) else {
+        return String::new();
+    };
+    let earlier = agents[..index]
+        .iter()
+        .filter(|a| a.agent.role == agent.agent.role)
+        .count();
+    if earlier == 0 {
+        agent.agent.role.clone()
+    } else {
+        format!("{} · reprise {earlier}", agent.agent.role)
+    }
+}
+
+/// How many lines of the orchestrator's work the ticket screen keeps.
+const PLAN_TRACE_MAX: usize = 8;
+
+/// One line of the planning trace, or `None` for an event that says nothing
+/// about what the orchestrator is doing.
+///
+/// Deliberately not [`describe`]: this reads as a running commentary of one
+/// run, in the present tense, not as a log of the whole daemon.
+fn plan_line(e: &Event) -> Option<String> {
+    match &e.kind {
+        EventKind::ToolStarted { tool, summary, .. } => {
+            let verb = match tool.as_str() {
+                "Read" => "lit",
+                "Grep" => "cherche",
+                "Glob" => "liste",
+                other => other,
+            };
+            let summary = summary.trim();
+            Some(if summary.is_empty() {
+                verb.to_string()
+            } else {
+                format!("{verb} {summary}")
+            })
+        }
+        // The content of a thinking block is never stored; its size still says
+        // that something is happening.
+        EventKind::AgentThinking { chars } => Some(format!(
+            "réfléchit ({} caractères)",
+            orchestra_core::pricing::fmt_tokens(*chars as u64)
+        )),
+        EventKind::AgentText { text } => {
+            let line = text.lines().find(|l| !l.trim().is_empty())?.trim();
+            Some(orchestra_core::claude::stream::truncate(line, 70))
+        }
+        _ => None,
     }
 }
 
@@ -1210,6 +1395,24 @@ pub fn describe(e: &Event) -> Option<String> {
             subtype, num_turns, ..
         } => {
             format!("agent terminé ({subtype}, {num_turns} tours)")
+        }
+        EventKind::TicketMerged {
+            branch,
+            into,
+            commits,
+        } => format!("{branch} fusionnée dans {into} ({commits} commits)"),
+        EventKind::ReviewVerdict {
+            round,
+            verdict,
+            roles,
+            ..
+        } => {
+            let who = if roles.is_empty() {
+                String::new()
+            } else {
+                format!(" — {} repasse(nt)", roles.join(", "))
+            };
+            format!("relecture {round} : {}{who}", verdict.label_fr())
         }
         EventKind::HookBlocked { tool, reason } => format!("{tool} bloqué : {reason}"),
         EventKind::UnmanagedSessionSeen { cwd, .. } => {
@@ -1503,6 +1706,25 @@ mod tests {
         assert_eq!(app.cost.daily.len(), 1, "la courbe est rangée à part");
         assert_eq!(app.cost.rows.len(), 1, "le tableau n'est pas écrasé");
         assert_eq!(app.cost.totals.cost_usd, Some(9.0));
+    }
+
+    #[test]
+    fn every_screen_refreshes_itself_on_the_tick() {
+        // The loop used to only repaint on the tick, without handing it to the
+        // app: nothing was polled, so a status changed elsewhere was only seen
+        // by leaving the screen and coming back.
+        let mut app = App::new();
+        let cmds = app.update(Msg::Tick);
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Command::ListTickets { .. })),
+            "le tableau interroge sa liste à chaque seconde : {cmds:?}"
+        );
+
+        // And the counters that turn on their own advance with it.
+        let before = app.ticks;
+        app.update(Msg::Tick);
+        assert_eq!(app.ticks, before + 1);
     }
 
     #[test]

@@ -64,13 +64,34 @@ fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect) {
         ),
     ];
     if app.planning {
+        let since = app
+            .planning_since
+            .map(|s| format!(" depuis {}", theme::elapsed(s, orchestra_core::now())))
+            .unwrap_or_default();
         first.push(Span::styled(
-            "   l'orchestrateur réfléchit…",
+            format!(
+                "   {} l'orchestrateur réfléchit{since}",
+                theme::spinner(app.ticks)
+            ),
             Style::default().add_modifier(Modifier::DIM),
         ));
     }
+    // The verdict decides whether the branch can be integrated, so it belongs
+    // where the branch is named. A symbol carries it, never a colour alone.
+    let review = detail
+        .review
+        .as_ref()
+        .map(|r| {
+            format!(
+                " · {} relecture {} : {}",
+                if r.is_ready() { "✓" } else { "!" },
+                r.round,
+                r.verdict.label_fr()
+            )
+        })
+        .unwrap_or_default();
     let second = format!(
-        "{} · {} · {} tokens · {cost} (indicatif){}",
+        "{} · {} · {} tokens · {cost} (indicatif){}{review}",
         detail.project.name,
         t.status.label_fr(),
         fmt_tokens(detail.tokens.total()),
@@ -164,14 +185,14 @@ fn render_brief(app: &App, frame: &mut Frame<'_>, area: Rect) {
             }
             ("Proposition — « a » pour la relire".to_string(), lines)
         }
+        (None, None) if app.planning => (
+            "L'orchestrateur compose l'équipe".to_string(),
+            planning_lines(app),
+        ),
         (None, None) => (
             "Équipe".to_string(),
             vec![Line::from(Span::styled(
-                if app.planning {
-                    "l'orchestrateur lit le dépôt et compose l'équipe…"
-                } else {
-                    "pas encore d'équipe — « p » demande une proposition"
-                },
+                "pas encore d'équipe — « p » demande une proposition",
                 Style::default().add_modifier(Modifier::DIM),
             ))],
         ),
@@ -183,6 +204,59 @@ fn render_brief(app: &App, frame: &mut Frame<'_>, area: Rect) {
             .wrap(Wrap { trim: true }),
         columns[1],
     );
+}
+
+/// What the orchestrator is doing, while it does it.
+///
+/// A run reads the repository for half a minute before answering. Shown as a
+/// still line, that is indistinguishable from a frozen screen — and the first
+/// reflex is to press keys at it.
+fn planning_lines(app: &App) -> Vec<Line<'static>> {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut lines = vec![Line::from(Span::raw(
+        "il lit le dépôt, ses conventions et ce qui existe déjà.",
+    ))];
+
+    // The counters are what say « vivant » when the trace is quiet.
+    let mut counters = Vec::new();
+    if let Some(since) = app.planning_since {
+        counters.push(theme::elapsed(since, orchestra_core::now()));
+    }
+    if let Some(agent) = app.orchestrator_agent() {
+        let tokens = agent.tokens.total();
+        if tokens > 0 {
+            counters.push(format!("{} tokens", fmt_tokens(tokens)));
+        }
+        if let Some(cost) = agent.cost_usd {
+            counters.push(format!("{} (indicatif)", fmt_usd(cost)));
+        }
+    }
+    if !counters.is_empty() {
+        lines.push(Line::from(Span::styled(counters.join(" · "), dim)));
+    }
+    lines.push(Line::from(""));
+
+    if app.planning_trace.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("{} démarrage du run…", theme::spinner(app.ticks)),
+            dim,
+        )));
+        return lines;
+    }
+    let last = app.planning_trace.len() - 1;
+    for (i, step) in app.planning_trace.iter().enumerate() {
+        // The newest line is the one happening now; the rest is done.
+        let marker = if i == last {
+            theme::spinner(app.ticks)
+        } else {
+            "·"
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker} "), dim),
+            Span::styled(step.clone(), if i == last { Style::default() } else { dim }),
+        ]));
+    }
+    lines
 }
 
 fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
@@ -217,7 +291,7 @@ fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
                 _ => a.turns.to_string(),
             };
             Row::new(vec![
-                Cell::from(a.agent.role.clone()),
+                Cell::from(crate::app::agent_label(&detail.agents, i)),
                 Cell::from(badge.label(a.agent.status.label_fr())).style(badge.style()),
                 Cell::from(since),
                 Cell::from(fmt_tokens(a.tokens.total())),
@@ -231,7 +305,7 @@ fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
         Table::new(
             rows,
             [
-                Constraint::Min(12),
+                Constraint::Min(18),
                 Constraint::Length(14),
                 Constraint::Length(11),
                 Constraint::Length(9),
@@ -258,6 +332,12 @@ fn render_keys(app: &App, frame: &mut Frame<'_>, area: Rect) {
     }
     keys.push("L lancer");
     keys.push("x arrêter");
+    if app.can_integrate() {
+        keys.push("f intégrer et terminer");
+    }
+    if detail.ticket.status == orchestra_core::model::TicketStatus::Review {
+        keys.push("t marquer terminé");
+    }
     keys.push("n nouveau ticket");
     keys.push("q retour");
     keys.push("Q quitter");

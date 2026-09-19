@@ -134,6 +134,15 @@ enum TicketAction {
     },
     /// Arrête le ticket et ses agents.
     Cancel { ticket: String },
+    /// Lance l'intégrateur sur un ticket relu, puis fusionne sa branche.
+    Integrate {
+        ticket: String,
+        /// Suit le déroulement jusqu'au bout.
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Marque terminé un ticket fusionné à la main.
+    Finish { ticket: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -551,7 +560,23 @@ async fn run_ticket(action: TicketAction, socket: &std::path::Path) -> Result<()
                 println!("suis-le : orchestra ticket show {}", detail.ticket.number);
                 return Ok(());
             }
-            follow_ticket(&mut client, id).await
+            follow_ticket(&mut client, id, true).await
+        }
+        TicketAction::Integrate { ticket, follow } => {
+            let id = resolve_ticket(&mut client, &ticket).await?;
+            client.call(Cmd::IntegrateTicket { ticket_id: id }).await?;
+            println!("intégration lancée");
+            if !follow {
+                println!("suis-la : orchestra ticket show {ticket}");
+                return Ok(());
+            }
+            follow_ticket(&mut client, id, false).await
+        }
+        TicketAction::Finish { ticket } => {
+            let id = resolve_ticket(&mut client, &ticket).await?;
+            client.call(Cmd::FinishTicket { ticket_id: id }).await?;
+            println!("ticket terminé");
+            Ok(())
         }
         TicketAction::Cancel { ticket } => {
             let id = resolve_ticket(&mut client, &ticket).await?;
@@ -723,7 +748,14 @@ async fn plan_ticket(client: &mut Client, ticket_id: uuid::Uuid, detach: bool) -
 }
 
 /// Poll a running ticket until it settles, printing what changes.
-async fn follow_ticket(client: &mut Client, ticket_id: uuid::Uuid) -> Result<()> {
+///
+/// `stop_on_review` is what tells a team run from an integration: the first
+/// ends in « à relire », the second starts there and ends « terminé ».
+async fn follow_ticket(
+    client: &mut Client,
+    ticket_id: uuid::Uuid,
+    stop_on_review: bool,
+) -> Result<()> {
     let mut last = String::new();
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -739,7 +771,8 @@ async fn follow_ticket(client: &mut Client, ticket_id: uuid::Uuid) -> Result<()>
             last = line;
         }
         if detail.ticket.status.is_terminal()
-            || detail.ticket.status == orchestra_core::model::TicketStatus::Review
+            || (stop_on_review
+                && detail.ticket.status == orchestra_core::model::TicketStatus::Review)
         {
             println!(
                 "\nticket #{} : {} — {} ({} tokens)",
@@ -806,6 +839,19 @@ async fn show_ticket(client: &mut Client, ticket_id: uuid::Uuid) -> Result<()> {
     } else if let Some(proposal) = &t.proposal {
         println!("\nproposition en attente d'acceptation :");
         print_proposal(proposal);
+    }
+    if let Some(review) = &detail.review {
+        println!(
+            "\nrelecture {} : {}",
+            review.round,
+            review.verdict.label_fr()
+        );
+        for line in &review.blocking {
+            println!("  - {line}");
+        }
+        if review.is_ready() && t.status == orchestra_core::model::TicketStatus::Review {
+            println!("  intègre-la : orchestra ticket integrate {}", t.number);
+        }
     }
     if !detail.agents.is_empty() {
         println!("\nagents :");
