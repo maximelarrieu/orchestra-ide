@@ -1,0 +1,21 @@
+[package]
+name = "orchestra-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Orchestra terminal dashboard (ratatui), a client of the daemon socket."
+
+[dependencies]
+orchestra-core.workspace = true
+
+anyhow.workspace = true
+crossterm.workspace = true
+futures.workspace = true
+ratatui.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+unicode-width.workspace = true
+uuid.workspace = true

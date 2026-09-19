@@ -1,0 +1,25 @@
+[package]
+name = "orchestra"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Orchestra IDE: a dashboard that runs a farm of Claude Code agents."
+
+[[bin]]
+name = "orchestra"
+path = "src/main.rs"
+
+[dependencies]
+orchestra-core.workspace = true
+orchestra-daemon.workspace = true
+orchestra-tui.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "orchestra-hook"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tiny hook shim invoked by Claude Code; forwards hook JSON to the daemon socket."
+
+[[bin]]
+name = "orchestra-hook"
+path = "src/main.rs"
+
+# Deliberately dependency-free: this runs on every tool call of every agent and
+# must start in milliseconds and never fail the agent.
+[dependencies]

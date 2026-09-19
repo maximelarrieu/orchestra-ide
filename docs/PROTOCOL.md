@@ -1,0 +1,80 @@
+# Protocole daemon ⇄ clients
+
+Socket Unix, **un objet JSON par ligne**, UTF-8, ligne limitée à 4 Mio.
+
+- Chemin : `$ORCHESTRA_SOCK`, sinon `$XDG_RUNTIME_DIR/orchestra.sock`, sinon
+  `/tmp/orchestra-<uid>.sock`. Permissions `0600`.
+- Un `flock` sur le fichier `.lock` voisin garantit un seul daemon.
+- Version du protocole : `1`. Un client qui annonce une autre version est refusé.
+
+## Séquence
+
+```
+client                              daemon
+  │  ── connexion ─────────────────►│
+  │◄── {"type":"hello", ...} ───────│   première ligne, toujours
+  │  ── {"id":1,"cmd":"ping"} ─────►│
+  │◄── {"id":1,"outcome":"ok","reply":"pong"}
+```
+
+## Requête
+
+```json
+{"id": 7, "cmd": "create_ticket", "project_id": "…", "title": "…", "brief": "…"}
+```
+
+`id` est choisi par le client et renvoyé tel quel. Le nom de la commande est aplati
+dans l'objet, sous la clé `cmd`.
+
+## Réponse
+
+```json
+{"id": 7, "outcome": "ok",  "reply": "tickets", "tickets": [...]}
+{"id": 7, "outcome": "err", "error": {"code": "not_found", "message": "ticket introuvable"}}
+```
+
+Le discriminant de succès est `outcome`, pas `status` : `Reply` est aplati dans le
+même objet et possède déjà un champ `status`. Un test parcourt toutes les variantes
+pour empêcher ce genre de collision de revenir.
+
+Codes d'erreur : `not_found`, `invalid`, `conflict`, `internal`, `unsupported`.
+
+## Abonnement aux événements
+
+```json
+{"id": 2, "cmd": "subscribe", "filter": {"exclude_verbose": true}, "backlog": 50}
+```
+
+Le daemon renvoie `{"reply":"subscribed","current_seq":N}` puis pousse des trames
+`{"type":"event", …}` sur la même connexion, mêlées aux réponses.
+
+- `backlog` : nombre d'événements passés rejoués avant le direct.
+- `since_seq` : reprise exacte après une coupure ; le client redonne le dernier `seq` vu.
+- Si un client prend trop de retard, le daemon rejoue depuis la base ce qu'il a manqué
+  plutôt que de laisser un trou.
+
+Le filtre accepte `project_id`, `ticket_id`, `agent_id`, une liste de `tags`, et
+`exclude_verbose` qui écarte les événements bavards (texte d'agent, réflexion, outils).
+
+## Événements
+
+Un seul type, discriminé par `kind` : `daemon_started`, `project_added`,
+`ticket_created`, `ticket_status_changed`, `proposal_ready`, `worktree_created`,
+`agent_spawned`, `agent_status_changed`, `agent_text`, `agent_thinking`,
+`tool_started`, `tool_finished`, `usage`, `agent_steered`, `agent_result`,
+`hook_blocked`, `unmanaged_session_seen`, `warning`, et quelques autres.
+
+Chaque événement porte un `seq` monotone attribué par la base, un horodatage RFC 3339,
+et la portée qui le concerne (`project_id`, `ticket_id`, `agent_id`).
+
+## Hooks
+
+`orchestra-hook` envoie la charge utile du hook telle quelle :
+
+```json
+{"id": 1, "cmd": "hook", "agent_id": "…", "payload": { … JSON de Claude Code … }}
+```
+
+et lit la réponse `{"reply":"hook","allow":false,"reason":"…"}`. Seul un refus
+explicite fait sortir le shim en code 2 ; toute autre situation, y compris un daemon
+injoignable, laisse passer l'appel d'outil.

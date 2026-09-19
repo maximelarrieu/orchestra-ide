@@ -1,0 +1,70 @@
+//! Orchestra daemon.
+//!
+//! Owns the SQLite store, the event bus and (from phase 3) the agent
+//! supervisor. Clients talk to it over a Unix socket; see
+//! `orchestra-core::protocol`.
+
+pub mod bus;
+pub mod daemon;
+pub mod server;
+pub mod store;
+
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use orchestra_core::config::{Config, ResolvedPaths};
+use orchestra_core::events::EventKind;
+
+pub use bus::EventBus;
+pub use daemon::{Daemon, DaemonHandle};
+pub use store::Store;
+
+/// Boot everything and serve until `shutdown` resolves.
+pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -> Result<()> {
+    cfg.validate().context("configuration invalide")?;
+    let paths = ResolvedPaths::from_config(&cfg);
+    prepare_dirs(&paths)?;
+
+    let store = Store::open(&paths.db_file)?;
+    let daemon = Daemon::new(cfg, store);
+    let handle = daemon.handle();
+    let bus = daemon.bus().clone();
+    let started_at = orchestra_core::now();
+
+    // Bind before spawning the core so a second instance fails fast.
+    let guard = server::bind(&paths.socket, &paths.lock_file)?;
+
+    let core = tokio::spawn(daemon.run());
+    bus.publish_kind(EventKind::DaemonStarted {
+        version: orchestra_core::VERSION.to_string(),
+    })
+    .await?;
+
+    let result = server::serve(guard, handle, started_at, shutdown).await;
+    // Dropping the last handle ends the core loop.
+    drop(bus);
+    core.abort();
+    result
+}
+
+fn prepare_dirs(paths: &ResolvedPaths) -> Result<()> {
+    for dir in [
+        &paths.data_dir,
+        &paths.state_dir,
+        &paths.cache_dir,
+        &paths.worktrees_dir,
+    ] {
+        create_private_dir(dir)?;
+    }
+    Ok(())
+}
+
+fn create_private_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).with_context(|| format!("création de {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(())
+}

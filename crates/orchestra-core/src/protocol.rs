@@ -1,0 +1,659 @@
+//! Wire protocol between the daemon and its clients (TUI, CLI, `orchestra tail`).
+//!
+//! One JSON object per line over a Unix socket. A client sends [`Request`]s and
+//! reads [`Frame`]s: responses to its own requests, plus events once it has
+//! subscribed.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::events::{Event, EventFilter};
+use crate::model::{
+    Agent, AgentId, Project, ProjectId, RoleDefinition, Team, Ticket, TicketId, TicketStatus,
+    Tokens,
+};
+
+/// Bumped when a change would confuse an older client. The daemon refuses
+/// clients announcing a different version.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Request {
+    pub id: u64,
+    #[serde(flatten)]
+    pub cmd: Command,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum Command {
+    Ping,
+    ListProjects,
+    AddProject {
+        path: PathBuf,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    ListTickets {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+        #[serde(default)]
+        status: Option<Vec<TicketStatus>>,
+    },
+    GetTicket {
+        ticket_id: TicketId,
+    },
+    CreateTicket {
+        project_id: ProjectId,
+        title: String,
+        brief: String,
+    },
+    /// Runs the orchestrator. Replies immediately; the proposal arrives as a
+    /// `ProposalReady` event.
+    PlanTicket {
+        ticket_id: TicketId,
+    },
+    AcceptProposal {
+        ticket_id: TicketId,
+        /// The team as edited by the user, not necessarily the proposal.
+        team: Team,
+    },
+    LaunchTicket {
+        ticket_id: TicketId,
+        #[serde(default)]
+        open_panes: bool,
+    },
+    CancelTicket {
+        ticket_id: TicketId,
+    },
+    SteerAgent {
+        agent_id: AgentId,
+        text: String,
+        /// Interrupt and resume instead of queueing a message.
+        #[serde(default)]
+        hard: bool,
+    },
+    CancelAgent {
+        agent_id: AgentId,
+    },
+    /// Turns this connection into an event stream. `backlog` past events are
+    /// replayed first, then live ones.
+    Subscribe {
+        #[serde(default)]
+        filter: EventFilter,
+        #[serde(default)]
+        since_seq: Option<i64>,
+        #[serde(default)]
+        backlog: u32,
+    },
+    Unsubscribe,
+    GetUsage {
+        #[serde(default)]
+        query: UsageQuery,
+    },
+    OpenPane {
+        agent_id: AgentId,
+    },
+    ListRoles {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+    },
+    /// Sent by `orchestra-hook` on every hook event of a managed agent.
+    Hook {
+        #[serde(default)]
+        agent_id: Option<AgentId>,
+        payload: serde_json::Value,
+    },
+    /// Daemon version, uptime, running agents. Used by `orchestra doctor`.
+    Status,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "reply", rename_all = "snake_case")]
+pub enum Reply {
+    Pong,
+    /// The command was accepted; its outcome will arrive as events.
+    Ack,
+    Projects {
+        projects: Vec<Project>,
+    },
+    Project {
+        project: Box<Project>,
+    },
+    Tickets {
+        tickets: Vec<TicketSummary>,
+    },
+    Ticket {
+        detail: Box<TicketDetail>,
+    },
+    Roles {
+        roles: Vec<RoleDefinition>,
+    },
+    Usage {
+        rows: Vec<UsageRow>,
+        totals: UsageTotals,
+    },
+    Pane {
+        pane_id: String,
+    },
+    Status {
+        status: Box<DaemonStatus>,
+    },
+    /// Subscription accepted; events follow on this connection.
+    Subscribed {
+        /// Last sequence in the store when the subscription started.
+        current_seq: i64,
+    },
+    /// Verdict returned to `orchestra-hook`.
+    Hook {
+        allow: bool,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApiError {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+impl ApiError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        ApiError {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn not_found(what: impl std::fmt::Display) -> Self {
+        ApiError::new(ErrorCode::NotFound, format!("{what} introuvable"))
+    }
+
+    pub fn invalid(message: impl Into<String>) -> Self {
+        ApiError::new(ErrorCode::Invalid, message)
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        ApiError::new(ErrorCode::Conflict, message)
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        ApiError::new(ErrorCode::Internal, message)
+    }
+
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        ApiError::new(ErrorCode::Unsupported, message)
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    NotFound,
+    /// Bad arguments, or an operation the current state forbids.
+    Invalid,
+    /// Something the daemon cannot do right now (agent already running, ...).
+    Conflict,
+    Internal,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Response {
+    pub id: u64,
+    #[serde(flatten)]
+    pub result: ResponseResult,
+}
+
+/// `Result` needs a tagged representation to survive JSON round-trips.
+///
+/// The tag is `outcome`, not `status`: `Reply` is flattened into the same
+/// object and already owns a `status` field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ResponseResult {
+    Ok {
+        #[serde(flatten)]
+        reply: Reply,
+    },
+    Err {
+        error: ApiError,
+    },
+}
+
+impl ResponseResult {
+    pub fn into_result(self) -> Result<Reply, ApiError> {
+        match self {
+            ResponseResult::Ok { reply } => Ok(reply),
+            ResponseResult::Err { error } => Err(error),
+        }
+    }
+}
+
+impl From<Result<Reply, ApiError>> for ResponseResult {
+    fn from(r: Result<Reply, ApiError>) -> Self {
+        match r {
+            Ok(reply) => ResponseResult::Ok { reply },
+            Err(error) => ResponseResult::Err { error },
+        }
+    }
+}
+
+/// What the daemon writes on the socket.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Frame {
+    /// First line of every connection.
+    Hello {
+        version: String,
+        protocol: u32,
+        #[serde(with = "time::serde::rfc3339")]
+        daemon_started: OffsetDateTime,
+    },
+    Response(Response),
+    Event(Box<Event>),
+}
+
+// ---------------------------------------------------------------------------
+// Views
+// ---------------------------------------------------------------------------
+
+/// One row of the board: a ticket plus what the board needs to draw it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TicketSummary {
+    pub ticket: Ticket,
+    pub agents_total: usize,
+    pub agents_active: usize,
+    pub agents_done: usize,
+    pub tokens: Tokens,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TicketDetail {
+    pub ticket: Ticket,
+    pub project: Project,
+    pub agents: Vec<AgentSummary>,
+    pub tokens: Tokens,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    /// Most recent events of the ticket, oldest first.
+    pub recent_events: Vec<Event>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentSummary {
+    pub agent: Agent,
+    pub tokens: Tokens,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    /// Number of assistant turns seen so far.
+    pub turns: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DaemonStatus {
+    pub version: String,
+    pub protocol: u32,
+    #[serde(with = "time::serde::rfc3339")]
+    pub started_at: OffsetDateTime,
+    pub projects: usize,
+    pub tickets_running: usize,
+    pub agents_running: usize,
+    pub last_seq: i64,
+    /// Transcript files the watcher is tracking.
+    pub watched_files: usize,
+    #[serde(default)]
+    pub claude_version: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Usage queries
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupBy {
+    Project,
+    Ticket,
+    Agent,
+    Role,
+    Model,
+    Day,
+}
+
+impl GroupBy {
+    pub const ALL: [GroupBy; 6] = [
+        GroupBy::Project,
+        GroupBy::Ticket,
+        GroupBy::Agent,
+        GroupBy::Role,
+        GroupBy::Model,
+        GroupBy::Day,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupBy::Project => "project",
+            GroupBy::Ticket => "ticket",
+            GroupBy::Agent => "agent",
+            GroupBy::Role => "role",
+            GroupBy::Model => "model",
+            GroupBy::Day => "day",
+        }
+    }
+
+    pub fn label_fr(self) -> &'static str {
+        match self {
+            GroupBy::Project => "projet",
+            GroupBy::Ticket => "ticket",
+            GroupBy::Agent => "agent",
+            GroupBy::Role => "rôle",
+            GroupBy::Model => "modèle",
+            GroupBy::Day => "jour",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|g| g.as_str() == s)
+    }
+}
+
+/// Half-open time range `[since, until)`; `None` means unbounded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct TimeRange {
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub since: Option<OffsetDateTime>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub until: Option<OffsetDateTime>,
+}
+
+impl TimeRange {
+    pub fn all() -> Self {
+        Self::default()
+    }
+
+    pub fn last_days(n: i64) -> Self {
+        TimeRange {
+            since: Some(crate::now() - time::Duration::days(n)),
+            until: None,
+        }
+    }
+
+    pub fn contains(&self, ts: OffsetDateTime) -> bool {
+        self.since.is_none_or(|s| ts >= s) && self.until.is_none_or(|u| ts < u)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UsageQuery {
+    pub group_by: Vec<GroupBy>,
+    pub range: TimeRange,
+    pub project_id: Option<ProjectId>,
+    pub ticket_id: Option<TicketId>,
+    pub agent_id: Option<AgentId>,
+    /// Include sessions Orchestra did not start (the user's own `claude` runs).
+    pub include_unmanaged: bool,
+    pub limit: u32,
+}
+
+impl Default for UsageQuery {
+    fn default() -> Self {
+        UsageQuery {
+            group_by: vec![GroupBy::Project],
+            range: TimeRange::all(),
+            project_id: None,
+            ticket_id: None,
+            agent_id: None,
+            include_unmanaged: true,
+            limit: 200,
+        }
+    }
+}
+
+/// One aggregated line. `keys` holds the group values in the order requested,
+/// e.g. `{"project": "orchestra-ide", "model": "claude-opus-5"}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageRow {
+    pub keys: BTreeMap<String, String>,
+    pub tokens: Tokens,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    pub messages: u64,
+    /// True when at least one model in the row used the fallback price.
+    #[serde(default)]
+    pub cost_estimated: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageTotals {
+    pub tokens: Tokens,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    pub messages: u64,
+    /// Sum of `result.total_cost_usd` reported by Claude Code itself, when
+    /// available. Lets the UI show the drift against our price table.
+    #[serde(default)]
+    pub reported_cost_usd: Option<f64>,
+}
+
+/// Helper for clients: a request id generator.
+#[derive(Debug, Default)]
+pub struct RequestIds(u64);
+
+impl RequestIds {
+    pub fn next_id(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+}
+
+/// Identifies a Claude Code session, managed or not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRef {
+    pub session_id: Uuid,
+    #[serde(default)]
+    pub agent_id: Option<AgentId>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::{EventKind, NewEvent};
+
+    fn line<T: Serialize>(v: &T) -> String {
+        let s = serde_json::to_string(v).unwrap();
+        assert!(!s.contains('\n'), "les trames doivent tenir sur une ligne");
+        s
+    }
+
+    #[test]
+    fn requests_round_trip_on_one_line() {
+        let cmds = vec![
+            Command::Ping,
+            Command::ListProjects,
+            Command::AddProject {
+                path: PathBuf::from("/tmp/p"),
+                name: Some("p".into()),
+            },
+            Command::CreateTicket {
+                project_id: Uuid::new_v4(),
+                title: "t".into(),
+                brief: "brief\navec\nsauts".into(),
+            },
+            Command::SteerAgent {
+                agent_id: Uuid::new_v4(),
+                text: "vas-y".into(),
+                hard: true,
+            },
+            Command::Subscribe {
+                filter: EventFilter::board(),
+                since_seq: Some(42),
+                backlog: 100,
+            },
+            Command::GetUsage {
+                query: UsageQuery::default(),
+            },
+            Command::Status,
+        ];
+        for cmd in cmds {
+            let req = Request { id: 7, cmd };
+            let s = line(&req);
+            assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), req);
+        }
+    }
+
+    #[test]
+    fn command_tag_is_flattened_into_the_request() {
+        let req = Request {
+            id: 1,
+            cmd: Command::Ping,
+        };
+        let v: serde_json::Value = serde_json::from_str(&line(&req)).unwrap();
+        assert_eq!(v["id"], 1);
+        assert_eq!(v["cmd"], "ping");
+    }
+
+    #[test]
+    fn responses_carry_ok_or_err() {
+        let ok = Response {
+            id: 1,
+            result: Ok(Reply::Pong).into(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&line(&ok)).unwrap();
+        assert_eq!(v["outcome"], "ok");
+        assert_eq!(v["reply"], "pong");
+        assert_eq!(serde_json::from_str::<Response>(&line(&ok)).unwrap(), ok);
+
+        let err = Response {
+            id: 2,
+            result: Err(ApiError::not_found("ticket")).into(),
+        };
+        let back: Response = serde_json::from_str(&line(&err)).unwrap();
+        let e = back.result.into_result().unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+        assert!(e.message.contains("introuvable"));
+    }
+
+    #[test]
+    fn every_reply_survives_a_response_round_trip() {
+        // `Reply` is flattened into `Response`, so a field colliding with the
+        // envelope's own tag silently breaks that variant. This caught
+        // `Reply::Status { status }` against a `status` tag.
+        let now = crate::now();
+        let replies = vec![
+            Reply::Pong,
+            Reply::Ack,
+            Reply::Projects { projects: vec![] },
+            Reply::Tickets { tickets: vec![] },
+            Reply::Roles { roles: vec![] },
+            Reply::Usage {
+                rows: vec![],
+                totals: UsageTotals::default(),
+            },
+            Reply::Pane {
+                pane_id: "terminal_3".into(),
+            },
+            Reply::Subscribed { current_seq: 12 },
+            Reply::Hook {
+                allow: false,
+                reason: Some("hors worktree".into()),
+            },
+            Reply::Status {
+                status: Box::new(DaemonStatus {
+                    version: "0.1.0".into(),
+                    protocol: PROTOCOL_VERSION,
+                    started_at: now,
+                    projects: 1,
+                    tickets_running: 2,
+                    agents_running: 3,
+                    last_seq: 4,
+                    watched_files: 5,
+                    claude_version: None,
+                }),
+            },
+        ];
+        for reply in replies {
+            let resp = Response {
+                id: 1,
+                result: Ok(reply.clone()).into(),
+            };
+            let s = line(&resp);
+            let back: Response = serde_json::from_str(&s)
+                .unwrap_or_else(|e| panic!("réponse illisible pour {reply:?} : {e}\n{s}"));
+            assert_eq!(back.result.into_result().unwrap(), reply);
+        }
+    }
+
+    #[test]
+    fn frames_distinguish_hello_response_and_event() {
+        let hello = Frame::Hello {
+            version: "0.1.0".into(),
+            protocol: PROTOCOL_VERSION,
+            daemon_started: crate::now(),
+        };
+        assert_eq!(serde_json::from_str::<Frame>(&line(&hello)).unwrap(), hello);
+
+        let event = Frame::Event(Box::new(Event::from_new(
+            9,
+            NewEvent::new(EventKind::Warning {
+                message: "attention".into(),
+            }),
+        )));
+        let v: serde_json::Value = serde_json::from_str(&line(&event)).unwrap();
+        assert_eq!(v["type"], "event");
+        assert_eq!(serde_json::from_str::<Frame>(&line(&event)).unwrap(), event);
+    }
+
+    #[test]
+    fn usage_query_defaults_are_sane() {
+        let q = UsageQuery::default();
+        assert_eq!(q.group_by, vec![GroupBy::Project]);
+        assert!(q.include_unmanaged);
+        assert_eq!(serde_json::from_str::<UsageQuery>("{}").unwrap(), q);
+    }
+
+    #[test]
+    fn group_by_round_trips() {
+        for g in GroupBy::ALL {
+            assert_eq!(GroupBy::parse(g.as_str()), Some(g));
+        }
+        assert_eq!(GroupBy::parse("nope"), None);
+    }
+
+    #[test]
+    fn time_range_is_half_open() {
+        let now = crate::now();
+        let r = TimeRange {
+            since: Some(now),
+            until: Some(now + time::Duration::hours(1)),
+        };
+        assert!(r.contains(now));
+        assert!(!r.contains(now - time::Duration::seconds(1)));
+        assert!(!r.contains(now + time::Duration::hours(1)));
+        assert!(TimeRange::all().contains(now));
+        assert!(TimeRange::last_days(7).contains(now));
+    }
+
+    #[test]
+    fn request_ids_increase() {
+        let mut ids = RequestIds::default();
+        assert_eq!(ids.next_id(), 1);
+        assert_eq!(ids.next_id(), 2);
+    }
+}
