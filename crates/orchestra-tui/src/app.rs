@@ -593,8 +593,13 @@ impl App {
         }
     }
 
-    /// Watch the selected agent of the open ticket.
+    /// Watch an agent of the open ticket.
+    ///
+    /// Opening a ticket lands on the agent that is working, not on the first
+    /// row: the orchestrator sorts before the team and watching it while the
+    /// real agent runs looks exactly like a frozen screen.
     fn open_agent(&mut self) {
+        self.select_liveliest_agent();
         let Some(agent_id) = self.watched_agent_id() else {
             self.status = "aucun agent sur ce ticket".into();
             return;
@@ -607,6 +612,37 @@ impl App {
             since_seq: None,
             backlog: 500,
         });
+    }
+
+    /// Prefer a running agent, then the most recently started one.
+    fn select_liveliest_agent(&mut self) {
+        let Some(detail) = self.ticket.as_ref() else {
+            return;
+        };
+        // An agent the user picked deliberately is left alone.
+        if self
+            .watched_agent()
+            .is_some_and(|a| a.agent.status.is_active())
+        {
+            return;
+        }
+        let running = detail
+            .agents
+            .iter()
+            .position(|a| a.agent.status.is_active());
+        let fallback = || {
+            detail
+                .agents
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.agent.role != orchestra_core::model::ORCHESTRATOR_ROLE)
+                .max_by_key(|(_, a)| a.agent.started_at)
+                .map(|(i, _)| i)
+                .or(detail.agents.len().checked_sub(1))
+        };
+        if let Some(index) = running.or_else(fallback) {
+            self.agent_selected = index;
+        }
     }
 
     fn on_agent_char(&mut self, c: char) {
@@ -949,6 +985,26 @@ impl App {
                 }
                 let count = self.ticket.as_ref().map(|d| d.agents.len()).unwrap_or(0);
                 self.agent_selected = self.agent_selected.min(count.saturating_sub(1));
+                // While watching, follow the team: when one agent hands over to
+                // the next, the screen moves with it.
+                if self.screen == Screen::Agent
+                    && !self
+                        .watched_agent()
+                        .is_some_and(|a| a.agent.status.is_active())
+                {
+                    let previous = self.watched_agent_id();
+                    self.select_liveliest_agent();
+                    if self.watched_agent_id() != previous {
+                        self.log.clear();
+                        if let Some(id) = self.watched_agent_id() {
+                            self.outbox.push(Command::Subscribe {
+                                filter: orchestra_core::events::EventFilter::for_agent(id),
+                                since_seq: None,
+                                backlog: 500,
+                            });
+                        }
+                    }
+                }
             }
             Reply::Roles { roles } => {
                 self.roles = roles;

@@ -197,7 +197,15 @@ fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let rows: Vec<Row> = detail
         .agents
         .iter()
-        .map(|a| {
+        .enumerate()
+        .map(|(i, a)| {
+            let style = if i == app.agent_selected {
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            } else if a.agent.status.is_active() {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
             Row::new(vec![
                 a.agent.role.clone(),
                 a.agent.status.label_fr().to_string(),
@@ -205,6 +213,7 @@ fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
                 fmt_tokens(a.tokens.total()),
                 a.cost_usd.map(fmt_usd).unwrap_or_else(|| "-".into()),
             ])
+            .style(style)
         })
         .collect();
 
@@ -223,7 +232,10 @@ fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
             Row::new(vec!["rôle", "statut", "tours", "tokens", "coût"])
                 .style(Style::default().add_modifier(Modifier::BOLD)),
         )
-        .block(pane_block("Agents", false)),
+        .block(pane_block(
+            "Agents — j/k choisir, Entrée suivre en direct",
+            false,
+        )),
         area,
     );
 }

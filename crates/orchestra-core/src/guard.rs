@@ -99,28 +99,35 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
         return Verdict::Allow;
     }
 
+    // Catastrophic patterns are looked for everywhere, heredoc bodies
+    // included: `bash <<EOF … EOF` really does run what it contains.
     if let Some(reason) = catastrophic(trimmed) {
         return Verdict::Deny(reason);
     }
 
-    for word in tokens(trimmed) {
+    // The path scan stops at a heredoc, because from there the text is data,
+    // not arguments. Without this, a CSS comment or a Python snippet written
+    // through `<<'PY'` looked like an escape and blocked ordinary work.
+    let scanned = command_part(trimmed);
+
+    for word in tokens(scanned) {
         // A path written out in full is checked whatever the command is: it is
         // the one signal that does not depend on knowing every tool's flags.
-        if word.starts_with('/') || word.starts_with("~/") {
-            let word = word.as_str();
-            let path = expand(word);
-            if !boundary.contains(&path) && !readable_system_path(&path) {
-                return Verdict::Deny(format!(
-                    "« {} » est hors du worktree du ticket ({}). \
-                     Travaille uniquement dans ton répertoire de travail.",
-                    word,
-                    boundary.worktree.display()
-                ));
-            }
+        if !looks_like_path(&word) {
+            continue;
+        }
+        let path = expand(&word);
+        if !boundary.contains(&path) && !writable_system_path(&path) {
+            return Verdict::Deny(format!(
+                "« {} » est hors du worktree du ticket ({}). \
+                 Travaille uniquement dans ton répertoire de travail.",
+                word,
+                boundary.worktree.display()
+            ));
         }
     }
 
-    if let Some(sub) = git_subcommand(trimmed) {
+    if let Some(sub) = git_subcommand(scanned) {
         if FORBIDDEN_GIT.contains(&sub.as_str()) {
             return Verdict::Deny(format!(
                 "« git {sub} » est interdit : ta branche est relue avant toute fusion, \
@@ -130,6 +137,35 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
     }
 
     Verdict::Allow
+}
+
+/// The part of a command line that is still command, not heredoc content.
+fn command_part(command: &str) -> &str {
+    match command.find("<<") {
+        // Keep the line that introduces the heredoc: its redirections are real.
+        Some(pos) => {
+            let head = &command[..pos];
+            head.rsplit_once('\n').map(|(_, last)| last).unwrap_or(head)
+        }
+        None => command,
+    }
+}
+
+/// Does this token name a path, rather than merely start with a slash?
+///
+/// `/*` in a comment or a glob is not a path; `/tmp/x.log` is. Requiring a
+/// name character after the slash separates the two.
+fn looks_like_path(word: &str) -> bool {
+    let rest = if let Some(r) = word.strip_prefix("~/") {
+        r
+    } else if let Some(r) = word.strip_prefix('/') {
+        r
+    } else {
+        return false;
+    };
+    rest.chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
 /// Inspect a path a tool wants to write.
@@ -145,7 +181,7 @@ pub fn check_write_path(boundary: &Boundary, path: &str) -> Verdict {
     } else {
         boundary.worktree.join(expanded)
     };
-    if boundary.contains(&candidate) {
+    if boundary.contains(&candidate) || writable_system_path(&candidate) {
         Verdict::Allow
     } else {
         Verdict::Deny(format!(
@@ -235,10 +271,15 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
-/// System paths a command may mention without it meaning an escape: binaries,
-/// devices and temporary files.
-fn readable_system_path(path: &Path) -> bool {
-    const ALLOWED: [&str; 8] = [
+/// Paths a command may mention without it meaning an escape.
+///
+/// System directories hold the binaries and configuration an agent reads, and
+/// the temporary directory is scratch space: logs, screenshots, throwaway
+/// configuration. Confining an agent to its worktree means protecting the
+/// user's code, not forbidding a log file — blocking the temporary directory
+/// stopped real work twice in a single run against a real project.
+fn writable_system_path(path: &Path) -> bool {
+    const ALLOWED: [&str; 10] = [
         "/usr",
         "/bin",
         "/sbin",
@@ -247,9 +288,13 @@ fn readable_system_path(path: &Path) -> bool {
         "/etc",
         "/dev/null",
         "/proc",
+        "/tmp",
+        "/var/tmp",
     ];
     let text = path.to_string_lossy();
-    ALLOWED.iter().any(|prefix| text.starts_with(prefix))
+    ALLOWED
+        .iter()
+        .any(|prefix| text == *prefix || text.starts_with(&format!("{prefix}/")))
 }
 
 #[cfg(test)]
@@ -304,6 +349,50 @@ mod tests {
         assert!(write("/home/u/.bashrc").is_denied());
         assert!(write("../../ailleurs.txt").is_denied());
         assert!(write("/home/u/worktrees/depot/2-autre/x.rs").is_denied());
+    }
+
+    #[test]
+    fn a_heredoc_body_is_data_not_arguments() {
+        // Both of these blocked real work on the first run against a real
+        // project: the first is a CSS comment, the second Python source.
+        assert_eq!(
+            bash("cat >> style.css <<'CSS'\n/* Thème clair */\nbody { color: #222; }\nCSS"),
+            Verdict::Allow
+        );
+        assert_eq!(
+            bash("/usr/bin/python3 - 'shot.py' <<'PY'\nimport pathlib\np = pathlib.Path('/home/u/ailleurs')\nPY"),
+            Verdict::Allow
+        );
+        // What the heredoc redirects to is still checked.
+        assert!(bash("cat > /home/u/ailleurs.txt <<'EOF'\ncontenu\nEOF").is_denied());
+        // And a heredoc that really runs something catastrophic is still caught.
+        assert!(bash("bash <<'EOF'\nrm -rf /\nEOF").is_denied());
+    }
+
+    #[test]
+    fn a_glob_is_not_a_path() {
+        // `/*` looked like an absolute path and blocked a CSS comment.
+        assert_eq!(bash("echo /* commentaire */"), Verdict::Allow);
+        assert_eq!(bash("ls src/*.py"), Verdict::Allow);
+        // The dangerous shape stays blocked by its own rule.
+        assert!(bash("rm -rf /*").is_denied());
+    }
+
+    #[test]
+    fn the_temporary_directory_is_scratch_space_not_an_escape() {
+        // An agent writes logs, screenshots and throwaway configuration there;
+        // it holds nothing of the user's.
+        for command in [
+            "python3 app.py > /tmp/st.log 2>&1",
+            "XDG_CONFIG_HOME=$(mktemp -d) xvfb-run -a python3 shot.py",
+            "cp capture.png /tmp/capture.png",
+            "cat /var/tmp/notes",
+        ] {
+            assert_eq!(bash(command), Verdict::Allow, "refusé à tort : {command}");
+        }
+        assert_eq!(write("/tmp/sortie.log"), Verdict::Allow);
+        // A directory that merely starts like it is not it.
+        assert!(write("/tmpvolé/x").is_denied());
     }
 
     #[test]
@@ -374,12 +463,12 @@ mod tests {
     #[test]
     fn extra_directories_widen_the_box() {
         let mut b = boundary();
-        b.extra.push(PathBuf::from("/tmp/scratch"));
+        b.extra.push(PathBuf::from("/srv/partage"));
         assert_eq!(
-            check(&b, "Write", &json!({"file_path": "/tmp/scratch/notes.md"})),
+            check(&b, "Write", &json!({"file_path": "/srv/partage/notes.md"})),
             Verdict::Allow
         );
-        assert!(check(&b, "Write", &json!({"file_path": "/tmp/ailleurs"})).is_denied());
+        assert!(check(&b, "Write", &json!({"file_path": "/srv/ailleurs"})).is_denied());
     }
 
     #[test]

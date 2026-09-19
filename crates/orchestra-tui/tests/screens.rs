@@ -445,6 +445,98 @@ fn app_watching_agent() -> App {
     app
 }
 
+/// A ticket with the orchestrator first, then a team agent.
+fn detail_with_team_agent(team_status: AgentStatus) -> TicketDetail {
+    let mut d = detail(false, true);
+    let base = d.agents[0].clone();
+    let mut worker = base.clone();
+    worker.agent.id = Uuid::new_v4();
+    worker.agent.role = "frontend".into();
+    worker.agent.status = team_status;
+    worker.agent.started_at = Some(orchestra_core::now());
+    // The orchestrator comes first, as the store returns it.
+    d.agents = vec![base, worker];
+    d
+}
+
+#[test]
+fn opening_a_ticket_lands_on_the_agent_that_is_working() {
+    // Watching the orchestrator while the real agent runs looks exactly like
+    // a frozen screen; that is what happened on the first real run.
+    let mut app = App::new();
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(detail_with_team_agent(AgentStatus::Running)),
+    })));
+    app.screen = Screen::Ticket;
+
+    app.update(Msg::Key(Action::Select));
+    assert_eq!(app.screen, Screen::Agent);
+    assert_eq!(
+        app.watched_agent().unwrap().agent.role,
+        "frontend",
+        "on ouvre l'agent en cours, pas l'orchestrateur"
+    );
+}
+
+#[test]
+fn without_a_running_agent_the_last_worker_is_shown() {
+    let mut app = App::new();
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(detail_with_team_agent(AgentStatus::Done)),
+    })));
+    app.screen = Screen::Ticket;
+    app.update(Msg::Key(Action::Select));
+    assert_eq!(app.watched_agent().unwrap().agent.role, "frontend");
+}
+
+#[test]
+fn a_deliberate_choice_of_agent_is_respected() {
+    let mut app = App::new();
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(detail_with_team_agent(AgentStatus::Running)),
+    })));
+    app.screen = Screen::Ticket;
+    // The user moves to the orchestrator on purpose.
+    app.update(Msg::Key(Action::Up));
+    assert_eq!(app.agent_selected, 0);
+    app.update(Msg::Key(Action::Select));
+    assert_eq!(
+        app.watched_agent().unwrap().agent.role,
+        "frontend",
+        "sans agent actif sélectionné, on suit celui qui travaille"
+    );
+}
+
+#[test]
+fn the_screen_follows_the_team_from_one_agent_to_the_next() {
+    let mut app = App::new();
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(detail_with_team_agent(AgentStatus::Running)),
+    })));
+    app.screen = Screen::Ticket;
+    app.update(Msg::Key(Action::Select));
+    let first = app.watched_agent_id();
+
+    // The first agent finishes and a second one starts.
+    let mut next = detail_with_team_agent(AgentStatus::Done);
+    let mut third = next.agents[1].clone();
+    third.agent.id = Uuid::new_v4();
+    third.agent.role = "tests".into();
+    third.agent.status = AgentStatus::Running;
+    next.agents.push(third);
+    let cmds = app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(next),
+    })));
+
+    assert_eq!(app.watched_agent().unwrap().agent.role, "tests");
+    assert_ne!(app.watched_agent_id(), first);
+    assert!(
+        cmds.iter().any(|c| matches!(c, Command::Subscribe { .. })),
+        "l'écran s'abonne au nouvel agent"
+    );
+    assert!(app.log.is_empty(), "le log repart propre");
+}
+
 #[test]
 fn opening_an_agent_subscribes_to_it_and_clears_the_log() {
     let mut app = app_on_ticket(false, true);
