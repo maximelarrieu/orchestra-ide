@@ -66,6 +66,17 @@ impl Screen {
     }
 }
 
+/// A destructive action waiting for a yes.
+///
+/// Cancelling is one keystroke away from ordinary navigation, and `x` happens
+/// to sit inside the word someone types out of reflex to leave a program.
+/// Nothing irreversible goes through without an answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Confirm {
+    pub question: String,
+    pub command: Command,
+}
+
 /// Which pane of the board has focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoardPane {
@@ -219,6 +230,8 @@ pub struct App {
     pub log: LiveLog,
     /// Agent to open as soon as its ticket arrives.
     pub pending_agent: Option<orchestra_core::model::AgentId>,
+    /// A destructive action waiting for a yes.
+    pub confirm: Option<Confirm>,
     /// Text being typed for an agent, if the input is open.
     pub steer: Option<String>,
     /// True when that text will interrupt rather than queue.
@@ -263,6 +276,7 @@ impl Default for App {
             agent_selected: 0,
             log: LiveLog::default(),
             pending_agent: None,
+            confirm: None,
             steer: None,
             steer_hard: false,
             roles: Vec::new(),
@@ -364,6 +378,7 @@ impl App {
 
     /// True when a text field has focus, so the caller uses the input keymap.
     pub fn is_typing(&self) -> bool {
+        // A confirmation is answered with single keys, not typed text.
         self.palette.is_some()
             || self.screen == Screen::NewTicket
             || self.steer.is_some()
@@ -371,6 +386,11 @@ impl App {
     }
 
     fn on_key(&mut self, action: Action) {
+        // A pending question takes every key until it is answered.
+        if self.confirm.is_some() {
+            self.on_confirm_key(action);
+            return;
+        }
         // The palette swallows keys while it is open.
         if let Some(buf) = self.palette.as_mut() {
             match action {
@@ -499,6 +519,30 @@ impl App {
         }
     }
 
+    /// `o`, `y` or Enter confirms; anything else declines.
+    fn on_confirm_key(&mut self, action: Action) {
+        let accepted = matches!(
+            action,
+            Action::Char('o') | Action::Char('y') | Action::Select
+        );
+        let confirm = self.confirm.take();
+        match (accepted, confirm) {
+            (true, Some(c)) => {
+                self.outbox.push(c.command);
+                self.status = "c'est parti".into();
+            }
+            _ => self.status = "annulation abandonnée".into(),
+        }
+    }
+
+    /// Queue a destructive action behind a question.
+    fn ask(&mut self, question: impl Into<String>, command: Command) {
+        self.confirm = Some(Confirm {
+            question: question.into(),
+            command,
+        });
+    }
+
     fn on_steer_key(&mut self, action: Action) {
         match action {
             Action::Char(c) => {
@@ -597,8 +641,11 @@ impl App {
                 self.status = "lancement de l'équipe…".into();
             }
             'x' => {
-                self.outbox.push(Command::CancelTicket { ticket_id });
-                self.status = "annulation du ticket…".into();
+                let number = detail.ticket.number;
+                self.ask(
+                    format!("Arrêter le ticket #{number} et ses agents ?"),
+                    Command::CancelTicket { ticket_id },
+                );
             }
             _ => {}
         }
@@ -672,8 +719,11 @@ impl App {
                 self.steer_hard = true;
             }
             'x' if active => {
-                self.outbox.push(Command::CancelAgent { agent_id });
-                self.status = "annulation demandée".into();
+                let role = agent.agent.role.clone();
+                self.ask(
+                    format!("Arrêter l'agent « {role} » ? Son travail en cours sera perdu."),
+                    Command::CancelAgent { agent_id },
+                );
             }
             _ => {}
         }

@@ -47,6 +47,9 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
     if let Some(buf) = &app.palette {
         render_palette(buf, frame, area);
     }
+    if let Some(confirm) = &app.confirm {
+        render_confirm(&confirm.question, frame, area);
+    }
 }
 
 fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect) {
@@ -234,7 +237,7 @@ fn render_status(app: &App, frame: &mut Frame<'_>, area: Rect) {
         .unwrap_or_else(|| "≈$-".to_string());
     let left = format!("{dot} orchestra{version}  {}", app.status);
     let right = format!(
-        "{} msg · {} tokens · {cost} (indicatif)  ? aide",
+        "{} msg · {} tokens · {cost} (indicatif)   ? aide   Q quitter",
         totals.messages,
         fmt_tokens(totals.tokens.total())
     );
@@ -269,6 +272,28 @@ fn render_help(frame: &mut Frame<'_>, area: Rect) {
         .collect();
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(pane_block("Aide", true)), popup);
+}
+
+/// A question that must be answered before anything irreversible happens.
+fn render_confirm(question: &str, frame: &mut Frame<'_>, area: Rect) {
+    let width = (question.chars().count() as u16 + 8)
+        .min(area.width.saturating_sub(4))
+        .max(24);
+    let popup = centered(area, width, 5);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::raw(question.to_string())),
+            Line::from(""),
+            Line::from(Span::styled(
+                "o confirmer   n'importe quelle autre touche pour renoncer",
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+        ])
+        .block(pane_block("Confirmer", true))
+        .wrap(Wrap { trim: true }),
+        popup,
+    );
 }
 
 fn render_palette(buf: &str, frame: &mut Frame<'_>, area: Rect) {

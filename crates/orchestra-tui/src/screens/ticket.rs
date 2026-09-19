@@ -256,8 +256,11 @@ fn render_keys(app: &App, frame: &mut Frame<'_>, area: Rect) {
     if detail.ticket.proposal.is_some() || detail.ticket.team.is_some() {
         keys.push("a relire l'équipe");
     }
+    keys.push("L lancer");
+    keys.push("x arrêter");
     keys.push("n nouveau ticket");
     keys.push("q retour");
+    keys.push("Q quitter");
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             keys.join("   "),

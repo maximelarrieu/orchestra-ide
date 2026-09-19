@@ -229,9 +229,9 @@ fn render_keys(app: &App, frame: &mut Frame<'_>, area: Rect) {
         .map(|a| a.agent.status.is_active())
         .unwrap_or(false);
     let keys = if active {
-        "s consigne   S rediriger   x annuler   j/k défiler   G suivre   q retour"
+        "s consigne   S rediriger   x arrêter   j/k défiler   G suivre   q retour   Q quitter"
     } else {
-        "j/k défiler   G suivre   q retour"
+        "j/k défiler   G suivre   q retour   Q quitter"
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(

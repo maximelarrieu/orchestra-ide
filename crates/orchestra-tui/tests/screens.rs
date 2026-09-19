@@ -721,12 +721,13 @@ fn a_finished_agent_offers_no_steering() {
 }
 
 #[test]
-fn cancelling_a_running_agent_asks_the_daemon() {
+fn cancelling_a_running_agent_asks_the_daemon_once_confirmed() {
     let mut app = app_watching_agent();
     if let Some(detail) = app.ticket.as_mut() {
         detail.agents[0].agent.status = AgentStatus::Running;
     }
-    let cmds = app.update(Msg::Key(Action::Char('x')));
+    assert!(app.update(Msg::Key(Action::Char('x'))).is_empty());
+    let cmds = app.update(Msg::Key(Action::Char('o')));
     assert!(cmds
         .iter()
         .any(|c| matches!(c, Command::CancelAgent { .. })));
@@ -753,6 +754,94 @@ fn leaving_an_agent_returns_to_the_whole_ticket() {
         )),
         "l'abonnement redevient global"
     );
+}
+
+#[test]
+fn typing_exit_out_of_reflex_cancels_nothing() {
+    // `x` sits inside the word someone types to leave a program, and it is
+    // the cancel key. Nothing irreversible may go through unanswered.
+    let mut app = app_on_ticket(false, true);
+    let mut sent = Vec::new();
+    for c in "exit".chars() {
+        sent.extend(app.update(Msg::Key(Action::Char(c))));
+    }
+    assert!(
+        !sent
+            .iter()
+            .any(|c| matches!(c, Command::CancelTicket { .. })),
+        "un ticket ne s'annule pas par réflexe"
+    );
+    // The `x` raises the question and the `i` that follows declines it.
+    assert!(app.confirm.is_none());
+    assert_eq!(app.screen, Screen::Ticket, "et rien n'a bougé");
+
+    // On its own, `x` does ask, naming what it would stop.
+    app.update(Msg::Key(Action::Char('x')));
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("Confirmer"));
+    assert!(
+        out.contains("#12"),
+        "la question nomme ce qu'elle va arrêter"
+    );
+}
+
+#[test]
+fn a_cancellation_happens_once_it_is_confirmed() {
+    let mut app = app_on_ticket(false, true);
+    app.update(Msg::Key(Action::Char('x')));
+    assert!(app.confirm.is_some());
+
+    let cmds = app.update(Msg::Key(Action::Char('o')));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Command::CancelTicket { .. })),
+        "« o » confirme"
+    );
+    assert!(app.confirm.is_none());
+}
+
+#[test]
+fn any_other_key_declines_the_question() {
+    let mut app = app_on_ticket(false, true);
+    app.update(Msg::Key(Action::Char('x')));
+    let cmds = app.update(Msg::Key(Action::Cancel));
+    assert!(cmds.is_empty());
+    assert!(app.confirm.is_none());
+    assert!(app.status.contains("abandon"), "{}", app.status);
+
+    // And the screen has not moved.
+    assert_eq!(app.screen, Screen::Ticket);
+}
+
+#[test]
+fn stopping_an_agent_also_asks_first() {
+    let mut app = App::new();
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(detail_with_team_agent(AgentStatus::Running)),
+    })));
+    app.screen = Screen::Ticket;
+    app.update(Msg::Key(Action::Select));
+
+    let cmds = app.update(Msg::Key(Action::Char('x')));
+    assert!(cmds.is_empty());
+    let question = &app.confirm.as_ref().unwrap().question;
+    assert!(question.contains("frontend"), "{question}");
+
+    let cmds = app.update(Msg::Key(Action::Select));
+    assert!(cmds
+        .iter()
+        .any(|c| matches!(c, Command::CancelAgent { .. })));
+}
+
+#[test]
+fn how_to_leave_is_written_on_the_screen() {
+    // Someone who does not know the key types "exit"; the answer should be
+    // in front of them.
+    let app = app_on_ticket(false, true);
+    assert!(draw(&app, 120, 30).contains("Q quitter"));
+    let mut board = App::new();
+    board.connected = true;
+    assert!(draw(&board, 120, 30).contains("Q quitter"));
 }
 
 #[test]
