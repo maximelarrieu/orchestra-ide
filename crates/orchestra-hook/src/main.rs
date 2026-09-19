@@ -1,42 +1,51 @@
-//! Hook shim.
+//! The guard Claude Code runs before every tool call of an Orchestra agent.
 //!
-//! Claude Code runs this on every hook event of a managed agent. It reads the
-//! hook JSON on stdin, wraps it in an Orchestra request and writes one line to
-//! the daemon socket.
+//! It reads the hook payload on standard input, decides, and says so through
+//! its exit code: 0 lets the call through, 2 with a reason on standard error
+//! refuses it and shows the agent why.
 //!
-//! Three rules, because this sits on the critical path of every tool call:
-//! start fast (no dependencies, not even serde), never block for long, and
-//! never fail the agent for an Orchestra problem. Exit code 0 means "allow";
-//! only an explicit deny from the daemon exits 2.
+//! **The decision is local.** An earlier design had this binary ask the daemon
+//! over a socket; that would put a round trip on the critical path of every
+//! tool call and make an agent's safety depend on the daemon being healthy.
+//! Everything needed is in the environment and the payload, so nothing is
+//! asked of anyone. The rules themselves live in `orchestra_core::guard`, so
+//! the daemon and this binary cannot disagree about them.
 //!
-//! Phase 0 ships the transport; the guard that answers deny lands in phase 3.
+//! Three properties matter more than features here: it starts immediately, it
+//! never blocks, and an Orchestra problem never breaks the agent. Anything
+//! unexpected therefore allows the call.
 
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::io::Read;
+use std::path::PathBuf;
 
-/// Claude Code kills a hook that overruns; stay well under its timeout.
-const TIMEOUT: Duration = Duration::from_millis(1500);
+use orchestra_core::guard::{check, Boundary, Verdict};
+
+/// Set by the daemon on every agent it spawns.
+const WORKTREE_VAR: &str = "ORCHESTRA_WORKTREE";
+/// Extra directories the agent may also write to, separated by `:`.
+const EXTRA_VAR: &str = "ORCHESTRA_EXTRA_DIRS";
 
 fn main() {
-    // Whatever happens, an Orchestra failure must not break the agent.
+    // Whatever happens, a failure here must not fail the agent.
     let verdict = std::panic::catch_unwind(run).unwrap_or(Verdict::Allow);
     match verdict {
         Verdict::Allow => std::process::exit(0),
         Verdict::Deny(reason) => {
-            // Exit 2 with a reason on stderr is how a hook refuses a tool call.
             eprintln!("{reason}");
             std::process::exit(2);
         }
     }
 }
 
-enum Verdict {
-    Allow,
-    Deny(String),
-}
-
 fn run() -> Verdict {
+    // No worktree in the environment means this is not one of our agents.
+    let Some(worktree) = std::env::var_os(WORKTREE_VAR).map(PathBuf::from) else {
+        return Verdict::Allow;
+    };
+    if worktree.as_os_str().is_empty() {
+        return Verdict::Allow;
+    }
+
     let mut payload = String::new();
     if std::io::stdin().read_to_string(&mut payload).is_err() {
         return Verdict::Allow;
@@ -46,166 +55,132 @@ fn run() -> Verdict {
         return Verdict::Allow;
     }
 
-    let Some(socket) = std::env::var_os("ORCHESTRA_SOCK") else {
-        // Not launched by Orchestra: nothing to report, let the call through.
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
         return Verdict::Allow;
     };
-    let agent_id = std::env::var("ORCHESTRA_AGENT_ID").ok();
 
-    match send(&socket, payload, agent_id.as_deref()) {
-        Some(line) => parse_verdict(&line),
-        None => Verdict::Allow,
-    }
-}
-
-/// Write one request line and read one response line.
-fn send(socket: &std::ffi::OsStr, payload: &str, agent_id: Option<&str>) -> Option<String> {
-    let mut stream = UnixStream::connect(socket).ok()?;
-    stream.set_read_timeout(Some(TIMEOUT)).ok()?;
-    stream.set_write_timeout(Some(TIMEOUT)).ok()?;
-
-    let agent = match agent_id {
-        Some(id) => format!("\"agent_id\":\"{}\",", escape(id)),
-        None => String::new(),
-    };
-    // The payload is already valid JSON from Claude Code, embedded as-is.
-    let request = format!("{{\"id\":1,\"cmd\":\"hook\",{agent}\"payload\":{payload}}}\n");
-    stream.write_all(request.as_bytes()).ok()?;
-    stream.flush().ok()?;
-
-    // The daemon greets with a Hello line, then answers; read a few lines and
-    // keep the first response.
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match stream.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if let Some(line) = find_response(&buf) {
-                    return Some(line);
-                }
-                if buf.len() > 1 << 20 {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    find_response(&buf)
-}
-
-/// First complete line that is a response rather than the greeting.
-fn find_response(buf: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(buf).ok()?;
-    for line in text.split('\n') {
-        if line.is_empty() {
-            continue;
-        }
-        if line.contains("\"type\":\"hello\"") {
-            continue;
-        }
-        if line.contains("\"outcome\"") {
-            return Some(line.to_string());
-        }
-    }
-    None
-}
-
-/// Minimal reading of the reply: deny only on an explicit refusal.
-fn parse_verdict(line: &str) -> Verdict {
-    if !line.contains("\"reply\":\"hook\"") || !line.contains("\"allow\":false") {
+    // Only tool calls are guarded; other hook events are observations.
+    let event = value
+        .get("hook_event_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if event != "PreToolUse" {
         return Verdict::Allow;
     }
-    let reason = field(line, "reason").unwrap_or_else(|| "refusé par Orchestra".to_string());
-    Verdict::Deny(reason)
-}
 
-/// Pull a JSON string field out of a flat object without a JSON parser.
-fn field(line: &str, name: &str) -> Option<String> {
-    let needle = format!("\"{name}\":\"");
-    let start = line.find(&needle)? + needle.len();
-    let rest = &line[start..];
-    let mut out = String::new();
-    let mut chars = rest.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some(other) => out.push(other),
-                None => break,
-            },
-            other => out.push(other),
-        }
+    let tool = value
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let input = value
+        .get("tool_input")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let mut boundary = Boundary::new(worktree);
+    if let Some(extra) = std::env::var_os(EXTRA_VAR) {
+        boundary.extra = std::env::split_paths(&extra)
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
     }
-    None
-}
 
-fn escape(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect()
+    check(&boundary, tool, &input)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    #[test]
-    fn a_missing_socket_allows_the_call() {
-        // No ORCHESTRA_SOCK in the environment of a normal `claude` run.
-        assert!(send(std::ffi::OsStr::new("/nonexistent.sock"), "{}", None).is_none());
+    /// The decision as `run` makes it, without touching the process
+    /// environment or standard input.
+    fn decide(worktree: &str, payload: serde_json::Value) -> Verdict {
+        let event = payload
+            .get("hook_event_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if event != "PreToolUse" {
+            return Verdict::Allow;
+        }
+        let tool = payload
+            .get("tool_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let input = payload
+            .get("tool_input")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        check(&Boundary::new(worktree), tool, &input)
+    }
+
+    /// A payload shaped exactly like the one Claude Code sends, captured from
+    /// a real run.
+    fn payload(tool: &str, input: serde_json::Value) -> serde_json::Value {
+        json!({
+            "session_id": "51d313a4-c9f5-45f5-a731-9a8aaeacdaad",
+            "transcript_path": "/home/u/.claude/projects/-tmp/51d3.jsonl",
+            "cwd": "/home/u/wt/1-cache",
+            "permission_mode": "bypassPermissions",
+            "hook_event_name": "PreToolUse",
+            "tool_name": tool,
+            "tool_input": input,
+            "tool_use_id": "toolu_01NSnfK3fnkQ2xQi8wWuwZNr"
+        })
     }
 
     #[test]
-    fn only_an_explicit_refusal_denies() {
-        let allow = r#"{"id":1,"outcome":"ok","reply":"hook","allow":true}"#;
-        assert!(matches!(parse_verdict(allow), Verdict::Allow));
+    fn a_real_payload_for_ordinary_work_is_allowed() {
+        let v = decide(
+            "/home/u/wt/1-cache",
+            payload(
+                "Bash",
+                json!({"command": "cargo test", "description": "run the tests"}),
+            ),
+        );
+        assert_eq!(v, Verdict::Allow);
+    }
 
-        let err = r#"{"id":1,"outcome":"err","error":{"code":"internal","message":"boom"}}"#;
-        assert!(matches!(parse_verdict(err), Verdict::Allow));
+    #[test]
+    fn a_command_leaving_the_worktree_is_refused_with_a_readable_reason() {
+        let v = decide(
+            "/home/u/wt/1-cache",
+            payload("Bash", json!({"command": "mv *.md /home/u/projet/docs/"})),
+        );
+        let reason = v.reason().expect("refus attendu");
+        assert!(reason.contains("hors du worktree"), "{reason}");
+        assert!(
+            reason.contains("/home/u/wt/1-cache"),
+            "le périmètre est rappelé"
+        );
+    }
 
-        let deny =
-            r#"{"id":1,"outcome":"ok","reply":"hook","allow":false,"reason":"hors worktree"}"#;
-        match parse_verdict(deny) {
-            Verdict::Deny(r) => assert_eq!(r, "hors worktree"),
-            Verdict::Allow => panic!("aurait dû refuser"),
+    #[test]
+    fn hook_events_that_are_not_tool_calls_pass_through() {
+        for event in ["Stop", "SessionStart", "PostToolUse", "Notification"] {
+            let mut p = payload("Bash", json!({"command": "rm -rf /"}));
+            p["hook_event_name"] = json!(event);
+            assert_eq!(decide("/home/u/wt/1-cache", p), Verdict::Allow);
         }
     }
 
     #[test]
-    fn the_greeting_is_skipped() {
-        let buf = b"{\"type\":\"hello\",\"version\":\"0.1.0\"}\n{\"id\":1,\"outcome\":\"ok\",\"reply\":\"hook\",\"allow\":true}\n";
-        let line = find_response(buf).unwrap();
-        assert!(line.contains("\"reply\":\"hook\""));
-    }
-
-    #[test]
-    fn partial_lines_are_not_parsed() {
+    fn a_malformed_payload_never_blocks_the_agent() {
+        assert_eq!(decide("/home/u/wt/1", json!({})), Verdict::Allow);
+        assert_eq!(decide("/home/u/wt/1", json!(null)), Verdict::Allow);
         assert_eq!(
-            find_response(b"{\"type\":\"hello\"}\n{\"id\":1,\"outc"),
-            None
+            decide("/home/u/wt/1", json!({"hook_event_name": "PreToolUse"})),
+            Verdict::Allow
         );
     }
 
     #[test]
-    fn fields_are_extracted_with_escapes() {
+    fn the_guard_agrees_with_the_core_rules() {
+        // The binary must add no rule of its own: same input, same verdict.
+        let boundary = Boundary::new("/home/u/wt/1-cache");
+        let input = json!({"command": "git push origin main"});
         assert_eq!(
-            field(r#"{"reason":"a\"b"}"#, "reason").as_deref(),
-            Some("a\"b")
+            decide("/home/u/wt/1-cache", payload("Bash", input.clone())),
+            check(&boundary, "Bash", &input)
         );
-        assert_eq!(
-            field(r#"{"reason":"x\ny"}"#, "reason").as_deref(),
-            Some("x\ny")
-        );
-        assert_eq!(field(r#"{"other":"z"}"#, "reason"), None);
-    }
-
-    #[test]
-    fn agent_ids_are_sanitised() {
-        assert_eq!(escape("abc-123"), "abc-123");
-        assert_eq!(escape("a\"b\\c"), "abc");
     }
 }

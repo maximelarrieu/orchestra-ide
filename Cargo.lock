@@ -1096,6 +1096,10 @@ dependencies = [
 [[package]]
 name = "orchestra-hook"
 version = "0.1.0"
+dependencies = [
+ "orchestra-core",
+ "serde_json",
+]
 
 [[package]]
 name = "orchestra-tui"

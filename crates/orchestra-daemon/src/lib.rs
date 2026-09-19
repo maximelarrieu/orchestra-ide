@@ -6,14 +6,17 @@
 
 pub mod bus;
 pub mod daemon;
+pub mod hooks;
 pub mod init;
 pub mod ledger;
 pub mod orchestrator;
 pub mod repo_summary;
 pub mod server;
 pub mod store;
+pub mod supervisor;
 pub mod watcher;
 pub mod worker;
+pub mod worktree;
 
 use std::path::Path;
 

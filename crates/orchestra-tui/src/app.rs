@@ -11,6 +11,7 @@ use orchestra_core::protocol::{
 
 use crate::forms::{NewTicketForm, TeamEditor, TicketField};
 use crate::keymap::Action;
+use crate::widgets::LiveLog;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -47,9 +48,9 @@ impl Screen {
         }
     }
 
-    /// Screens that exist today; the others announce the phase they arrive in.
+    /// Every screen exists now; the method stays for the next one that does not.
     pub fn is_implemented(self) -> bool {
-        !matches!(self, Screen::Agent)
+        true
     }
 
     fn index(self) -> usize {
@@ -212,6 +213,14 @@ pub struct App {
     pub form: NewTicketForm,
     pub form_field: TicketField,
     pub editor: TeamEditor,
+    /// Index of the agent being watched, within the open ticket.
+    pub agent_selected: usize,
+    /// Live log of the watched agent.
+    pub log: LiveLog,
+    /// Text being typed for an agent, if the input is open.
+    pub steer: Option<String>,
+    /// True when that text will interrupt rather than queue.
+    pub steer_hard: bool,
     pub roles: Vec<RoleDefinition>,
     /// Model aliases offered when cycling a member's model.
     pub model_aliases: Vec<String>,
@@ -247,6 +256,10 @@ impl Default for App {
             form: NewTicketForm::default(),
             form_field: TicketField::Title,
             editor: TeamEditor::default(),
+            agent_selected: 0,
+            log: LiveLog::default(),
+            steer: None,
+            steer_hard: false,
             roles: Vec::new(),
             model_aliases: ["fable", "opus", "sonnet", "haiku"]
                 .iter()
@@ -286,6 +299,15 @@ impl App {
 
     pub fn selected_ticket_id(&self) -> Option<TicketId> {
         self.selected_ticket().map(|t| t.ticket.id)
+    }
+
+    /// The agent the Agent screen is showing.
+    pub fn watched_agent(&self) -> Option<&orchestra_core::protocol::AgentSummary> {
+        self.ticket.as_ref()?.agents.get(self.agent_selected)
+    }
+
+    pub fn watched_agent_id(&self) -> Option<orchestra_core::model::AgentId> {
+        self.watched_agent().map(|a| a.agent.id)
     }
 
     /// Fold one message into the state. Returns commands to send, if any.
@@ -333,6 +355,7 @@ impl App {
     pub fn is_typing(&self) -> bool {
         self.palette.is_some()
             || self.screen == Screen::NewTicket
+            || self.steer.is_some()
             || (self.screen == Screen::Proposal && self.editor.is_editing())
     }
 
@@ -371,6 +394,10 @@ impl App {
             self.on_objective_key(action);
             return;
         }
+        if self.steer.is_some() {
+            self.on_steer_key(action);
+            return;
+        }
 
         match action {
             Action::Quit => self.should_quit = true,
@@ -390,7 +417,13 @@ impl App {
             Action::Up => self.move_selection(-1),
             Action::Down => self.move_selection(1),
             Action::Top => self.set_selection(0),
-            Action::Bottom => self.set_selection(usize::MAX),
+            Action::Bottom => {
+                if self.screen == Screen::Agent {
+                    self.log.follow();
+                } else {
+                    self.set_selection(usize::MAX)
+                }
+            }
             Action::Select => self.open_selection(),
             Action::Char(c) => self.on_char(c),
             _ => {}
@@ -406,7 +439,15 @@ impl App {
                 self.ticket = None;
                 self.screen = Screen::Board;
             }
-            Screen::Proposal => self.screen = Screen::Ticket,
+            Screen::Proposal | Screen::Agent => {
+                self.screen = Screen::Ticket;
+                // Back to the whole ticket's events.
+                self.outbox.push(Command::Subscribe {
+                    filter: orchestra_core::events::EventFilter::board(),
+                    since_seq: None,
+                    backlog: 50,
+                });
+            }
             _ => self.screen = Screen::Board,
         }
     }
@@ -447,6 +488,45 @@ impl App {
         }
     }
 
+    fn on_steer_key(&mut self, action: Action) {
+        match action {
+            Action::Char(c) => {
+                if let Some(buf) = self.steer.as_mut() {
+                    buf.push(c);
+                }
+            }
+            Action::Backspace => {
+                if let Some(buf) = self.steer.as_mut() {
+                    buf.pop();
+                }
+            }
+            Action::Submit | Action::Accept => self.send_steer(),
+            Action::Cancel => self.steer = None,
+            Action::Quit => self.should_quit = true,
+            _ => {}
+        }
+    }
+
+    fn send_steer(&mut self) {
+        let text = self.steer.take().unwrap_or_default().trim().to_string();
+        let Some(agent_id) = self.watched_agent_id() else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        self.outbox.push(Command::SteerAgent {
+            agent_id,
+            text,
+            hard: self.steer_hard,
+        });
+        self.status = if self.steer_hard {
+            "redirection envoyée".into()
+        } else {
+            "consigne envoyée".into()
+        };
+    }
+
     fn on_objective_key(&mut self, action: Action) {
         match action {
             Action::Char(c) => self.editor.type_char(c),
@@ -463,6 +543,7 @@ impl App {
             Screen::Cost => self.on_cost_char(c),
             Screen::Board => self.on_board_char(c),
             Screen::Ticket => self.on_ticket_char(c),
+            Screen::Agent => self.on_agent_char(c),
             Screen::Proposal => self.on_proposal_char(c),
             _ => {}
         }
@@ -497,6 +578,56 @@ impl App {
             }
             'a' => self.open_editor(),
             'n' => self.open_new_ticket(),
+            'L' => {
+                self.outbox.push(Command::LaunchTicket {
+                    ticket_id,
+                    open_panes: false,
+                });
+                self.status = "lancement de l'équipe…".into();
+            }
+            'x' => {
+                self.outbox.push(Command::CancelTicket { ticket_id });
+                self.status = "annulation du ticket…".into();
+            }
+            _ => {}
+        }
+    }
+
+    /// Watch the selected agent of the open ticket.
+    fn open_agent(&mut self) {
+        let Some(agent_id) = self.watched_agent_id() else {
+            self.status = "aucun agent sur ce ticket".into();
+            return;
+        };
+        self.log.clear();
+        self.screen = Screen::Agent;
+        // The backlog of this agent arrives through the event stream.
+        self.outbox.push(Command::Subscribe {
+            filter: orchestra_core::events::EventFilter::for_agent(agent_id),
+            since_seq: None,
+            backlog: 500,
+        });
+    }
+
+    fn on_agent_char(&mut self, c: char) {
+        let Some(agent) = self.watched_agent() else {
+            return;
+        };
+        let active = agent.agent.status.is_active();
+        let agent_id = agent.agent.id;
+        match c {
+            's' if active => {
+                self.steer = Some(String::new());
+                self.steer_hard = false;
+            }
+            'S' if active => {
+                self.steer = Some(String::new());
+                self.steer_hard = true;
+            }
+            'x' if active => {
+                self.outbox.push(Command::CancelAgent { agent_id });
+                self.status = "annulation demandée".into();
+            }
             _ => {}
         }
     }
@@ -616,6 +747,23 @@ impl App {
                 self.editor.move_selection(delta);
                 return;
             }
+            (Screen::Ticket, _) => {
+                let count = self.ticket.as_ref().map(|d| d.agents.len()).unwrap_or(0);
+                if count > 0 {
+                    let next = (self.agent_selected as isize + delta).clamp(0, count as isize - 1);
+                    self.agent_selected = next as usize;
+                }
+                return;
+            }
+            (Screen::Agent, _) => {
+                // On a live log, down means towards the newest.
+                if delta < 0 {
+                    self.log.scroll_up(delta.unsigned_abs(), 20);
+                } else {
+                    self.log.scroll_down(delta as usize);
+                }
+                return;
+            }
             _ => return,
         };
         if len == 0 {
@@ -657,6 +805,7 @@ impl App {
                 }
             }
             (Screen::Proposal, _) => self.editor.start_editing_objective(),
+            (Screen::Ticket, _) => self.open_agent(),
             _ => {}
         }
     }
@@ -786,7 +935,20 @@ impl App {
             }
             Reply::Ticket { detail } => {
                 self.planning = false;
+                let previous = self.watched_agent_id();
                 self.ticket = Some(detail);
+                // Keep watching the same agent across refreshes.
+                if let Some(id) = previous {
+                    if let Some(index) = self
+                        .ticket
+                        .as_ref()
+                        .and_then(|d| d.agents.iter().position(|a| a.agent.id == id))
+                    {
+                        self.agent_selected = index;
+                    }
+                }
+                let count = self.ticket.as_ref().map(|d| d.agents.len()).unwrap_or(0);
+                self.agent_selected = self.agent_selected.min(count.saturating_sub(1));
             }
             Reply::Roles { roles } => {
                 self.roles = roles;
@@ -800,6 +962,17 @@ impl App {
     }
 
     fn on_event(&mut self, e: Event) {
+        // While watching one agent, its events feed the live log.
+        if self.screen == Screen::Agent && e.agent_id == self.watched_agent_id() {
+            self.log.push_event(&e);
+            if matches!(
+                e.kind,
+                EventKind::AgentStatusChanged { .. } | EventKind::Usage { .. }
+            ) {
+                self.refresh_open_ticket(e.ticket_id);
+            }
+            return;
+        }
         if let Some(line) = describe(&e) {
             self.activity.push(line);
             if self.activity.len() > ACTIVITY_MAX {
@@ -1077,16 +1250,12 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_screens_say_so() {
-        // Only the live agent view is still to come.
-        let mut app = App::new();
-        app.update(Msg::Key(Action::Screen(3)));
-        assert_eq!(app.screen, Screen::Agent);
-        assert!(app.status.contains("phase"), "{}", app.status);
-
-        for n in [1, 2, 4, 5, 6] {
+    fn every_screen_exists_now() {
+        // Nothing announces a future phase any more.
+        for n in 1..=6 {
             let mut app = App::new();
             app.update(Msg::Key(Action::Screen(n)));
+            assert!(app.screen.is_implemented(), "écran {n}");
             assert!(!app.status.contains("phase"), "écran {n} : {}", app.status);
         }
     }

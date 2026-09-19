@@ -33,9 +33,9 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
         Screen::Board => render_board(app, frame, chunks[1]),
         Screen::Cost => super::cost::render(app, frame, chunks[1]),
         Screen::Ticket => super::ticket::render(app, frame, chunks[1]),
+        Screen::Agent => super::agent::render(app, frame, chunks[1]),
         Screen::NewTicket => super::new_ticket::render(app, frame, chunks[1]),
         Screen::Proposal => super::proposal::render(app, frame, chunks[1]),
-        other => render_placeholder(other, frame, chunks[1]),
     }
     render_activity(app, frame, chunks[2]);
     render_status(app, frame, chunks[3]);
@@ -234,27 +234,6 @@ fn render_status(app: &App, frame: &mut Frame<'_>, area: Rect) {
             Span::raw(" ".repeat(pad)),
             Span::styled(right, Style::default().add_modifier(Modifier::DIM)),
         ])),
-        area,
-    );
-}
-
-fn render_placeholder(screen: Screen, frame: &mut Frame<'_>, area: Rect) {
-    let body = match screen {
-        Screen::Ticket => {
-            "Détail d'un ticket : équipe, agents, coût, événements.\nArrive en phase 2."
-        }
-        Screen::Agent => "Flux live d'un agent, avec consigne et annulation.\nArrive en phase 3.",
-        Screen::NewTicket => "Création d'un ticket : titre et brief.\nArrive en phase 2.",
-        // The cost screen draws itself; this arm never renders.
-        Screen::Cost => "",
-        Screen::Proposal => "Relecture et édition de l'équipe proposée.\nArrive en phase 2.",
-        Screen::Board => "",
-    };
-    frame.render_widget(
-        Paragraph::new(body)
-            .style(Style::default().add_modifier(Modifier::DIM))
-            .block(pane_block(screen.title_fr(), false))
-            .wrap(Wrap { trim: true }),
         area,
     );
 }

@@ -17,6 +17,10 @@ Dashboard de dev pilotant une ferme d'agents **Claude Code**. Plan de référenc
    l'alias configuré : `haiku` n'est pas dans la grille, `claude-haiku-4-5-…` l'est.
 9. **L'orchestrateur propose, l'utilisateur décide.** Aucune équipe ne démarre sans
    passage par l'écran de relecture.
+10. **Les règles du garde-fou vivent dans `orchestra-core/src/guard.rs`**, jamais
+    dupliquées : le daemon et `orchestra-hook` doivent en avoir la même lecture.
+11. **Le superviseur décide du statut d'un agent, pas le flux.** Une interruption y
+    ressemble à un échec ; seul celui qui a envoyé le signal sait ce qui s'est passé.
 
 ## Checklist avant de considérer une tâche terminée
 

@@ -432,6 +432,190 @@ fn every_screen_survives_a_narrow_pane() {
     }
 }
 
+fn agent_event(app: &App, kind: EventKind) -> Event {
+    let mut e = Event::from_new(1, NewEvent::new(kind));
+    e.agent_id = app.watched_agent_id();
+    e.ticket_id = app.ticket.as_ref().map(|d| d.ticket.id);
+    e
+}
+
+fn app_watching_agent() -> App {
+    let mut app = app_on_ticket(false, true);
+    app.update(Msg::Key(Action::Select));
+    app
+}
+
+#[test]
+fn opening_an_agent_subscribes_to_it_and_clears_the_log() {
+    let mut app = app_on_ticket(false, true);
+    let cmds = app.update(Msg::Key(Action::Select));
+    assert_eq!(app.screen, Screen::Agent);
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Subscribe { filter, .. } if filter.agent_id == app.watched_agent_id()
+        )),
+        "l'écran s'abonne aux événements de cet agent"
+    );
+    assert!(app.log.is_empty());
+}
+
+#[test]
+fn the_agent_screen_reads_like_a_conversation() {
+    let mut app = app_watching_agent();
+    for kind in [
+        EventKind::AgentSpawned {
+            role: "backend".into(),
+            session_id: Uuid::new_v4(),
+            pid: 4242,
+            cmdline: "claude -p".into(),
+        },
+        EventKind::AgentText {
+            text: "Je lance les tests.".into(),
+        },
+        EventKind::ToolStarted {
+            tool_use_id: "t1".into(),
+            tool: "Bash".into(),
+            summary: "cargo test --workspace".into(),
+        },
+        EventKind::ToolFinished {
+            tool_use_id: "t1".into(),
+            ok: true,
+            summary: "19 passed".into(),
+        },
+    ] {
+        let e = agent_event(&app, kind);
+        app.update(Msg::Event(Box::new(e)));
+    }
+
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("Je lance les tests."));
+    assert!(out.contains("cargo test --workspace"));
+    assert!(out.contains("En direct") || out.contains("Terminé"));
+    assert!(out.contains("backend"));
+}
+
+#[test]
+fn a_blocked_call_is_shown_as_such() {
+    let mut app = app_watching_agent();
+    let e = agent_event(
+        &app,
+        EventKind::HookBlocked {
+            tool: "Bash".into(),
+            reason: "« /home/u/ailleurs » est hors du worktree".into(),
+        },
+    );
+    app.update(Msg::Event(Box::new(e)));
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("bloqué"));
+    assert!(out.contains("hors du worktree"));
+}
+
+#[test]
+fn reasoning_shows_as_a_size_never_as_text() {
+    let mut app = app_watching_agent();
+    let e = agent_event(&app, EventKind::AgentThinking { chars: 2400 });
+    app.update(Msg::Event(Box::new(e)));
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("réfléchit"));
+    assert!(out.contains("2.4k"));
+}
+
+#[test]
+fn steering_types_then_sends() {
+    let mut app = app_watching_agent();
+    // The agent must be running for the key to do anything.
+    if let Some(detail) = app.ticket.as_mut() {
+        detail.agents[0].agent.status = AgentStatus::Running;
+    }
+
+    app.update(Msg::Key(Action::Char('s')));
+    assert!(app.is_typing(), "la saisie capte les touches");
+    // `j` must type here, not scroll.
+    for c in "ajoute un test".chars() {
+        app.update(Msg::Key(Action::Char(c)));
+    }
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("ajoute un test"));
+    assert!(out.contains("Consigne"));
+
+    let cmds = app.update(Msg::Key(Action::Accept));
+    assert!(matches!(
+        cmds.first(),
+        Some(Command::SteerAgent { text, hard: false, .. }) if text == "ajoute un test"
+    ));
+    assert!(!app.is_typing());
+}
+
+#[test]
+fn a_hard_redirect_is_distinguished_from_a_queued_message() {
+    let mut app = app_watching_agent();
+    if let Some(detail) = app.ticket.as_mut() {
+        detail.agents[0].agent.status = AgentStatus::Running;
+    }
+    app.update(Msg::Key(Action::Char('S')));
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("Rediriger"));
+    for c in "stop".chars() {
+        app.update(Msg::Key(Action::Char(c)));
+    }
+    let cmds = app.update(Msg::Key(Action::Accept));
+    assert!(matches!(
+        cmds.first(),
+        Some(Command::SteerAgent { hard: true, .. })
+    ));
+}
+
+#[test]
+fn a_finished_agent_offers_no_steering() {
+    let mut app = app_watching_agent();
+    // The fixture's agent is done.
+    app.update(Msg::Key(Action::Char('s')));
+    assert!(!app.is_typing(), "on ne pilote pas un agent terminé");
+    let cmds = app.update(Msg::Key(Action::Char('x')));
+    assert!(cmds.is_empty(), "ni ne l'annule");
+    let out = draw(&app, 120, 30);
+    assert!(
+        !out.contains("s consigne"),
+        "les touches ne sont pas proposées"
+    );
+}
+
+#[test]
+fn cancelling_a_running_agent_asks_the_daemon() {
+    let mut app = app_watching_agent();
+    if let Some(detail) = app.ticket.as_mut() {
+        detail.agents[0].agent.status = AgentStatus::Running;
+    }
+    let cmds = app.update(Msg::Key(Action::Char('x')));
+    assert!(cmds
+        .iter()
+        .any(|c| matches!(c, Command::CancelAgent { .. })));
+}
+
+#[test]
+fn launching_a_ticket_goes_through_the_ticket_screen() {
+    let mut app = app_on_ticket(false, true);
+    let cmds = app.update(Msg::Key(Action::Char('L')));
+    assert!(cmds
+        .iter()
+        .any(|c| matches!(c, Command::LaunchTicket { .. })));
+}
+
+#[test]
+fn leaving_an_agent_returns_to_the_whole_ticket() {
+    let mut app = app_watching_agent();
+    let cmds = app.update(Msg::Key(Action::Back));
+    assert_eq!(app.screen, Screen::Ticket);
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Subscribe { filter, .. } if filter.agent_id.is_none()
+        )),
+        "l'abonnement redevient global"
+    );
+}
+
 #[test]
 fn keys_without_meaning_do_nothing() {
     let mut app = app_on_ticket(false, false);

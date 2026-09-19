@@ -4,6 +4,7 @@ pub mod claude;
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod guard;
 pub mod model;
 pub mod pricing;
 pub mod protocol;

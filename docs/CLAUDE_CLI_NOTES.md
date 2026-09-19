@@ -52,13 +52,55 @@ la raison pour laquelle il est tolérant.
 **Reste à confirmer en phase 3** : le nom exact des `subtype` d'erreur
 (`error_max_turns`, dépassement de budget…).
 
-## Pilotage
+## Pilotage — confirmé
 
-- Message utilisateur sur stdin, une ligne :
+- `-p` **sans prompt positionnel attend bien stdin** quand `--input-format stream-json`
+  est passé. Le message tient sur une ligne :
   `{"type":"user","message":{"role":"user","content":"…"}}`
-- `SIGINT` annule proprement le tour en cours.
-- **À confirmer en phase 3** : est-ce que `-p` sans prompt positionnel attend bien
-  stdin, et le comportement d'un second message envoyé pendant un tour.
+- **L'entrée reste ouverte** : le processus attend d'autres tours. Un appel qui ne
+  sera jamais piloté doit fermer stdin, sinon il ne se termine jamais et sa sortie
+  standard n'atteint jamais la fin de fichier.
+- **`SIGINT` produit une ligne `result` propre**, puis le processus sort avec le code 0 :
+
+  ```
+  subtype        : error_during_execution
+  is_error       : true
+  stop_reason    : tool_use
+  terminal_reason: aborted_streaming
+  ```
+
+  Une interruption ressemble donc à un échec. C'est le superviseur, qui sait qu'il a
+  envoyé le signal, qui tranche entre « annulé » et « échoué » ; le flux ne le dit pas.
+
+## Hooks — confirmé
+
+Passés par session avec `--settings '<json>'`, sans toucher `~/.claude/settings.json`.
+**L'environnement du processus est hérité** par le hook, ce qui permet de lui passer
+le périmètre du ticket sans fichier de configuration.
+
+Charge utile reçue sur l'entrée standard, pour un `PreToolUse` sur Bash :
+
+```json
+{"session_id":"…","transcript_path":"…","cwd":"/tmp/spike3",
+ "permission_mode":"bypassPermissions","hook_event_name":"PreToolUse",
+ "tool_name":"Bash","tool_input":{"command":"cat fichier.txt","description":"…"},
+ "tool_use_id":"toolu_…"}
+```
+
+**Une sortie 2 avec un motif sur stderr refuse l'appel.** L'agent le voit arriver
+comme un `tool_result` en erreur dont le texte est
+`PreToolUse:Bash hook error: [<commande>]: <motif>`, et le `result` final compte le
+refus dans `permission_denials`. Orchestra reconnaît ce marqueur dans le flux pour
+afficher un événement « bloqué » : aucun aller-retour supplémentaire n'est nécessaire.
+
+Conséquence de conception : **le garde décide localement**, à partir de son
+environnement et de la charge utile, sans parler au daemon. Il tourne à chaque appel
+d'outil de chaque agent ; un aller-retour sur socket y ajouterait de la latence et
+ferait dépendre l'agent de la santé du daemon.
+
+Le flux contient aussi des lignes `system` de sous-type `hook_started` et
+`hook_response`, mais seulement pour certains hooks sans `--include-hook-events`.
+On ne s'appuie donc pas dessus.
 
 ## Sessions d'arrière-plan
 

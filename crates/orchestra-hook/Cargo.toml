@@ -3,12 +3,14 @@ name = "orchestra-hook"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Tiny hook shim invoked by Claude Code; forwards hook JSON to the daemon socket."
+description = "Guard invoked by Claude Code before every tool call of an Orchestra agent."
 
 [[bin]]
 name = "orchestra-hook"
 path = "src/main.rs"
 
-# Deliberately dependency-free: this runs on every tool call of every agent and
-# must start in milliseconds and never fail the agent.
+# Only the core crate, for the rules themselves. This binary runs on every tool
+# call of every agent, so it stays small and starts immediately.
 [dependencies]
+orchestra-core.workspace = true
+serde_json.workspace = true

@@ -73,6 +73,16 @@ toucher au disque ni au réseau.
   événements et masque au passage ce qui ressemble à un secret.
 - `init.rs` — installe le catalogue de rôles et la configuration d'exemple, sans
   jamais écraser ce que l'utilisateur a modifié.
+- `supervisor.rs` — la machine à états d'un ticket : un worktree, puis un processus
+  `claude` par rôle, dans l'ordre des étapes, avec passage de relais entre eux.
+  C'est lui qui décide du statut d'un agent : le flux dit ce que le processus a fait,
+  pas ce que cela signifie. Une interruption ressemble à un échec dans le flux ; seul
+  le superviseur sait qu'il a envoyé le signal.
+- `worktree.rs` — création et adoption des worktrees git. Relancer un ticket
+  retrouve le sien plutôt que d'échouer, et supprimer un worktree garde sa branche :
+  c'est là qu'est le travail.
+- `hooks.rs` — les réglages passés par session à un agent, et la reconnaissance
+  d'un refus dans le flux.
 
 ### `orchestra-tui`
 
@@ -85,10 +95,18 @@ par la configuration de l'utilisateur.
 
 ### `orchestra-hook`
 
-Binaire **sans aucune dépendance**, pas même serde : il tourne à chaque appel d'outil
-de chaque agent. Il doit démarrer en quelques millisecondes et ne jamais faire échouer
-l'agent à cause d'un problème d'Orchestra. Sortie 0 = autorisé ; seule une réponse de
-refus explicite du daemon donne la sortie 2.
+Le garde-fou, appelé par Claude Code avant chaque appel d'outil d'un agent. Sortie 0
+autorise, sortie 2 avec un motif sur stderr refuse et l'agent lit ce motif.
+
+**Il décide seul.** Une première version l'aurait fait interroger le daemon par le
+socket : cela aurait mis un aller-retour sur le chemin critique de chaque appel
+d'outil et fait dépendre la sûreté d'un agent de la santé du daemon. Tout ce qu'il
+faut tient dans son environnement et dans la charge utile du hook.
+
+Il ne dépend que d'`orchestra-core`, pour les règles elles-mêmes : le daemon et lui
+ne peuvent pas être en désaccord sur ce qui est permis. Trois propriétés priment sur
+toute fonctionnalité : il démarre immédiatement, il ne bloque jamais, et un problème
+d'Orchestra ne fait jamais échouer l'agent — tout imprévu autorise l'appel.
 
 ## Décisions
 
@@ -116,6 +134,10 @@ maximum vu, ce qui est commutatif et idempotent. Détails et mesures dans
 intitulés plausibles au lieu de choisir dans le catalogue, ce qui s'est produit au
 premier essai. La réponse est revalidée à l'arrivée : un schéma est une indication
 forte, pas une garantie.
+
+**Le superviseur tranche, pas le flux.** Une interruption produit une ligne `result`
+en erreur, exactement comme un vrai échec. Le flux ne peut donc pas dire si un agent
+a été annulé ou s'il a échoué ; seul celui qui a envoyé le signal le sait.
 
 **Un appel unique ferme son entrée.** Avec `--input-format stream-json`, `claude`
 attend d'autres tours de conversation ; sans fermeture de stdin, la planification

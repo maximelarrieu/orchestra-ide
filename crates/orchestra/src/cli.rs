@@ -58,6 +58,18 @@ enum Sub {
         #[command(subcommand)]
         action: TicketAction,
     },
+    /// Pilotage d'un agent en cours.
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+    /// Suit un agent en direct dans ce terminal.
+    Tail {
+        /// Identifiant de l'agent, ou son rôle sur le ticket donné.
+        agent: String,
+        #[arg(long)]
+        ticket: Option<String>,
+    },
     /// Liste les rôles disponibles.
     Roles {
         /// Inclut les rôles propres à ce projet.
@@ -113,6 +125,30 @@ enum TicketAction {
     },
     /// Accepte la proposition telle quelle.
     Accept { ticket: String },
+    /// Lance l'équipe acceptée dans un worktree dédié.
+    Launch {
+        ticket: String,
+        /// Suit le déroulement jusqu'au bout.
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Arrête le ticket et ses agents.
+    Cancel { ticket: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum AgentAction {
+    /// Envoie une consigne à un agent en cours.
+    Steer {
+        agent: String,
+        /// Le texte de la consigne.
+        text: String,
+        /// Interrompt le tour en cours au lieu d'attendre.
+        #[arg(long)]
+        hard: bool,
+    },
+    /// Arrête un agent.
+    Cancel { agent: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -253,6 +289,13 @@ impl Cli {
                 }
             }
             Sub::Ticket { action } => run_ticket(action, &socket).await,
+            Sub::Agent { action } => run_agent(action, &socket).await,
+            Sub::Tail { agent, ticket } => {
+                let mut client = Client::connect_or_spawn(&socket).await?;
+                let agent_id = resolve_agent(&mut client, &agent, ticket.as_deref()).await?;
+                drop(client);
+                orchestra_tui::tail(&socket, agent_id).await
+            }
             Sub::Usage {
                 by,
                 since,
@@ -440,6 +483,37 @@ async fn run_ticket(action: TicketAction, socket: &std::path::Path) -> Result<()
             let id = resolve_ticket(&mut client, &ticket).await?;
             plan_ticket(&mut client, id, detach).await
         }
+        TicketAction::Launch { ticket, follow } => {
+            let id = resolve_ticket(&mut client, &ticket).await?;
+            client
+                .call(Cmd::LaunchTicket {
+                    ticket_id: id,
+                    open_panes: false,
+                })
+                .await?;
+            let detail = ticket_detail(&mut client, id).await?;
+            println!(
+                "ticket #{} lancé{}",
+                detail.ticket.number,
+                detail
+                    .ticket
+                    .branch
+                    .as_ref()
+                    .map(|b| format!(" sur {b}"))
+                    .unwrap_or_default()
+            );
+            if !follow {
+                println!("suis-le : orchestra ticket show {}", detail.ticket.number);
+                return Ok(());
+            }
+            follow_ticket(&mut client, id).await
+        }
+        TicketAction::Cancel { ticket } => {
+            let id = resolve_ticket(&mut client, &ticket).await?;
+            client.call(Cmd::CancelTicket { ticket_id: id }).await?;
+            println!("arrêt demandé");
+            Ok(())
+        }
         TicketAction::Accept { ticket } => {
             let id = resolve_ticket(&mut client, &ticket).await?;
             let detail = ticket_detail(&mut client, id).await?;
@@ -479,6 +553,96 @@ async fn run_ticket(action: TicketAction, socket: &std::path::Path) -> Result<()
     }
 }
 
+async fn run_agent(action: AgentAction, socket: &std::path::Path) -> Result<()> {
+    let mut client = Client::connect_or_spawn(socket).await?;
+    match action {
+        AgentAction::Steer { agent, text, hard } => {
+            let agent_id = resolve_agent(&mut client, &agent, None).await?;
+            client
+                .call(Cmd::SteerAgent {
+                    agent_id,
+                    text,
+                    hard,
+                })
+                .await?;
+            println!(
+                "{} transmise",
+                if hard { "redirection" } else { "consigne" }
+            );
+            Ok(())
+        }
+        AgentAction::Cancel { agent } => {
+            let agent_id = resolve_agent(&mut client, &agent, None).await?;
+            client.call(Cmd::CancelAgent { agent_id }).await?;
+            println!("arrêt demandé");
+            Ok(())
+        }
+    }
+}
+
+/// Accept an agent identifier, or a role name on a ticket. With neither, the
+/// only agent currently running.
+async fn resolve_agent(
+    client: &mut Client,
+    spec: &str,
+    ticket: Option<&str>,
+) -> Result<uuid::Uuid> {
+    if let Ok(id) = uuid::Uuid::parse_str(spec) {
+        return Ok(id);
+    }
+    let ticket_id = match ticket {
+        Some(t) => Some(resolve_ticket(client, t).await?),
+        None => None,
+    };
+
+    let mut candidates: Vec<(uuid::Uuid, String, bool)> = Vec::new();
+    let tickets = match client
+        .call(Cmd::ListTickets {
+            project_id: None,
+            status: None,
+        })
+        .await?
+    {
+        Reply::Tickets { tickets } => tickets,
+        other => bail!("réponse inattendue : {other:?}"),
+    };
+    for summary in tickets {
+        if ticket_id.is_some_and(|id| id != summary.ticket.id) {
+            continue;
+        }
+        if ticket_id.is_none() && summary.agents_active == 0 {
+            continue;
+        }
+        let detail = ticket_detail(client, summary.ticket.id).await?;
+        for a in detail.agents {
+            candidates.push((a.agent.id, a.agent.role.clone(), a.agent.status.is_active()));
+        }
+    }
+
+    let lowered = spec.trim().to_lowercase();
+    let matching: Vec<&(uuid::Uuid, String, bool)> = candidates
+        .iter()
+        .filter(|(_, role, _)| lowered.is_empty() || role.to_lowercase() == lowered)
+        .collect();
+    // An agent still running is what the user almost always means.
+    let active: Vec<&&(uuid::Uuid, String, bool)> =
+        matching.iter().filter(|(_, _, active)| *active).collect();
+    let pool: Vec<&(uuid::Uuid, String, bool)> = if active.is_empty() {
+        matching.clone()
+    } else {
+        active.into_iter().copied().collect()
+    };
+
+    match pool.as_slice() {
+        [one] => Ok(one.0),
+        [] => bail!("aucun agent ne correspond à « {spec} »"),
+        many => bail!(
+            "« {spec} » correspond à {} agents — donne son identifiant",
+            many.len()
+        ),
+    }
+}
+
 /// Run the planning call and, unless detached, wait for its outcome.
 async fn plan_ticket(client: &mut Client, ticket_id: uuid::Uuid, detach: bool) -> Result<()> {
     client.call(Cmd::PlanTicket { ticket_id }).await?;
@@ -509,6 +673,46 @@ async fn plan_ticket(client: &mut Client, ticket_id: uuid::Uuid, detach: bool) -
         }
         if std::time::Instant::now() > deadline {
             bail!("la planification n'a pas abouti dans le temps imparti");
+        }
+    }
+}
+
+/// Poll a running ticket until it settles, printing what changes.
+async fn follow_ticket(client: &mut Client, ticket_id: uuid::Uuid) -> Result<()> {
+    let mut last = String::new();
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let detail = ticket_detail(client, ticket_id).await?;
+        let line = detail
+            .agents
+            .iter()
+            .map(|a| format!("{}:{}", a.agent.role, a.agent.status.label_fr()))
+            .collect::<Vec<_>>()
+            .join("  ");
+        if line != last {
+            println!("  {line}");
+            last = line;
+        }
+        if detail.ticket.status.is_terminal()
+            || detail.ticket.status == orchestra_core::model::TicketStatus::Review
+        {
+            println!(
+                "\nticket #{} : {} — {} ({} tokens)",
+                detail.ticket.number,
+                detail.ticket.status.label_fr(),
+                detail
+                    .cost_usd
+                    .map(fmt_usd)
+                    .unwrap_or_else(|| "coût inconnu".into()),
+                fmt_tokens(detail.tokens.total())
+            );
+            if let Some(branch) = &detail.ticket.branch {
+                println!(
+                    "relis la branche : git log {}..{branch}",
+                    detail.project.default_branch
+                );
+            }
+            return Ok(());
         }
     }
 }

@@ -27,6 +27,7 @@ use uuid::Uuid;
 use crate::bus::EventBus;
 use crate::ledger::UsageLedger;
 use crate::store::Store;
+use crate::supervisor::Supervisor;
 
 /// A command plus where to send its reply.
 pub struct Job {
@@ -58,6 +59,7 @@ impl DaemonHandle {
 }
 
 pub struct Daemon {
+    supervisor: Supervisor,
     /// Tickets whose planning run is in flight, so a second request is refused
     /// instead of spending tokens twice.
     planning: HashSet<TicketId>,
@@ -83,12 +85,22 @@ impl Daemon {
             bus: bus.clone(),
         };
         let (planning_done, planning_rx) = mpsc::channel(16);
+        let cfg = Arc::new(cfg);
+        let ledger = UsageLedger::new(store.clone(), &cfg);
+        let supervisor = Supervisor::new(
+            store.clone(),
+            bus.clone(),
+            ledger.clone(),
+            Arc::clone(&cfg),
+            paths.cache_dir.clone(),
+        );
         Daemon {
+            supervisor,
             planning: HashSet::new(),
             planning_done,
             planning_rx,
-            ledger: UsageLedger::new(store.clone(), &cfg),
-            cfg: Arc::new(cfg),
+            ledger,
+            cfg,
             paths,
             store,
             bus,
@@ -152,6 +164,10 @@ impl Daemon {
         &self.ledger
     }
 
+    pub fn supervisor(&self) -> &Supervisor {
+        &self.supervisor
+    }
+
     pub fn config(&self) -> &Config {
         &self.cfg
     }
@@ -201,19 +217,49 @@ impl Daemon {
                 self.accept_proposal(ticket_id, team).await
             }
             Command::ListRoles { project_id } => self.list_roles(project_id).await,
+            Command::LaunchTicket { ticket_id, .. } => self.launch_ticket(ticket_id).await,
+            Command::CancelTicket { ticket_id } => {
+                self.supervisor
+                    .cancel_ticket(ticket_id)
+                    .await
+                    .map_err(internal)?;
+                Ok(Reply::Ack)
+            }
+            Command::SteerAgent {
+                agent_id,
+                text,
+                hard,
+            } => {
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    return Err(ApiError::invalid("la consigne est vide"));
+                }
+                self.supervisor
+                    .steer(agent_id, text, hard)
+                    .await
+                    .map_err(|e| ApiError::conflict(e.to_string()))?;
+                Ok(Reply::Ack)
+            }
+            Command::CancelAgent { agent_id } => {
+                self.supervisor
+                    .cancel_agent(agent_id)
+                    .await
+                    .map_err(|e| ApiError::conflict(e.to_string()))?;
+                Ok(Reply::Ack)
+            }
             // Subscribe is handled by the connection itself, never here.
             Command::Subscribe { .. } | Command::Unsubscribe => Err(ApiError::internal(
                 "abonnement traité par la connexion, pas par le cœur",
             )),
-            // Phase 3.
-            Command::LaunchTicket { .. }
-            | Command::CancelTicket { .. }
-            | Command::SteerAgent { .. }
-            | Command::CancelAgent { .. }
-            | Command::OpenPane { .. }
-            | Command::Hook { .. } => Err(ApiError::unsupported(
-                "commande pas encore disponible (phase 3)",
+            // Phase 4: zellij panes.
+            Command::OpenPane { .. } => Err(ApiError::unsupported(
+                "les panes zellij arrivent en phase 4",
             )),
+            // The guard decides on its own; nothing asks the daemon any more.
+            Command::Hook { .. } => Ok(Reply::Hook {
+                allow: true,
+                reason: None,
+            }),
         }
     }
 
@@ -226,15 +272,6 @@ impl Daemon {
             .list_tickets(None, Some(vec![TicketStatus::Running]))
             .await
             .map_err(internal)?;
-        let running_agents = self
-            .store
-            .agents_with_status(vec![
-                AgentStatus::Starting,
-                AgentStatus::Running,
-                AgentStatus::WaitingInput,
-            ])
-            .await
-            .map_err(internal)?;
         let last_seq = self.store.last_seq().await.map_err(internal)?;
         let watched_files = self.store.transcript_file_count().await.map_err(internal)?;
         Ok(Reply::Status {
@@ -244,7 +281,7 @@ impl Daemon {
                 started_at: self.started_at,
                 projects: projects.len(),
                 tickets_running: running_tickets.len(),
-                agents_running: running_agents.len(),
+                agents_running: self.supervisor.running_agents().await,
                 last_seq,
                 watched_files,
                 claude_version: None,
@@ -560,6 +597,35 @@ impl Daemon {
             let _ = done.send(ticket.id).await;
         });
 
+        Ok(Reply::Ack)
+    }
+
+    /// Start the team of a planned ticket.
+    async fn launch_ticket(&self, ticket_id: TicketId) -> Result<Reply, ApiError> {
+        let ticket = self
+            .store
+            .ticket(ticket_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("ticket"))?;
+        if ticket.team.is_none() {
+            return Err(ApiError::invalid(
+                "ce ticket n'a pas d'équipe acceptée : planifie-le puis accepte la proposition",
+            ));
+        }
+        ensure_transition(ticket.status, TicketStatus::Running)?;
+        let project = self
+            .store
+            .project(ticket.project_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("projet du ticket"))?;
+        let catalog = self.catalog_for(Some(&project));
+
+        self.supervisor
+            .launch(ticket, project, catalog)
+            .await
+            .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
         Ok(Reply::Ack)
     }
 
