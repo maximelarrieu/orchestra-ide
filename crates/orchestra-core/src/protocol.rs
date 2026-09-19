@@ -38,6 +38,11 @@ pub enum Command {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Forget a project Orchestra discovered. Its tokens are kept, attached to
+    /// no project.
+    ForgetProject {
+        project_id: ProjectId,
+    },
     ListTickets {
         #[serde(default)]
         project_id: Option<ProjectId>,

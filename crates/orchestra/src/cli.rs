@@ -161,6 +161,14 @@ enum ProjectAction {
     },
     /// Liste les projets connus.
     List,
+    /// Oublie un projet découvert. Ses tokens restent comptés, sans projet.
+    Forget { project: String },
+    /// Oublie tous les projets découverts dont le dossier a disparu.
+    Prune {
+        /// Montre ce qui serait oublié sans rien changer.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 impl Cli {
@@ -219,6 +227,40 @@ impl Cli {
                             }
                             other => bail!("réponse inattendue : {other:?}"),
                         }
+                    }
+                    ProjectAction::Forget { project } => {
+                        let p = resolve_project(&mut client, &project).await?;
+                        client.call(Cmd::ForgetProject { project_id: p.id }).await?;
+                        println!("projet « {} » oublié", p.name);
+                        Ok(())
+                    }
+                    ProjectAction::Prune { dry_run } => {
+                        let projects = match client.call(Cmd::ListProjects).await? {
+                            Reply::Projects { projects } => projects,
+                            other => bail!("réponse inattendue : {other:?}"),
+                        };
+                        let stale: Vec<_> = projects
+                            .into_iter()
+                            .filter(|p| {
+                                p.kind == orchestra_core::model::ProjectKind::Discovered
+                                    && !p.path.exists()
+                            })
+                            .collect();
+                        if stale.is_empty() {
+                            println!("rien à oublier : tous les dossiers existent encore");
+                            return Ok(());
+                        }
+                        for p in &stale {
+                            if dry_run {
+                                println!("serait oublié : {:<28} {}", p.name, p.path.display());
+                                continue;
+                            }
+                            match client.call(Cmd::ForgetProject { project_id: p.id }).await {
+                                Ok(_) => println!("oublié : {:<28} {}", p.name, p.path.display()),
+                                Err(e) => println!("gardé  : {:<28} {e}", p.name),
+                            }
+                        }
+                        Ok(())
                     }
                     ProjectAction::List => match client.call(Cmd::ListProjects).await? {
                         Reply::Projects { projects } => {

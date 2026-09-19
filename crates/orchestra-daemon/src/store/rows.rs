@@ -220,6 +220,35 @@ pub fn select_project_by_path(conn: &mut Connection, path: &Path) -> Result<Opti
 
 /// Longest project path that is a prefix of `cwd`, comparing whole components
 /// so `/a/bc` never matches `/a/b`.
+/// Forget a project, keeping what it cost.
+///
+/// The tokens were really spent, so the samples stay and simply lose their
+/// project: dropping them would make the totals lie.
+pub fn delete_project(conn: &mut Connection, id: ProjectId) -> Result<()> {
+    let tx = conn.transaction()?;
+    let tickets: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM tickets WHERE project_id = ?1",
+        [id.to_string()],
+        |r| r.get(0),
+    )?;
+    anyhow::ensure!(
+        tickets == 0,
+        "ce projet a {tickets} ticket(s) : supprime-les d'abord"
+    );
+    tx.execute(
+        "UPDATE usage_samples SET project_id = NULL WHERE project_id = ?1",
+        [id.to_string()],
+    )?;
+    tx.execute(
+        "UPDATE sessions SET project_id = NULL WHERE project_id = ?1",
+        [id.to_string()],
+    )?;
+    let removed = tx.execute("DELETE FROM projects WHERE id = ?1", [id.to_string()])?;
+    anyhow::ensure!(removed == 1, "projet introuvable");
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn select_project_containing(conn: &mut Connection, cwd: &Path) -> Result<Option<Project>> {
     let all = select_projects(conn)?;
     Ok(all
@@ -313,6 +342,33 @@ pub fn select_ticket(conn: &mut Connection, id: TicketId) -> Result<Option<Ticke
     Ok(stmt
         .query_row([id.to_string()], ticket_from_row)
         .optional()?)
+}
+
+/// The ticket whose worktree contains `cwd`, if any.
+///
+/// A worktree is a git repository in its own right, so without this every
+/// ticket would appear as a separate project in the cost view.
+pub fn select_ticket_by_worktree(conn: &mut Connection, cwd: &Path) -> Result<Option<Ticket>> {
+    let mut stmt = conn.prepare("SELECT * FROM tickets WHERE worktree_path IS NOT NULL")?;
+    let rows = stmt.query_map([], ticket_from_row)?;
+    let mut best: Option<Ticket> = None;
+    for ticket in rows {
+        let ticket = ticket?;
+        let Some(path) = ticket.worktree_path.as_ref() else {
+            continue;
+        };
+        if cwd.starts_with(path) {
+            let longer = best
+                .as_ref()
+                .and_then(|b| b.worktree_path.as_ref())
+                .map(|p| path.components().count() > p.components().count())
+                .unwrap_or(true);
+            if longer {
+                best = Some(ticket);
+            }
+        }
+    }
+    Ok(best)
 }
 
 pub fn select_tickets(

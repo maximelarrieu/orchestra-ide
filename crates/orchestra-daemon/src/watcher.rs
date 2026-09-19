@@ -336,6 +336,11 @@ impl TranscriptWatcher {
                 agent_id: Some(agent.id),
                 managed: true,
             };
+        } else if let Ok(Some(ticket)) = self.store.ticket_by_worktree(cwd.to_path_buf()).await {
+            // A session run by hand inside a ticket's worktree belongs to that
+            // ticket, not to a project of its own.
+            attribution.project_id = Some(ticket.project_id);
+            attribution.ticket_id = Some(ticket.id);
         } else {
             attribution.project_id = self.project_for(cwd).await;
         }
@@ -958,6 +963,61 @@ mod tests {
         // Without a home directory the rule still holds for the shallow ones.
         assert!(is_too_broad(Path::new("/tmp"), None));
         assert!(!is_too_broad(Path::new("/home/moi"), None));
+    }
+
+    #[tokio::test]
+    async fn a_session_inside_a_worktree_belongs_to_its_ticket() {
+        // Regression: a worktree is a git repository too, so it became its own
+        // project and every ticket appeared as a separate line in the costs.
+        let h = harness();
+        let project = orchestra_core::model::Project {
+            id: Uuid::new_v4(),
+            name: "depot".into(),
+            path: h._dir.path().join("depot"),
+            default_branch: "main".into(),
+            zellij_tab: None,
+            kind: orchestra_core::model::ProjectKind::Managed,
+            created_at: orchestra_core::now(),
+        };
+        h.store.insert_project(project.clone()).await.unwrap();
+
+        let worktree = h._dir.path().join("worktrees/depot/1-cache");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let now = orchestra_core::now();
+        let ticket = orchestra_core::model::Ticket {
+            id: Uuid::new_v4(),
+            project_id: project.id,
+            number: 1,
+            title: "cache".into(),
+            brief: "b".into(),
+            status: orchestra_core::model::TicketStatus::Running,
+            branch: Some("orch/1-cache".into()),
+            worktree_path: Some(worktree.clone()),
+            proposal: None,
+            team: None,
+            created_at: now,
+            updated_at: now,
+        };
+        h.store.insert_ticket(ticket.clone()).await.unwrap();
+
+        let cwd = worktree.to_string_lossy().to_string();
+        let session = Uuid::new_v4();
+        let path = h.session_file(&cwd, session);
+        append(&path, &assistant_line(session, &cwd, "msg_1", 0, 42));
+
+        let mut w = h.watcher();
+        w.scan_all().await;
+
+        assert_eq!(
+            h.store.list_projects().await.unwrap().len(),
+            1,
+            "le worktree ne devient pas un projet"
+        );
+        let q = UsageQuery {
+            ticket_id: Some(ticket.id),
+            ..Default::default()
+        };
+        assert_eq!(h.ledger.rollup(q).await.unwrap().1.messages, 1);
     }
 
     #[tokio::test]

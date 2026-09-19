@@ -202,6 +202,22 @@ impl Daemon {
             Command::Status => self.status().await,
             Command::ListProjects => self.list_projects().await,
             Command::AddProject { path, name } => self.add_project(path, name).await,
+            Command::ForgetProject { project_id } => {
+                let project = self
+                    .store
+                    .project(project_id)
+                    .await
+                    .map_err(internal)?
+                    .ok_or_else(|| ApiError::not_found("projet"))?;
+                self.store
+                    .delete_project(project_id)
+                    .await
+                    .map_err(|e| ApiError::invalid(e.to_string()))?;
+                self.bus
+                    .warn(format!("projet « {} » oublié", project.name))
+                    .await;
+                Ok(Reply::Ack)
+            }
             Command::ListTickets { project_id, status } => {
                 self.list_tickets(project_id, status).await
             }

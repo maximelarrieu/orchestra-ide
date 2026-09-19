@@ -148,6 +148,11 @@ impl Store {
         self.with(move |c| rows::select_project(c, id)).await
     }
 
+    /// Forget a project, keeping its usage attached to nothing.
+    pub async fn delete_project(&self, id: ProjectId) -> Result<()> {
+        self.with(move |c| rows::delete_project(c, id)).await
+    }
+
     pub async fn project_by_path(&self, path: PathBuf) -> Result<Option<Project>> {
         self.with(move |c| rows::select_project_by_path(c, &path))
             .await
@@ -172,6 +177,12 @@ impl Store {
 
     pub async fn ticket(&self, id: TicketId) -> Result<Option<Ticket>> {
         self.with(move |c| rows::select_ticket(c, id)).await
+    }
+
+    /// The ticket whose worktree contains this directory.
+    pub async fn ticket_by_worktree(&self, cwd: PathBuf) -> Result<Option<Ticket>> {
+        self.with(move |c| rows::select_ticket_by_worktree(c, &cwd))
+            .await
     }
 
     pub async fn list_tickets(
@@ -340,4 +351,93 @@ pub fn usage_event(sample: UsageSample) -> NewEvent {
     e.ticket_id = ticket_id;
     e.agent_id = agent_id;
     e
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orchestra_core::model::{Tokens, UsageSource};
+
+    async fn store_with_project() -> (Store, Project) {
+        let store = Store::open_memory().unwrap();
+        let project = Project {
+            id: Uuid::new_v4(),
+            name: "decouvert".into(),
+            path: PathBuf::from("/tmp/disparu"),
+            default_branch: "main".into(),
+            zellij_tab: None,
+            kind: ProjectKind::Discovered,
+            created_at: orchestra_core::now(),
+        };
+        store.insert_project(project.clone()).await.unwrap();
+        (store, project)
+    }
+
+    fn sample(project: ProjectId) -> UsageSample {
+        UsageSample {
+            message_id: "msg_1".into(),
+            session_id: Uuid::new_v4(),
+            subagent_id: None,
+            agent_id: None,
+            ticket_id: None,
+            project_id: Some(project),
+            model: "claude-opus-5".into(),
+            tokens: Tokens {
+                input: 1,
+                output: 2,
+                cache_read: 3,
+                cache_creation: 0,
+                thinking: 0,
+            },
+            ts: orchestra_core::now(),
+            source: UsageSource::Transcript,
+        }
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_project_keeps_what_it_cost() {
+        // The tokens were really spent: dropping them would make the totals lie.
+        let (store, project) = store_with_project().await;
+        store.record_usage(sample(project.id)).await.unwrap();
+
+        store.delete_project(project.id).await.unwrap();
+        assert!(store.project(project.id).await.unwrap().is_none());
+
+        let q = orchestra_core::protocol::UsageQuery::default();
+        let breakdown = store.usage_breakdown(q).await.unwrap();
+        assert_eq!(breakdown.len(), 1, "l'échantillon est toujours là");
+        assert_eq!(breakdown[0].tokens.output, 2);
+        assert_eq!(
+            breakdown[0].keys.get("project").map(String::as_str),
+            Some("(hors projet)"),
+            "il n'appartient simplement plus à aucun projet"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_project_with_tickets_is_not_forgotten_by_accident() {
+        let (store, project) = store_with_project().await;
+        let now = orchestra_core::now();
+        store
+            .insert_ticket(Ticket {
+                id: Uuid::new_v4(),
+                project_id: project.id,
+                number: 1,
+                title: "t".into(),
+                brief: "b".into(),
+                status: TicketStatus::Draft,
+                branch: None,
+                worktree_path: None,
+                proposal: None,
+                team: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let err = store.delete_project(project.id).await.unwrap_err();
+        assert!(err.to_string().contains("ticket"), "{err}");
+        assert!(store.project(project.id).await.unwrap().is_some());
+    }
 }

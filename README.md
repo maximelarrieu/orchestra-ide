@@ -37,6 +37,7 @@ orchestra ticket launch 12 --follow
 orchestra tail backend --ticket 12          # un agent en plein écran
 orchestra agent steer backend "ajoute aussi un test"
 orchestra usage --by role --since 7d
+orchestra project prune --dry-run           # oublie les dépôts disparus
 ```
 
 Orchestra compte **toutes** tes sessions Claude Code, y compris celles que tu lances
