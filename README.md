@@ -22,6 +22,10 @@ orchestra project add ~/mon-projet
 orchestra tui                                # tableau de bord
 ```
 
+Les statuts sont colorés et portent chacun un symbole, de sorte que la couleur ne
+soit jamais la seule information : `●` en cours, `✓` terminé, `✗` échoué, `◆` à
+relire, `⚠` bloqué par le garde-fou.
+
 Dans le tableau de bord : `n` crée un ticket, `Entrée` l'ouvre, `p` demande une
 équipe à l'orchestrateur, `a` la relit et l'ajuste, `y` l'accepte, `L` lance les
 agents. Depuis un ticket, `Entrée` sur un agent ouvre son flux en direct, où `s`

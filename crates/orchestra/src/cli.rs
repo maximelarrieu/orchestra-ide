@@ -195,7 +195,10 @@ impl Cli {
                 }
             }
             Sub::Status => {
-                let mut client = Client::connect(&socket).await?;
+                // Informational, like every other command: if the daemon is
+                // down, starting it is what the user wants. Only `ping` stays
+                // a pure health check.
+                let mut client = Client::connect_or_spawn(&socket).await?;
                 match client.call(Cmd::Status).await? {
                     Reply::Status { status } => {
                         println!("version        {}", status.version);

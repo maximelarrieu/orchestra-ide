@@ -4,12 +4,13 @@ use orchestra_core::pricing::{fmt_tokens, fmt_usd};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
 
 use super::pane_block;
+use crate::theme;
 
 pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
     if app.ticket.is_none() {
@@ -50,7 +51,9 @@ fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect) {
         .cost_usd
         .map(fmt_usd)
         .unwrap_or_else(|| "≈$0".to_string());
+    let badge = theme::ticket(t.status);
     let mut first = vec![
+        Span::styled(format!("{} ", badge.symbol), badge.style()),
         Span::styled(
             format!("#{} ", t.number),
             Style::default().add_modifier(Modifier::BOLD),
@@ -206,12 +209,19 @@ fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
             } else {
                 Style::default()
             };
+            let badge = theme::agent(a.agent.status);
+            // A working agent shows how long it has been at it, which is the
+            // difference between "thinking" and "stuck".
+            let since = match (a.agent.status.is_active(), a.agent.started_at) {
+                (true, Some(started)) => theme::elapsed(started, orchestra_core::now()),
+                _ => a.turns.to_string(),
+            };
             Row::new(vec![
-                a.agent.role.clone(),
-                a.agent.status.label_fr().to_string(),
-                a.turns.to_string(),
-                fmt_tokens(a.tokens.total()),
-                a.cost_usd.map(fmt_usd).unwrap_or_else(|| "-".into()),
+                Cell::from(a.agent.role.clone()),
+                Cell::from(badge.label(a.agent.status.label_fr())).style(badge.style()),
+                Cell::from(since),
+                Cell::from(fmt_tokens(a.tokens.total())),
+                Cell::from(a.cost_usd.map(fmt_usd).unwrap_or_else(|| "-".into())),
             ])
             .style(style)
         })
@@ -222,14 +232,14 @@ fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
             rows,
             [
                 Constraint::Min(12),
-                Constraint::Length(12),
-                Constraint::Length(7),
+                Constraint::Length(14),
+                Constraint::Length(11),
                 Constraint::Length(9),
                 Constraint::Length(10),
             ],
         )
         .header(
-            Row::new(vec!["rôle", "statut", "tours", "tokens", "coût"])
+            Row::new(vec!["rôle", "statut", "depuis", "tokens", "coût"])
                 .style(Style::default().add_modifier(Modifier::BOLD)),
         )
         .block(pane_block(

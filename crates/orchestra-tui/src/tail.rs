@@ -27,7 +27,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::client::Client;
-use crate::widgets::{LineKind, LiveLog};
+use crate::widgets::LiveLog;
 
 const FRAME: Duration = Duration::from_millis(60);
 
@@ -217,24 +217,15 @@ fn render(state: &Tail, frame: &mut Frame<'_>) {
             .window(height)
             .into_iter()
             .map(|line| {
-                let (marker, style) = match line.kind {
-                    LineKind::Text => ("  ", Style::default()),
-                    LineKind::ToolRunning => ("▸ ", Style::default().add_modifier(Modifier::DIM)),
-                    LineKind::ToolOk => ("✓ ", Style::default().add_modifier(Modifier::DIM)),
-                    LineKind::ToolFailed => ("✗ ", Style::default().add_modifier(Modifier::BOLD)),
-                    LineKind::Blocked => ("⚠ ", Style::default().add_modifier(Modifier::BOLD)),
-                    LineKind::Steer => ("› ", Style::default().add_modifier(Modifier::BOLD)),
-                    LineKind::Notice | LineKind::Thinking => {
-                        ("· ", Style::default().add_modifier(Modifier::DIM))
-                    }
-                };
+                let (marker, marker_style, text_style) =
+                    crate::screens::agent::line_styles(line.kind);
                 Line::from(vec![
                     Span::styled(
                         format!("{:>8} ", line.stamp),
                         Style::default().add_modifier(Modifier::DIM),
                     ),
-                    Span::styled(marker.to_string(), style),
-                    Span::styled(line.text.clone(), style),
+                    Span::styled(marker.to_string(), marker_style),
+                    Span::styled(line.text.clone(), text_style),
                 ])
             })
             .collect()

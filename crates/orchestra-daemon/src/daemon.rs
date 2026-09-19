@@ -233,6 +233,7 @@ impl Daemon {
                 self.accept_proposal(ticket_id, team).await
             }
             Command::ListRoles { project_id } => self.list_roles(project_id).await,
+            Command::ListAgents { only_active } => self.list_agents(only_active).await,
             Command::LaunchTicket { ticket_id, .. } => self.launch_ticket(ticket_id).await,
             Command::CancelTicket { ticket_id } => {
                 self.supervisor
@@ -614,6 +615,35 @@ impl Daemon {
         });
 
         Ok(Reply::Ack)
+    }
+
+    /// Every agent, or only those still working.
+    async fn list_agents(&self, only_active: bool) -> Result<Reply, ApiError> {
+        let statuses = if only_active {
+            vec![
+                AgentStatus::Starting,
+                AgentStatus::Running,
+                AgentStatus::WaitingInput,
+            ]
+        } else {
+            AgentStatus::ALL.to_vec()
+        };
+        let agents = self
+            .store
+            .agents_with_status(statuses)
+            .await
+            .map_err(internal)?;
+        let mut out = Vec::with_capacity(agents.len());
+        for agent in agents {
+            let cost = self.ledger.agent_cost(agent.id).await.map_err(internal)?;
+            out.push(AgentSummary {
+                agent,
+                tokens: cost.tokens,
+                cost_usd: cost.cost_usd,
+                turns: cost.messages as u32,
+            });
+        }
+        Ok(Reply::Agents { agents: out })
     }
 
     /// Start the team of a planned ticket.

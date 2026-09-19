@@ -85,6 +85,12 @@ pub enum Command {
     CancelAgent {
         agent_id: AgentId,
     },
+    /// Agents across every ticket, so a screen can find the one that is
+    /// working without knowing which ticket it belongs to.
+    ListAgents {
+        #[serde(default)]
+        only_active: bool,
+    },
     /// Turns this connection into an event stream. `backlog` past events are
     /// replayed first, then live ones.
     Subscribe {
@@ -137,6 +143,9 @@ pub enum Reply {
     },
     Roles {
         roles: Vec<RoleDefinition>,
+    },
+    Agents {
+        agents: Vec<AgentSummary>,
     },
     Usage {
         rows: Vec<UsageRow>,
@@ -515,6 +524,7 @@ mod tests {
                 query: UsageQuery::default(),
             },
             Command::Status,
+            Command::ListAgents { only_active: true },
         ];
         for cmd in cmds {
             let req = Request { id: 7, cmd };
@@ -567,6 +577,7 @@ mod tests {
             Reply::Projects { projects: vec![] },
             Reply::Tickets { tickets: vec![] },
             Reply::Roles { roles: vec![] },
+            Reply::Agents { agents: vec![] },
             Reply::Usage {
                 rows: vec![],
                 totals: UsageTotals::default(),

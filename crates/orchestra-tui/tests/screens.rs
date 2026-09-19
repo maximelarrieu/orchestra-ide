@@ -583,8 +583,55 @@ fn the_agent_screen_reads_like_a_conversation() {
     let out = draw(&app, 120, 30);
     assert!(out.contains("Je lance les tests."));
     assert!(out.contains("cargo test --workspace"));
-    assert!(out.contains("En direct") || out.contains("Terminé"));
+    // The panel title says where the run stands and how much there is to read.
+    assert!(
+        out.contains("ligne(s)"),
+        "le titre annonce la taille du journal"
+    );
     assert!(out.contains("backend"));
+}
+
+#[test]
+fn a_running_agent_says_so_and_shows_how_long() {
+    let mut app = App::new();
+    let mut detail = detail_with_team_agent(AgentStatus::Running);
+    detail.agents[1].agent.started_at = Some(orchestra_core::now() - time::Duration::seconds(95));
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(detail),
+    })));
+    app.screen = Screen::Ticket;
+    app.update(Msg::Key(Action::Select));
+
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("en cours"), "le statut réel est affiché");
+    // The exact second moves between building the fixture and drawing it, so
+    // the assertion is on the shape, not the value.
+    assert!(out.contains("1 min"), "et depuis combien de temps : {out}");
+    assert!(out.contains("En direct"), "le journal se dit en direct");
+}
+
+#[test]
+fn a_long_silence_is_named_rather_than_laissed_ambiguous() {
+    let mut app = App::new();
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(detail_with_team_agent(AgentStatus::Running)),
+    })));
+    app.screen = Screen::Ticket;
+    app.update(Msg::Key(Action::Select));
+
+    // An event from a while ago: the screen should say how long it has been
+    // quiet rather than look frozen.
+    let mut event = agent_event(
+        &app,
+        EventKind::AgentText {
+            text: "bonjour".into(),
+        },
+    );
+    event.ts = orchestra_core::now() - time::Duration::seconds(40);
+    app.update(Msg::Event(Box::new(event)));
+
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("silencieux depuis"), "{out}");
 }
 
 #[test]

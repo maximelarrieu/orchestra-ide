@@ -217,6 +217,8 @@ pub struct App {
     pub agent_selected: usize,
     /// Live log of the watched agent.
     pub log: LiveLog,
+    /// Agent to open as soon as its ticket arrives.
+    pub pending_agent: Option<orchestra_core::model::AgentId>,
     /// Text being typed for an agent, if the input is open.
     pub steer: Option<String>,
     /// True when that text will interrupt rather than queue.
@@ -241,8 +243,10 @@ pub struct App {
     pub should_quit: bool,
     /// Commands the update loop wants the caller to send to the daemon.
     pub outbox: Vec<Command>,
-    /// Counts the one-second ticks, to pace polling.
-    ticks: u64,
+    /// Counts the one-second ticks, to pace polling and turn the spinner.
+    pub ticks: u64,
+    /// When the watched agent last said or did something.
+    pub last_activity: Option<time::OffsetDateTime>,
 }
 
 const ACTIVITY_MAX: usize = 200;
@@ -258,6 +262,7 @@ impl Default for App {
             editor: TeamEditor::default(),
             agent_selected: 0,
             log: LiveLog::default(),
+            pending_agent: None,
             steer: None,
             steer_hard: false,
             roles: Vec::new(),
@@ -280,6 +285,7 @@ impl Default for App {
             should_quit: false,
             outbox: Vec::new(),
             ticks: 0,
+            last_activity: None,
         }
     }
 }
@@ -347,6 +353,11 @@ impl App {
             // While the orchestrator works there is nothing to stream, so the
             // ticket is polled until its proposal lands.
             Screen::Ticket if self.planning => self.refresh_open_ticket(None),
+            // The log streams, but the agent's status and cost come from the
+            // ticket: without this the header stays on "démarrage" while the
+            // agent is plainly working.
+            Screen::Agent => self.refresh_open_ticket(None),
+            Screen::Ticket => self.refresh_open_ticket(None),
             _ => {}
         }
     }
@@ -764,7 +775,14 @@ impl App {
     }
 
     fn go(&mut self, screen: Screen) {
+        let entering_agent = screen == Screen::Agent && self.screen != Screen::Agent;
         self.screen = screen;
+        if entering_agent && self.watched_agent().is_none() {
+            // Reached from the tab strip rather than from a ticket: find the
+            // agent that is working, wherever it is.
+            self.outbox.push(Command::ListAgents { only_active: true });
+            self.status = "recherche d'un agent en cours…".into();
+        }
         if !screen.is_implemented() {
             self.status = format!("« {} » arrive dans une phase suivante", screen.title_fr());
         } else {
@@ -893,6 +911,29 @@ impl App {
         });
     }
 
+    /// Open the ticket of whichever agent is working.
+    fn adopt_live_agent(&mut self, agents: Vec<orchestra_core::protocol::AgentSummary>) {
+        let Some(live) = agents
+            .iter()
+            .find(|a| a.agent.status.is_active())
+            .or_else(|| agents.first())
+        else {
+            self.status = "aucun agent ne tourne en ce moment".into();
+            return;
+        };
+        let already_open = self
+            .ticket
+            .as_ref()
+            .is_some_and(|d| d.ticket.id == live.agent.ticket_id);
+        if !already_open {
+            self.outbox.push(Command::GetTicket {
+                ticket_id: live.agent.ticket_id,
+            });
+        }
+        self.pending_agent = Some(live.agent.id);
+        self.status = format!("agent « {} »", live.agent.role);
+    }
+
     /// Reload the open ticket when an event concerns it.
     fn refresh_open_ticket(&mut self, ticket_id: Option<TicketId>) {
         let Some(open) = self.ticket.as_ref().map(|d| d.ticket.id) else {
@@ -973,6 +1014,24 @@ impl App {
                 self.planning = false;
                 let previous = self.watched_agent_id();
                 self.ticket = Some(detail);
+                // A ticket fetched to reach one particular agent.
+                if let Some(wanted) = self.pending_agent.take() {
+                    if let Some(index) = self
+                        .ticket
+                        .as_ref()
+                        .and_then(|d| d.agents.iter().position(|a| a.agent.id == wanted))
+                    {
+                        self.agent_selected = index;
+                        self.log.clear();
+                        self.screen = Screen::Agent;
+                        self.outbox.push(Command::Subscribe {
+                            filter: orchestra_core::events::EventFilter::for_agent(wanted),
+                            since_seq: None,
+                            backlog: 500,
+                        });
+                        return;
+                    }
+                }
                 // Keep watching the same agent across refreshes.
                 if let Some(id) = previous {
                     if let Some(index) = self
@@ -1009,6 +1068,7 @@ impl App {
             Reply::Roles { roles } => {
                 self.roles = roles;
             }
+            Reply::Agents { agents } => self.adopt_live_agent(agents),
             Reply::Status { status } => {
                 self.daemon_version = Some(status.version.clone());
             }
@@ -1020,7 +1080,9 @@ impl App {
     fn on_event(&mut self, e: Event) {
         // While watching one agent, its events feed the live log.
         if self.screen == Screen::Agent && e.agent_id == self.watched_agent_id() {
-            self.log.push_event(&e);
+            if self.log.push_event(&e) {
+                self.last_activity = Some(e.ts);
+            }
             if matches!(
                 e.kind,
                 EventKind::AgentStatusChanged { .. } | EventKind::Usage { .. }

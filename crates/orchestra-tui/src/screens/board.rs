@@ -7,11 +7,12 @@ use orchestra_core::pricing::{fmt_tokens, fmt_usd};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, BoardPane, Screen};
 use crate::keymap::HELP;
+use crate::theme;
 
 /// Width below which the board stacks its panes.
 const NARROW: u16 = 100;
@@ -103,9 +104,16 @@ fn render_projects(app: &App, frame: &mut Frame<'_>, area: Rect) {
                         style = style.add_modifier(Modifier::REVERSED);
                     }
                 }
+                // A project Orchestra only discovered is drawn faintly: it is
+                // there for its costs, not to work in.
                 let marker = if p.discovered { "◦" } else { "●" };
+                let marker_style = if p.discovered {
+                    Style::default().add_modifier(Modifier::DIM)
+                } else {
+                    Style::default()
+                };
                 ListItem::new(Line::from(vec![
-                    Span::raw(format!("{marker} ")),
+                    Span::styled(format!("{marker} "), marker_style),
                     Span::styled(p.name.clone(), style),
                 ]))
             })
@@ -152,17 +160,22 @@ fn render_tickets(app: &App, frame: &mut Frame<'_>, area: Rect) {
             }
             let team = if t.agents_total == 0 {
                 "-".to_string()
+            } else if t.agents_active > 0 {
+                format!("{} ⚙ {}/{}", t.agents_active, t.agents_done, t.agents_total)
             } else {
                 format!("{}/{}", t.agents_done, t.agents_total)
             };
             let cost = t.cost_usd.map(fmt_usd).unwrap_or_else(|| "-".into());
+            let badge = theme::ticket(t.ticket.status);
             Row::new(vec![
-                format!("#{}", t.ticket.number),
-                t.ticket.title.clone(),
-                t.ticket.status.label_fr().to_string(),
-                team,
-                fmt_tokens(t.tokens.total()),
-                cost,
+                Cell::from(format!("#{}", t.ticket.number)),
+                Cell::from(t.ticket.title.clone()),
+                // The status keeps its own colour even on the selected row, so
+                // the eye finds what is running without reading every line.
+                Cell::from(badge.label(t.ticket.status.label_fr())).style(badge.style()),
+                Cell::from(team),
+                Cell::from(fmt_tokens(t.tokens.total())),
+                Cell::from(cost),
             ])
             .style(style)
         })
@@ -173,8 +186,8 @@ fn render_tickets(app: &App, frame: &mut Frame<'_>, area: Rect) {
         [
             Constraint::Length(5),
             Constraint::Min(16),
-            Constraint::Length(10),
-            Constraint::Length(6),
+            Constraint::Length(12),
+            Constraint::Length(9),
             Constraint::Length(8),
             Constraint::Length(9),
         ],

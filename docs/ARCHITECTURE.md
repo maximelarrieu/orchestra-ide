@@ -93,6 +93,20 @@ l'état, donc toute la machine se teste sans terminal ; le rendu se teste avec
 Les raccourcis évitent `Alt` et les accords `Ctrl+b` / `Ctrl+g`, réservés à zellij
 par la configuration de l'utilisateur.
 
+**La couleur ne porte jamais une information seule** (`theme.rs`). Chaque statut a
+son symbole en plus de sa teinte, et la palette n'oppose pas le rouge au vert, qui
+est la paire que beaucoup de gens ne distinguent pas : le bleu, le cyan et le jaune
+font le travail, le rouge n'apparaît qu'avec une croix et le vert qu'avec une coche.
+Seules les seize couleurs du terminal sont utilisées, pour suivre le thème déjà en
+place plutôt que le combattre.
+
+**L'écran Agent se synchronise tout seul.** Ouvert depuis la barre d'onglets sans
+ticket, il cherche l'agent qui tourne où qu'il soit ; ouvert depuis un ticket, il
+prend celui qui travaille plutôt que la première ligne, et suit l'équipe quand un
+rôle passe la main. Le journal arrive par le flux, mais le statut et le coût
+viennent du ticket, relu à chaque seconde : sans cela l'en-tête restait sur
+« démarrage » pendant que l'agent travaillait visiblement.
+
 ### `orchestra-hook`
 
 Le garde-fou, appelé par Claude Code avant chaque appel d'outil d'un agent. Sortie 0

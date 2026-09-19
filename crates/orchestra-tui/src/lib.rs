@@ -7,6 +7,7 @@ pub mod keymap;
 mod run;
 pub mod screens;
 mod tail;
+pub mod theme;
 pub mod widgets;
 
 pub use app::{App, Msg, Screen};
