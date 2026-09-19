@@ -1,5 +1,6 @@
 //! Orchestra core: pure types and rules. No tokio, no SQLite, no terminal.
 
+pub mod claude;
 pub mod config;
 pub mod error;
 pub mod events;

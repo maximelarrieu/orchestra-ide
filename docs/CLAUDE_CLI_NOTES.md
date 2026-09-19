@@ -53,15 +53,55 @@ Chaque ligne `assistant` porte `message.id`, `message.model`, `message.usage`,
 `sessionId`, `cwd`, `gitBranch`, `timestamp`, `uuid`, `parentUuid`, `requestId`,
 `isSidechain`, `agentId`, `version`.
 
-Deux pièges confirmés :
+Trois pièges confirmés, mesurés sur 19 fichiers et 4 900 lignes :
 
 1. **Une réponse API produit plusieurs lignes `assistant`** qui partagent le même
-   `message.id` (une par bloc de contenu, distinguées par `apiBlockIndex`). Compter
-   chaque ligne multiplierait les coûts. C'est pourquoi `usage_samples.message_id`
-   est une clé primaire.
-2. Les fichiers contiennent une trentaine de types de lignes qui ne sont pas des
-   messages (`attachment`, `ai-title`, `file-history-snapshot`…). Seules les lignes
-   `assistant` portent un `usage`.
+   `message.id`, une par bloc de contenu, distinguées par `apiBlockIndex`. Sur ce
+   corpus : 1 469 lignes pour 637 réponses, jusqu'à 14 lignes pour une seule réponse.
+   Compter chaque ligne multiplierait les coûts.
+2. **Pire : ces copies ne portent pas le même `usage`.** Les premiers blocs sont
+   écrits pendant que la réponse est en cours et annoncent un `output_tokens`
+   partiel ; seul le dernier a le total. Exemple réel, une seule réponse :
+
+   | bloc | output_tokens | iterations |
+   |---|---|---|
+   | 0 | 5 | 0 |
+   | 1 | 5 | 0 |
+   | 2 | 5 | 0 |
+   | 3 | 787 | 1 |
+
+   Le même `apiBlockIndex` peut même apparaître deux fois, une version partielle et
+   une complète. Garder la première copie sous-estimerait le coût d'un facteur cent.
+   Orchestra garde donc le **maximum par champ** : l'opération est commutative, donc
+   l'ordre d'arrivée du flux et du transcript n'a pas d'importance. 124 réponses sur
+   637 étaient concernées sur ce corpus.
+3. Les fichiers contiennent une trentaine de types de lignes qui ne sont pas des
+   messages (`attachment`, `ai-title`, `cost-state`, `file-history-snapshot`…).
+   Seules les lignes `assistant` portent un `usage`. Un pré-filtre sur la chaîne
+   `"type":"assistant"` évite de parser les quatre cinquièmes du fichier.
+
+Les lignes de sous-agent portent le `sessionId` **du parent**, plus `agentId`,
+`isSidechain: true` et `attributionAgent` (le type de sous-agent). Les coûts d'un
+sous-agent remontent donc naturellement à la session qui l'a lancé.
+
+Une ligne `assistant` peut avoir `model: "<synthetic>"` : ce sont des messages
+fabriqués localement par Claude Code (erreurs, avis), sans coût réel.
+
+## Tarifs : le cache est facturé à l'heure
+
+Mesure sur un appel réel (`claude -p --model haiku --output-format json`) :
+
+```
+usage   : input 10, output 43, cache_read 14053, cache_creation 8084
+rapporté: total_cost_usd = 0.0177983
+```
+
+En résolvant, le tarif d'écriture de cache vaut exactement **2,0 fois le prix
+d'entrée**, soit le tarif du cache d'une heure, et non 1,25 fois (cinq minutes).
+Les transcripts le confirment : `cache_creation.ephemeral_1h_input_tokens` domine
+largement `ephemeral_5m_input_tokens`. La grille par défaut d'Orchestra utilise donc
+le tarif d'une heure ; avec celui de cinq minutes, l'estimation était un tiers trop
+basse. Un test rejoue cette mesure pour que la grille ne dérive pas.
 
 Les sessions **interactives** écrivent le même `usage` : Orchestra peut donc
 comptabiliser toute l'activité Claude Code de la machine, pas seulement la sienne.

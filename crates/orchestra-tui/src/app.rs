@@ -4,7 +4,9 @@
 
 use orchestra_core::events::{Event, EventKind};
 use orchestra_core::model::{ProjectId, TicketId};
-use orchestra_core::protocol::{Reply, TicketSummary, UsageRow, UsageTotals};
+use orchestra_core::protocol::{
+    Command, GroupBy, Reply, TicketSummary, TimeRange, UsageQuery, UsageRow, UsageTotals,
+};
 
 use crate::keymap::Action;
 
@@ -43,9 +45,9 @@ impl Screen {
         }
     }
 
-    /// Phase 0 ships the board only; the rest announce themselves.
+    /// Screens that exist today; the others announce the phase they arrive in.
     pub fn is_implemented(self) -> bool {
-        matches!(self, Screen::Board)
+        matches!(self, Screen::Board | Screen::Cost)
     }
 
     fn index(self) -> usize {
@@ -88,11 +90,115 @@ pub struct ProjectRow {
     pub discovered: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Time window of the cost screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Period {
+    Today,
+    Week,
+    Month,
+    All,
+}
+
+impl Period {
+    pub const ALL: [Period; 4] = [Period::Today, Period::Week, Period::Month, Period::All];
+
+    pub fn label_fr(self) -> &'static str {
+        match self {
+            Period::Today => "aujourd'hui",
+            Period::Week => "7 jours",
+            Period::Month => "30 jours",
+            Period::All => "tout",
+        }
+    }
+
+    pub fn range(self) -> TimeRange {
+        match self {
+            // Since midnight, not "24 hours ago": that is what a person means
+            // by today when they glance at a dashboard.
+            Period::Today => TimeRange {
+                since: Some(start_of_today()),
+                until: None,
+            },
+            Period::Week => TimeRange::last_days(7),
+            Period::Month => TimeRange::last_days(30),
+            Period::All => TimeRange::all(),
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|p| *p == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+}
+
+/// Midnight UTC of the current day.
+fn start_of_today() -> time::OffsetDateTime {
+    let now = orchestra_core::now();
+    now.replace_time(time::Time::MIDNIGHT)
+}
+
+#[derive(Debug, Clone)]
 pub struct CostView {
     pub rows: Vec<UsageRow>,
     pub totals: UsageTotals,
     pub selected: usize,
+    pub group: GroupBy,
+    pub period: Period,
+    pub include_unmanaged: bool,
+    /// Daily cost, oldest first, for the trend line.
+    pub daily: Vec<(String, f64)>,
+}
+
+impl Default for CostView {
+    fn default() -> Self {
+        CostView {
+            rows: Vec::new(),
+            totals: UsageTotals::default(),
+            selected: 0,
+            group: GroupBy::Project,
+            period: Period::Week,
+            include_unmanaged: true,
+            daily: Vec::new(),
+        }
+    }
+}
+
+impl CostView {
+    /// The two queries the screen needs: the grouped table and the trend.
+    pub fn queries(&self) -> [UsageQuery; 2] {
+        let base = UsageQuery {
+            range: self.period.range(),
+            include_unmanaged: self.include_unmanaged,
+            ..Default::default()
+        };
+        [
+            UsageQuery {
+                group_by: vec![self.group],
+                ..base.clone()
+            },
+            UsageQuery {
+                group_by: vec![GroupBy::Day],
+                limit: 60,
+                ..base
+            },
+        ]
+    }
+
+    /// Grouping choices offered by the `m` key.
+    pub const GROUPS: [GroupBy; 4] = [
+        GroupBy::Project,
+        GroupBy::Ticket,
+        GroupBy::Role,
+        GroupBy::Model,
+    ];
+
+    pub fn next_group(&self) -> GroupBy {
+        let i = Self::GROUPS
+            .iter()
+            .position(|g| *g == self.group)
+            .unwrap_or(0);
+        Self::GROUPS[(i + 1) % Self::GROUPS.len()]
+    }
 }
 
 pub struct App {
@@ -113,7 +219,9 @@ pub struct App {
     pub palette: Option<String>,
     pub should_quit: bool,
     /// Commands the update loop wants the caller to send to the daemon.
-    pub outbox: Vec<orchestra_core::protocol::Command>,
+    pub outbox: Vec<Command>,
+    /// Counts the one-second ticks, to pace polling.
+    ticks: u64,
 }
 
 const ACTIVITY_MAX: usize = 200;
@@ -136,6 +244,7 @@ impl Default for App {
             palette: None,
             should_quit: false,
             outbox: Vec::new(),
+            ticks: 0,
         }
     }
 }
@@ -158,7 +267,7 @@ impl App {
     }
 
     /// Fold one message into the state. Returns commands to send, if any.
-    pub fn update(&mut self, msg: Msg) -> Vec<orchestra_core::protocol::Command> {
+    pub fn update(&mut self, msg: Msg) -> Vec<Command> {
         match msg {
             Msg::Key(a) => self.on_key(a),
             Msg::Event(e) => self.on_event(*e),
@@ -172,9 +281,27 @@ impl App {
                 self.daemon_version = Some(version);
                 self.status = "connecté".into();
             }
-            Msg::Tick => {}
+            Msg::Tick => self.on_tick(),
         }
         std::mem::take(&mut self.outbox)
+    }
+
+    /// Unmanaged sessions produce no per-response event, on purpose: the
+    /// watcher would flood the log. The cost figures are therefore polled,
+    /// which is a read of the store like any other.
+    fn on_tick(&mut self) {
+        self.ticks += 1;
+        if !self.ticks.is_multiple_of(2) {
+            return;
+        }
+        match self.screen {
+            Screen::Cost => self.request_usage(),
+            Screen::Board => {
+                self.request_usage();
+                self.request_tickets();
+            }
+            _ => {}
+        }
     }
 
     fn on_key(&mut self, action: Action) {
@@ -224,6 +351,30 @@ impl App {
             Action::Top => self.set_selection(0),
             Action::Bottom => self.set_selection(usize::MAX),
             Action::Select => self.open_selection(),
+            Action::Char(c) => self.on_char(c),
+            _ => {}
+        }
+    }
+
+    fn on_char(&mut self, c: char) {
+        if self.screen != Screen::Cost {
+            return;
+        }
+        match c {
+            'm' => {
+                self.cost.group = self.cost.next_group();
+                self.cost.selected = 0;
+                self.request_usage();
+            }
+            'p' => {
+                self.cost.period = self.cost.period.next();
+                self.cost.selected = 0;
+                self.request_usage();
+            }
+            'u' => {
+                self.cost.include_unmanaged = !self.cost.include_unmanaged;
+                self.request_usage();
+            }
             _ => {}
         }
     }
@@ -286,7 +437,6 @@ impl App {
     }
 
     fn run_palette(&mut self, line: &str) {
-        use orchestra_core::protocol::Command;
         let line = line.trim();
         let (verb, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         let rest = rest.trim();
@@ -312,26 +462,28 @@ impl App {
     }
 
     /// Take the commands queued by the last update.
-    pub fn take_outbox(&mut self) -> Vec<orchestra_core::protocol::Command> {
+    pub fn take_outbox(&mut self) -> Vec<Command> {
         std::mem::take(&mut self.outbox)
     }
 
     /// Ask the daemon for everything the current screen shows.
     pub fn refresh(&mut self) {
-        use orchestra_core::protocol::{Command, UsageQuery};
         self.outbox.push(Command::ListProjects);
         self.request_tickets();
-        self.outbox.push(Command::GetUsage {
-            query: UsageQuery::default(),
-        });
+        self.request_usage();
     }
 
     fn request_tickets(&mut self) {
-        use orchestra_core::protocol::Command;
         self.outbox.push(Command::ListTickets {
             project_id: self.selected_project().map(|p| p.id),
             status: None,
         });
+    }
+
+    fn request_usage(&mut self) {
+        for query in self.cost.queries() {
+            self.outbox.push(Command::GetUsage { query });
+        }
     }
 
     fn on_reply(&mut self, reply: Reply) {
@@ -359,8 +511,7 @@ impl App {
             }
             Reply::Project { project } => {
                 self.status = format!("projet « {} » ajouté", project.name);
-                self.outbox
-                    .push(orchestra_core::protocol::Command::ListProjects);
+                self.outbox.push(Command::ListProjects);
             }
             Reply::Tickets { tickets } => {
                 let previous = self.selected_ticket_id();
@@ -371,12 +522,29 @@ impl App {
                     .min(self.tickets.len().saturating_sub(1));
             }
             Reply::Usage { rows, totals } => {
-                self.cost.rows = rows;
-                self.cost.totals = totals;
-                self.cost.selected = self
-                    .cost
-                    .selected
-                    .min(self.cost.rows.len().saturating_sub(1));
+                // Two queries feed this screen and the reply does not name
+                // which one it answers, so the trend is recognised by its key.
+                let is_daily = rows.first().is_some_and(|r| r.keys.contains_key("day"));
+                if is_daily {
+                    let mut daily: Vec<(String, f64)> = rows
+                        .into_iter()
+                        .map(|r| {
+                            (
+                                r.keys.get("day").cloned().unwrap_or_default(),
+                                r.cost_usd.unwrap_or(0.0),
+                            )
+                        })
+                        .collect();
+                    daily.sort_by(|a, b| a.0.cmp(&b.0));
+                    self.cost.daily = daily;
+                } else {
+                    self.cost.rows = rows;
+                    self.cost.totals = totals;
+                    self.cost.selected = self
+                        .cost
+                        .selected
+                        .min(self.cost.rows.len().saturating_sub(1));
+                }
             }
             Reply::Status { status } => {
                 self.daemon_version = Some(status.version.clone());
@@ -395,19 +563,15 @@ impl App {
         }
         // Anything that changes a board number triggers a targeted refresh.
         match &e.kind {
-            EventKind::ProjectAdded { .. } => {
-                self.outbox
-                    .push(orchestra_core::protocol::Command::ListProjects);
+            EventKind::ProjectAdded { .. } | EventKind::UnmanagedSessionSeen { .. } => {
+                self.outbox.push(Command::ListProjects);
             }
             EventKind::TicketCreated { .. }
             | EventKind::TicketStatusChanged { .. }
             | EventKind::AgentStatusChanged { .. } => self.request_tickets(),
-            EventKind::Usage { .. } => {
-                self.outbox
-                    .push(orchestra_core::protocol::Command::GetUsage {
-                        query: orchestra_core::protocol::UsageQuery::default(),
-                    });
-            }
+            // A managed agent reports every response. The cost view is polled
+            // instead, so a busy agent cannot spin the loop with queries.
+            EventKind::Usage { .. } => {}
             _ => {}
         }
     }
@@ -658,8 +822,120 @@ mod tests {
     #[test]
     fn unimplemented_screens_say_so() {
         let mut app = App::new();
+        app.update(Msg::Key(Action::Screen(2)));
+        assert_eq!(app.screen, Screen::Ticket);
+        assert!(app.status.contains("phase"), "{}", app.status);
+
+        // The cost screen exists, so it announces nothing.
         app.update(Msg::Key(Action::Screen(4)));
         assert_eq!(app.screen, Screen::Cost);
-        assert!(app.status.contains("phase"), "{}", app.status);
+        assert!(!app.status.contains("phase"), "{}", app.status);
+    }
+
+    #[test]
+    fn the_cost_screen_reacts_to_its_own_keys() {
+        let mut app = App::new();
+        app.update(Msg::Key(Action::Screen(4)));
+
+        let cmds = app.update(Msg::Key(Action::Char('m')));
+        assert_eq!(app.cost.group, GroupBy::Ticket, "m change le regroupement");
+        assert_eq!(cmds.len(), 2, "le tableau et la courbe sont redemandés");
+
+        app.update(Msg::Key(Action::Char('p')));
+        assert_eq!(app.cost.period, Period::Month, "p change la période");
+
+        assert!(app.cost.include_unmanaged);
+        app.update(Msg::Key(Action::Char('u')));
+        assert!(!app.cost.include_unmanaged, "u bascule les sessions libres");
+
+        // Those keys do nothing on the board.
+        app.update(Msg::Key(Action::Screen(1)));
+        let before = app.cost.group;
+        app.update(Msg::Key(Action::Char('m')));
+        assert_eq!(app.cost.group, before);
+    }
+
+    #[test]
+    fn the_period_defines_the_window_it_asks_for() {
+        let mut app = App::new();
+        app.cost.period = Period::All;
+        let [table, trend] = app.cost.queries();
+        assert!(table.range.since.is_none(), "« tout » ne borne pas");
+        assert_eq!(trend.group_by, vec![GroupBy::Day]);
+
+        app.cost.period = Period::Today;
+        let [table, _] = app.cost.queries();
+        let since = table.range.since.expect("aujourd'hui commence à minuit");
+        assert_eq!(since.time(), time::Time::MIDNIGHT);
+    }
+
+    #[test]
+    fn the_trend_reply_is_told_apart_from_the_table() {
+        use std::collections::BTreeMap;
+        let mut app = App::new();
+        let mut daily_keys = BTreeMap::new();
+        daily_keys.insert("day".to_string(), "2026-09-19".to_string());
+        let daily = UsageRow {
+            keys: daily_keys,
+            tokens: Default::default(),
+            cost_usd: Some(3.0),
+            messages: 1,
+            cost_estimated: false,
+        };
+        let mut table_keys = BTreeMap::new();
+        table_keys.insert("project".to_string(), "orchestra".to_string());
+        let table = UsageRow {
+            keys: table_keys,
+            tokens: Default::default(),
+            cost_usd: Some(9.0),
+            messages: 2,
+            cost_estimated: false,
+        };
+
+        app.update(Msg::Reply(Box::new(Reply::Usage {
+            rows: vec![daily],
+            totals: UsageTotals::default(),
+        })));
+        app.update(Msg::Reply(Box::new(Reply::Usage {
+            rows: vec![table],
+            totals: UsageTotals {
+                cost_usd: Some(9.0),
+                ..Default::default()
+            },
+        })));
+
+        assert_eq!(app.cost.daily.len(), 1, "la courbe est rangée à part");
+        assert_eq!(app.cost.rows.len(), 1, "le tableau n'est pas écrasé");
+        assert_eq!(app.cost.totals.cost_usd, Some(9.0));
+    }
+
+    #[test]
+    fn the_cost_view_is_polled_rather_than_event_driven() {
+        let mut app = App::new();
+        app.update(Msg::Key(Action::Screen(4)));
+        // One tick is not enough; the second asks.
+        assert!(app.update(Msg::Tick).is_empty());
+        let cmds = app.update(Msg::Tick);
+        assert_eq!(cmds.len(), 2);
+
+        // A usage event from a managed agent does not trigger its own query.
+        let e = Event::from_new(
+            1,
+            NewEvent::new(EventKind::Usage {
+                sample: Box::new(orchestra_core::model::UsageSample {
+                    message_id: "m".into(),
+                    session_id: Uuid::new_v4(),
+                    subagent_id: None,
+                    agent_id: None,
+                    ticket_id: None,
+                    project_id: None,
+                    model: "claude-opus-5".into(),
+                    tokens: Default::default(),
+                    ts: orchestra_core::now(),
+                    source: orchestra_core::model::UsageSource::Stream,
+                }),
+            }),
+        );
+        assert!(app.update(Msg::Event(Box::new(e))).is_empty());
     }
 }

@@ -4,12 +4,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use orchestra_core::claude::merge_tokens;
 use orchestra_core::events::{Event, EventFilter, EventKind, NewEvent};
 use orchestra_core::model::{
     Agent, AgentId, AgentStatus, Effort, ExitReason, Project, ProjectId, ProjectKind, Team,
     TeamProposal, Ticket, TicketId, TicketStatus, Tokens, UsageSample,
 };
-use orchestra_core::protocol::{GroupBy, UsageQuery, UsageRow, UsageTotals};
+use orchestra_core::protocol::{GroupBy, UsageQuery};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -573,32 +574,108 @@ pub fn select_session(conn: &mut Connection, session_id: Uuid) -> Result<Option<
 // Usage
 // ---------------------------------------------------------------------------
 
-/// Returns true when the sample was new. A duplicate `message_id` is expected:
-/// the transcript repeats it per content block and the stream reports it too.
-pub fn insert_usage(conn: &Connection, s: &UsageSample) -> Result<bool> {
-    let n = conn.execute(
-        "INSERT OR IGNORE INTO usage_samples
-           (message_id, session_id, subagent_id, agent_id, ticket_id, project_id, model, ts,
-            source, input, output, cache_read, cache_creation, thinking)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        params![
-            s.message_id,
-            s.session_id.to_string(),
-            s.subagent_id,
-            s.agent_id.map(|v| v.to_string()),
-            s.ticket_id.map(|v| v.to_string()),
-            s.project_id.map(|v| v.to_string()),
-            s.model,
-            ts(s.ts),
-            s.source.as_str(),
-            s.tokens.input as i64,
-            s.tokens.output as i64,
-            s.tokens.cache_read as i64,
-            s.tokens.cache_creation as i64,
-            s.tokens.thinking as i64,
-        ],
-    )?;
-    Ok(n == 1)
+/// What happened when a sample was recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recorded {
+    /// First time we hear about this API response.
+    New,
+    /// We already had it, and this copy was more complete.
+    Updated,
+    /// Nothing new; the usual outcome for the second source reporting the
+    /// same response.
+    Unchanged,
+}
+
+impl Recorded {
+    pub fn changed(self) -> bool {
+        !matches!(self, Recorded::Unchanged)
+    }
+}
+
+/// Record one API response.
+///
+/// The same `message_id` reaches us repeatedly: once per content block in the
+/// transcript, sometimes twice for the same block, and again on the stdout of a
+/// managed agent. Those copies are not equal, because the early ones carry a
+/// partial `output_tokens` while the response is still streaming. Keeping the
+/// first would under-report the cost badly, so each field keeps the largest
+/// value seen. The merge is commutative, so the order the two sources arrive in
+/// does not matter.
+pub fn record_usage(conn: &Connection, s: &UsageSample) -> Result<Recorded> {
+    let existing: Option<Tokens> = conn
+        .query_row(
+            "SELECT input, output, cache_read, cache_creation, thinking
+             FROM usage_samples WHERE message_id = ?1",
+            [&s.message_id],
+            |row| {
+                Ok(Tokens {
+                    input: row.get::<_, i64>(0)? as u64,
+                    output: row.get::<_, i64>(1)? as u64,
+                    cache_read: row.get::<_, i64>(2)? as u64,
+                    cache_creation: row.get::<_, i64>(3)? as u64,
+                    thinking: row.get::<_, i64>(4)? as u64,
+                })
+            },
+        )
+        .optional()?;
+
+    match existing {
+        None => {
+            conn.execute(
+                "INSERT INTO usage_samples
+                   (message_id, session_id, subagent_id, agent_id, ticket_id, project_id, model,
+                    ts, source, input, output, cache_read, cache_creation, thinking)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    s.message_id,
+                    s.session_id.to_string(),
+                    s.subagent_id,
+                    s.agent_id.map(|v| v.to_string()),
+                    s.ticket_id.map(|v| v.to_string()),
+                    s.project_id.map(|v| v.to_string()),
+                    s.model,
+                    ts(s.ts),
+                    s.source.as_str(),
+                    s.tokens.input as i64,
+                    s.tokens.output as i64,
+                    s.tokens.cache_read as i64,
+                    s.tokens.cache_creation as i64,
+                    s.tokens.thinking as i64,
+                ],
+            )?;
+            Ok(Recorded::New)
+        }
+        Some(old) => {
+            let merged = merge_tokens(old, s.tokens);
+            if merged == old {
+                return Ok(Recorded::Unchanged);
+            }
+            conn.execute(
+                "UPDATE usage_samples SET
+                     input = ?2, output = ?3, cache_read = ?4, cache_creation = ?5, thinking = ?6,
+                     agent_id = COALESCE(agent_id, ?7),
+                     ticket_id = COALESCE(ticket_id, ?8),
+                     project_id = COALESCE(project_id, ?9),
+                     subagent_id = COALESCE(subagent_id, ?10),
+                     model = CASE WHEN model = '' THEN ?11 ELSE model END
+                 WHERE message_id = ?1",
+                params![
+                    s.message_id,
+                    merged.input as i64,
+                    merged.output as i64,
+                    merged.cache_read as i64,
+                    merged.cache_creation as i64,
+                    merged.thinking as i64,
+                    s.agent_id.map(|v| v.to_string()),
+                    s.ticket_id.map(|v| v.to_string()),
+                    s.project_id.map(|v| v.to_string()),
+                    s.subagent_id,
+                    s.model,
+                ],
+            )?;
+            Ok(Recorded::Updated)
+        }
+    }
 }
 
 fn tokens_from_row(row: &Row<'_>) -> rusqlite::Result<Tokens> {
@@ -639,7 +716,7 @@ pub fn ticket_usage(conn: &mut Connection, ticket_id: TicketId) -> Result<Tokens
 /// SQL expression and label for one grouping dimension.
 fn group_expr(g: GroupBy) -> (&'static str, &'static str) {
     match g {
-        // Project and ticket resolve to human labels via a join.
+        // Project, ticket and agent resolve to human labels via a sub-select.
         GroupBy::Project => (
             "COALESCE((SELECT name FROM projects WHERE projects.id = u.project_id), '(hors projet)')",
             "project",
@@ -648,11 +725,7 @@ fn group_expr(g: GroupBy) -> (&'static str, &'static str) {
             "COALESCE((SELECT '#' || number || ' ' || title FROM tickets WHERE tickets.id = u.ticket_id), '(hors ticket)')",
             "ticket",
         ),
-        GroupBy::Agent => (
-            "COALESCE((SELECT role FROM agents WHERE agents.id = u.agent_id), '(session libre)')",
-            "agent",
-        ),
-        GroupBy::Role => (
+        GroupBy::Agent | GroupBy::Role => (
             "COALESCE((SELECT role FROM agents WHERE agents.id = u.agent_id), '(session libre)')",
             "role",
         ),
@@ -661,7 +734,24 @@ fn group_expr(g: GroupBy) -> (&'static str, &'static str) {
     }
 }
 
-pub fn usage_rollup(conn: &mut Connection, q: &UsageQuery) -> Result<(Vec<UsageRow>, UsageTotals)> {
+/// One group, split by model.
+///
+/// The split matters: a project that used two models cannot be priced by a
+/// single rate, and averaging them produces a number that does not match the
+/// sum of its parts. The caller prices each model exactly and adds them up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageBreakdown {
+    pub keys: BTreeMap<String, String>,
+    pub model: String,
+    pub tokens: Tokens,
+    pub messages: u64,
+}
+
+/// Hard ceiling on returned groups, so a pathological query cannot blow up
+/// memory. Far above anything a single machine produces.
+const MAX_GROUPS: u32 = 20_000;
+
+pub fn usage_breakdown(conn: &mut Connection, q: &UsageQuery) -> Result<Vec<UsageBreakdown>> {
     let mut clauses: Vec<String> = Vec::new();
     let mut args: Vec<String> = Vec::new();
     if let Some(since) = q.range.since {
@@ -698,25 +788,25 @@ pub fn usage_rollup(conn: &mut Connection, q: &UsageQuery) -> Result<(Vec<UsageR
     } else {
         q.group_by.clone()
     };
-    let selects: Vec<String> = groups
+    let mut selects: Vec<String> = groups
         .iter()
         .enumerate()
         .map(|(i, g)| format!("{} AS k{i}", group_expr(*g).0))
         .collect();
-    let group_by: Vec<String> = (0..groups.len()).map(|i| format!("k{i}")).collect();
+    let mut group_by: Vec<String> = (0..groups.len()).map(|i| format!("k{i}")).collect();
+    // The model is always a grouping dimension, whether or not it is displayed.
+    selects.push("u.model AS model".into());
+    group_by.push("model".into());
 
     let sql = format!(
         "SELECT {}, SUM(u.input) AS input, SUM(u.output) AS output,
                 SUM(u.cache_read) AS cache_read, SUM(u.cache_creation) AS cache_creation,
-                SUM(u.thinking) AS thinking, COUNT(*) AS messages,
-                GROUP_CONCAT(DISTINCT u.model) AS models
+                SUM(u.thinking) AS thinking, COUNT(*) AS messages
          FROM usage_samples u{where_sql}
          GROUP BY {}
-         ORDER BY (SUM(u.input) + SUM(u.output) + SUM(u.cache_read) + SUM(u.cache_creation)) DESC
-         LIMIT {}",
+         LIMIT {MAX_GROUPS}",
         selects.join(", "),
         group_by.join(", "),
-        q.limit.max(1),
     );
 
     let mut stmt = conn.prepare(&sql)?;
@@ -729,48 +819,14 @@ pub fn usage_rollup(conn: &mut Connection, q: &UsageQuery) -> Result<(Vec<UsageR
                 v.unwrap_or_else(|| "(inconnu)".into()),
             );
         }
-        let models: Option<String> = row.get("models")?;
-        Ok((
-            UsageRow {
-                keys,
-                tokens: tokens_from_row(row)?,
-                cost_usd: None,
-                messages: row.get::<_, i64>("messages")? as u64,
-                cost_estimated: false,
-            },
-            models.unwrap_or_default(),
-        ))
-    })?;
-    let rows: Vec<(UsageRow, String)> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-
-    // Totals are computed over the same filter, not over the (limited) rows.
-    let totals_sql = format!(
-        "SELECT COALESCE(SUM(u.input), 0) AS input, COALESCE(SUM(u.output), 0) AS output,
-                COALESCE(SUM(u.cache_read), 0) AS cache_read,
-                COALESCE(SUM(u.cache_creation), 0) AS cache_creation,
-                COALESCE(SUM(u.thinking), 0) AS thinking, COUNT(*) AS messages
-         FROM usage_samples u{where_sql}"
-    );
-    let mut stmt = conn.prepare(&totals_sql)?;
-    let totals = stmt.query_row(params_from_iter(args.iter()), |row| {
-        Ok(UsageTotals {
+        Ok(UsageBreakdown {
+            keys,
+            model: row.get::<_, Option<String>>("model")?.unwrap_or_default(),
             tokens: tokens_from_row(row)?,
-            cost_usd: None,
             messages: row.get::<_, i64>("messages")? as u64,
-            reported_cost_usd: None,
         })
     })?;
-
-    Ok((
-        rows.into_iter()
-            .map(|(mut r, models)| {
-                // Carry the model list so the caller can price the row.
-                r.keys.entry("models".into()).or_insert(models);
-                r
-            })
-            .collect(),
-        totals,
-    ))
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 // ---------------------------------------------------------------------------

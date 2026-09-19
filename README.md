@@ -9,22 +9,24 @@ token par token.
 
 ## État
 
-**Phase 0 livrée** : squelette, daemon, base SQLite, socket, tableau de bord.
-Le suivi des coûts (phase 1), les tickets et l'orchestrateur (phase 2) et l'exécution
-des agents (phase 3) arrivent ensuite. Le plan complet est dans
+**Phases 0 et 1 livrées** : le daemon, la base, le tableau de bord, et le suivi des
+coûts. Les tickets et l'orchestrateur (phase 2) puis l'exécution des agents (phase 3)
+arrivent ensuite. Le plan complet est dans
 `~/.claude/plans/jai-un-projet-orchestra-ide-wise-salamander.md`.
 
-Ce qui marche aujourd'hui :
+Orchestra compte déjà **toutes** tes sessions Claude Code, y compris celles que tu
+lances toi-même, groupées par dépôt :
 
 ```sh
-cargo build --workspace
-./target/debug/orchestra daemon      # démarre le daemon (ou laisse le client le faire)
-./target/debug/orchestra project add ~/mon-projet
-./target/debug/orchestra tui         # tableau de bord
+cargo install --path crates/orchestra
+orchestra tui                    # tableau de bord ; touche 4 pour les coûts
+orchestra usage --by model --since 7d
+orchestra usage --by project
+orchestra project add ~/mon-projet
 ```
 
-`orchestra ping`, `orchestra status`, `orchestra project list` et `orchestra usage`
-complètent la ligne de commande.
+`orchestra ping` et `orchestra status` complètent la ligne de commande. Le daemon
+démarre tout seul au premier appel.
 
 ## Principes
 
@@ -43,7 +45,7 @@ Cinq crates, détaillées dans `docs/ARCHITECTURE.md` :
 | Crate | Rôle |
 |---|---|
 | `orchestra-core` | Types, règles, protocole, parsing. Aucune I/O. |
-| `orchestra-daemon` | Base SQLite, bus d'événements, serveur socket, superviseur d'agents. |
+| `orchestra-daemon` | Base SQLite, bus d'événements, serveur socket, suivi des transcripts, superviseur d'agents. |
 | `orchestra-tui` | Tableau de bord ratatui, client du socket. |
 | `orchestra` | Le binaire : `daemon`, `tui`, `project`, `usage`, `ping`, `status`. |
 | `orchestra-hook` | Shim minuscule appelé par les hooks de Claude Code. |

@@ -31,6 +31,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
     render_tabs(app, frame, chunks[0]);
     match app.screen {
         Screen::Board => render_board(app, frame, chunks[1]),
+        Screen::Cost => super::cost::render(app, frame, chunks[1]),
         other => render_placeholder(other, frame, chunks[1]),
     }
     render_activity(app, frame, chunks[2]);
@@ -240,8 +241,9 @@ fn render_placeholder(screen: Screen, frame: &mut Frame<'_>, area: Rect) {
             "Détail d'un ticket : équipe, agents, coût, événements.\nArrive en phase 2."
         }
         Screen::Agent => "Flux live d'un agent, avec consigne et annulation.\nArrive en phase 3.",
-        Screen::Cost => "Coûts par projet, ticket, agent, modèle et jour.\nArrive en phase 1.",
         Screen::NewTicket => "Création d'un ticket : titre et brief.\nArrive en phase 2.",
+        // The cost screen draws itself; this arm never renders.
+        Screen::Cost => "",
         Screen::Proposal => "Relecture et édition de l'équipe proposée.\nArrive en phase 2.",
         Screen::Board => "",
     };
@@ -295,7 +297,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-fn pane_block(title: &str, focused: bool) -> Block<'_> {
+pub fn pane_block(title: &str, focused: bool) -> Block<'_> {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "));

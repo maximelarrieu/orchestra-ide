@@ -8,6 +8,11 @@
 # requête : Orchestra compte les tokens réels et applique cette grille pour
 # donner un ordre de grandeur comparable entre features. Le calcul se fait à
 # l'affichage, donc modifier la grille recalcule tout l'historique.
+#
+# `cache_write` est le tarif du cache d'UNE HEURE, soit deux fois le prix
+# d'entrée. C'est ce que Claude Code utilise par défaut : mesuré sur un vrai
+# appel, le tarif « cinq minutes » sous-estimait le coût d'un tiers.
+# `orchestra usage` signale d'une étoile les modèles absents de cette grille.
 
 [daemon]
 max_concurrent_agents = 3
@@ -42,46 +47,46 @@ aliases = [
 input = 10.0
 output = 50.0
 cache_read = 1.0
-cache_write = 12.5
+cache_write = 20.0
 
 [pricing.claude-haiku-4]
 input = 1.0
 output = 5.0
 cache_read = 0.1
-cache_write = 1.25
+cache_write = 2.0
 
 [pricing.claude-mythos-5]
 input = 10.0
 output = 50.0
 cache_read = 1.0
-cache_write = 12.5
+cache_write = 20.0
 
 [pricing.claude-opus-4]
 input = 5.0
 output = 25.0
 cache_read = 0.5
-cache_write = 6.25
+cache_write = 10.0
 
 [pricing.claude-opus-5]
 input = 5.0
 output = 25.0
 cache_read = 0.5
-cache_write = 6.25
+cache_write = 10.0
 
 [pricing.claude-sonnet-4]
 input = 3.0
 output = 15.0
 cache_read = 0.3
-cache_write = 3.75
+cache_write = 6.0
 
 [pricing.claude-sonnet-5]
 input = 2.0
 output = 10.0
 cache_read = 0.2
-cache_write = 2.5
+cache_write = 4.0
 
 [pricing.fallback]
 input = 5.0
 output = 25.0
 cache_read = 0.5
-cache_write = 6.25
+cache_write = 10.0

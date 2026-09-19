@@ -17,12 +17,12 @@ use orchestra_core::model::{
     Agent, AgentId, AgentStatus, Project, ProjectId, ProjectKind, Ticket, TicketId, TicketStatus,
     Tokens, UsageSample,
 };
-use orchestra_core::protocol::{GroupBy, UsageQuery, UsageRow, UsageTotals};
+use orchestra_core::protocol::{GroupBy, UsageQuery};
 use rusqlite::{Connection, OpenFlags};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-pub use rows::SessionRow;
+pub use rows::{Recorded, SessionRow, UsageBreakdown};
 
 #[derive(Clone)]
 pub struct Store {
@@ -240,18 +240,19 @@ impl Store {
 
     // -- usage --------------------------------------------------------------
 
-    /// Store a sample. Returns false when `message_id` was already known, which
-    /// is the normal case for the second source reporting the same response.
-    pub async fn record_usage(&self, s: UsageSample) -> Result<bool> {
-        self.with(move |c| rows::insert_usage(c, &s)).await
+    /// Record one API response, merging it with what we already knew.
+    pub async fn record_usage(&self, s: UsageSample) -> Result<Recorded> {
+        self.with(move |c| rows::record_usage(c, &s)).await
     }
 
+    /// Record many responses in one transaction. Returns how many rows were
+    /// new or updated.
     pub async fn record_usage_batch(&self, samples: Vec<UsageSample>) -> Result<usize> {
         self.with(move |c| {
             let tx = c.transaction()?;
             let mut n = 0;
             for s in &samples {
-                if rows::insert_usage(&tx, s)? {
+                if rows::record_usage(&tx, s)?.changed() {
                     n += 1;
                 }
             }
@@ -261,8 +262,10 @@ impl Store {
         .await
     }
 
-    pub async fn usage_rollup(&self, q: UsageQuery) -> Result<(Vec<UsageRow>, UsageTotals)> {
-        self.with(move |c| rows::usage_rollup(c, &q)).await
+    /// Aggregated usage, split by model so the caller can price each one
+    /// exactly rather than averaging rates.
+    pub async fn usage_breakdown(&self, q: UsageQuery) -> Result<Vec<UsageBreakdown>> {
+        self.with(move |c| rows::usage_breakdown(c, &q)).await
     }
 
     /// Token totals for one agent, plus how many assistant turns it took.

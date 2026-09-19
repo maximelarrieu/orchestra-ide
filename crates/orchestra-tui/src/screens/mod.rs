@@ -1,6 +1,8 @@
-//! Screens. Phase 0 ships the board; the others are placeholders drawn by
-//! `board::render` so the tab strip is honest about what exists.
+//! Screens. Phase 0 shipped the board, phase 1 adds the cost view; the rest
+//! are placeholders drawn by `board::render` so the tab strip stays honest
+//! about what exists.
 
 pub mod board;
+pub mod cost;
 
-pub use board::render;
+pub use board::{pane_block, render};

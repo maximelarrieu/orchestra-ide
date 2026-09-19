@@ -6,18 +6,23 @@
 
 pub mod bus;
 pub mod daemon;
+pub mod ledger;
 pub mod server;
 pub mod store;
+pub mod watcher;
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use orchestra_core::config::{Config, ResolvedPaths};
 use orchestra_core::events::EventKind;
+use tokio_util::sync::CancellationToken;
 
 pub use bus::EventBus;
 pub use daemon::{Daemon, DaemonHandle};
+pub use ledger::UsageLedger;
 pub use store::Store;
+pub use watcher::TranscriptWatcher;
 
 /// Boot everything and serve until `shutdown` resolves.
 pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -> Result<()> {
@@ -26,9 +31,10 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     prepare_dirs(&paths)?;
 
     let store = Store::open(&paths.db_file)?;
-    let daemon = Daemon::new(cfg, store);
+    let daemon = Daemon::new(cfg, store.clone());
     let handle = daemon.handle();
     let bus = daemon.bus().clone();
+    let ledger = daemon.ledger().clone();
     let started_at = orchestra_core::now();
 
     // Bind before spawning the core so a second instance fails fast.
@@ -40,7 +46,21 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     })
     .await?;
 
+    // Account for every Claude Code session on the machine, ours or not.
+    let cancel = CancellationToken::new();
+    let watcher = TranscriptWatcher::new(paths.transcripts_dir.clone(), store, ledger, bus.clone());
+    let watching = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            if let Err(e) = watcher.run(cancel).await {
+                tracing::error!("surveillance des transcripts arrêtée : {e:#}");
+            }
+        }
+    });
+
     let result = server::serve(guard, handle, started_at, shutdown).await;
+    cancel.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), watching).await;
     // Dropping the last handle ends the core loop.
     drop(bus);
     core.abort();

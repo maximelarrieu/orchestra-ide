@@ -15,13 +15,14 @@ use orchestra_core::model::{
 };
 use orchestra_core::protocol::{
     AgentSummary, ApiError, Command, DaemonStatus, Reply, TicketDetail, TicketSummary, UsageQuery,
-    UsageRow, UsageTotals, PROTOCOL_VERSION,
+    PROTOCOL_VERSION,
 };
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::bus::EventBus;
+use crate::ledger::UsageLedger;
 use crate::store::Store;
 
 /// A command plus where to send its reply.
@@ -57,6 +58,7 @@ pub struct Daemon {
     cfg: Arc<Config>,
     paths: ResolvedPaths,
     store: Store,
+    ledger: UsageLedger,
     bus: EventBus,
     started_at: OffsetDateTime,
     rx: mpsc::Receiver<Job>,
@@ -73,6 +75,7 @@ impl Daemon {
             bus: bus.clone(),
         };
         Daemon {
+            ledger: UsageLedger::new(store.clone(), &cfg),
             cfg: Arc::new(cfg),
             paths,
             store,
@@ -93,6 +96,10 @@ impl Daemon {
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    pub fn ledger(&self) -> &UsageLedger {
+        &self.ledger
     }
 
     pub fn config(&self) -> &Config {
@@ -274,7 +281,7 @@ impl Daemon {
                 .iter()
                 .filter(|a| a.status == AgentStatus::Done)
                 .count(),
-            cost_usd: self.cfg.pricing.cost(&dominant_model(&agents), &tokens),
+            cost_usd: self.ledger.prices().cost(&dominant_model(&agents), &tokens),
             tokens,
             ticket,
         })
@@ -306,7 +313,7 @@ impl Daemon {
         for agent in agents {
             let (t, turns) = self.store.agent_usage(agent.id).await.map_err(internal)?;
             tokens += t;
-            let c = self.cfg.pricing.cost(&agent.model, &t);
+            let c = self.ledger.prices().cost(&agent.model, &t);
             if let Some(c) = c {
                 cost += c;
                 priced = true;
@@ -394,50 +401,8 @@ impl Daemon {
     }
 
     async fn get_usage(&self, query: UsageQuery) -> Result<Reply, ApiError> {
-        let (rows, totals) = self.store.usage_rollup(query).await.map_err(internal)?;
-        let (rows, totals) = self.price(rows, totals);
+        let (rows, totals) = self.ledger.rollup(query).await.map_err(internal)?;
         Ok(Reply::Usage { rows, totals })
-    }
-
-    /// Apply the price table. Rows carry the models they aggregate, so a row
-    /// spanning several models is priced per model, not by a single guess.
-    fn price(&self, rows: Vec<UsageRow>, mut totals: UsageTotals) -> (Vec<UsageRow>, UsageTotals) {
-        let table = &self.cfg.pricing;
-        let mut total_cost = 0.0;
-        let mut any = false;
-        let rows = rows
-            .into_iter()
-            .map(|mut r| {
-                let models = r.keys.remove("models").unwrap_or_default();
-                let list: Vec<&str> = models.split(',').filter(|s| !s.is_empty()).collect();
-                // One model: price exactly. Several: price the row's totals with
-                // each model's rate weighted evenly, which is the best we can do
-                // without a per-model breakdown of this row.
-                let cost = if list.len() <= 1 {
-                    let m = list.first().copied().unwrap_or("");
-                    table.cost(m, &r.tokens)
-                } else {
-                    let costs: Vec<f64> = list
-                        .iter()
-                        .filter_map(|m| table.cost(m, &r.tokens))
-                        .collect();
-                    if costs.is_empty() {
-                        None
-                    } else {
-                        Some(costs.iter().sum::<f64>() / costs.len() as f64)
-                    }
-                };
-                r.cost_estimated = list.is_empty() || list.iter().any(|m| table.is_estimated(m));
-                if let Some(c) = cost {
-                    total_cost += c;
-                    any = true;
-                }
-                r.cost_usd = cost;
-                r
-            })
-            .collect();
-        totals.cost_usd = any.then_some(total_cost);
-        (rows, totals)
     }
 }
 

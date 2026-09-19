@@ -59,6 +59,9 @@ pub fn map(key: KeyEvent) -> Option<Action> {
         (KeyCode::Enter, false) => Action::Select,
         (KeyCode::Esc, _) => Action::Cancel,
         (KeyCode::Char(':'), false) => Action::CommandPalette,
+        // Anything else printable is offered to the current screen, which is
+        // how per-screen keys work without a second key table.
+        (KeyCode::Char(c), false) => Action::Char(c),
         _ => return None,
     })
 }
@@ -91,6 +94,11 @@ pub const HELP: &[(&str, &str)] = &[
     ("R", "rafraîchir"),
     ("?", "cette aide"),
     ("Q / Ctrl-C", "quitter"),
+    ("", ""),
+    ("écran Coût", ""),
+    ("m", "changer le regroupement"),
+    ("p", "changer la période"),
+    ("u", "inclure/exclure les sessions libres"),
 ];
 
 #[cfg(test)]
@@ -135,10 +143,23 @@ mod tests {
     }
 
     #[test]
+    fn unmapped_letters_reach_the_current_screen() {
+        // Screen-specific keys (m, p, u on the cost view) arrive as characters.
+        assert_eq!(map(key('m')), Some(Action::Char('m')));
+        assert_eq!(map(key('p')), Some(Action::Char('p')));
+        assert_eq!(map(key('u')), Some(Action::Char('u')));
+        // Without stealing the global bindings.
+        assert_eq!(map(key('j')), Some(Action::Down));
+        assert_eq!(map(key('q')), Some(Action::Back));
+        assert_eq!(map(key('G')), Some(Action::Bottom));
+    }
+
+    #[test]
     fn screens_are_numbered() {
         assert_eq!(map(key('1')), Some(Action::Screen(1)));
         assert_eq!(map(key('6')), Some(Action::Screen(6)));
-        assert_eq!(map(key('7')), None);
+        // There is no seventh screen; the digit falls through to the screen.
+        assert_eq!(map(key('7')), Some(Action::Char('7')));
     }
 
     #[test]

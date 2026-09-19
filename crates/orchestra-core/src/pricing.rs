@@ -71,6 +71,12 @@ impl PriceTable {
 
     /// Table shipped in `assets/config.example.toml`. Public list prices as of
     /// 2026-09; the user is expected to edit them.
+    ///
+    /// `cache_write` is the **one-hour** rate, twice the input price, not the
+    /// five-minute rate of 1.25 times. That is not a guess: a real run was
+    /// compared against the cost Claude Code reports for itself, and the
+    /// five-minute rate under-estimated it by a third. Claude Code caches for
+    /// an hour by default, which is what the transcripts show.
     pub fn defaults() -> Self {
         let mut models = BTreeMap::new();
         let mut add = |name: &str, input, output, cache_read, cache_write| {
@@ -84,20 +90,21 @@ impl PriceTable {
                 },
             );
         };
-        add("claude-fable-5", 10.0, 50.0, 1.0, 12.5);
-        add("claude-mythos-5", 10.0, 50.0, 1.0, 12.5);
-        add("claude-opus-5", 5.0, 25.0, 0.5, 6.25);
-        add("claude-opus-4", 5.0, 25.0, 0.5, 6.25);
-        add("claude-sonnet-5", 2.0, 10.0, 0.2, 2.5);
-        add("claude-sonnet-4", 3.0, 15.0, 0.3, 3.75);
-        add("claude-haiku-4", 1.0, 5.0, 0.1, 1.25);
+        //  model             input  output  cache_read  cache_write (1 h)
+        add("claude-fable-5", 10.0, 50.0, 1.0, 20.0);
+        add("claude-mythos-5", 10.0, 50.0, 1.0, 20.0);
+        add("claude-opus-5", 5.0, 25.0, 0.5, 10.0);
+        add("claude-opus-4", 5.0, 25.0, 0.5, 10.0);
+        add("claude-sonnet-5", 2.0, 10.0, 0.2, 4.0);
+        add("claude-sonnet-4", 3.0, 15.0, 0.3, 6.0);
+        add("claude-haiku-4", 1.0, 5.0, 0.1, 2.0);
         PriceTable {
             models,
             fallback: Some(ModelPrice {
                 input: 5.0,
                 output: 25.0,
                 cache_read: 0.5,
-                cache_write: 6.25,
+                cache_write: 10.0,
             }),
         }
     }
@@ -188,6 +195,26 @@ mod tests {
         });
         assert!((a - 60.0).abs() < 1e-9);
         assert!((a - b).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_table_matches_what_claude_code_reports() {
+        // Measured, not assumed: one real `claude -p` call on Haiku 4.5 that
+        // Claude Code priced at $0.0177983 for itself.
+        let t = PriceTable::defaults();
+        let observed = Tokens {
+            input: 10,
+            output: 43,
+            cache_read: 14_053,
+            cache_creation: 8_084,
+            thinking: 0,
+        };
+        let ours = t.cost("claude-haiku-4-5-20251001", &observed).unwrap();
+        let reported = 0.0177983;
+        assert!(
+            (ours - reported).abs() < 1e-6,
+            "estimation {ours:.6} contre coût rapporté {reported:.6}"
+        );
     }
 
     #[test]

@@ -51,9 +51,9 @@ enum Sub {
         /// Regroupement : project, ticket, agent, role, model, day.
         #[arg(long = "by", default_value = "project")]
         by: String,
-        /// Fenêtre en jours ; 0 pour tout l'historique.
-        #[arg(long, default_value_t = 0)]
-        since_days: i64,
+        /// Fenêtre : 7d, 24h, 30m (minutes), today, all.
+        #[arg(long, default_value = "all")]
+        since: String,
         /// Exclure les sessions Claude Code non pilotées par Orchestra.
         #[arg(long)]
         managed_only: bool,
@@ -151,26 +151,23 @@ impl Cli {
             }
             Sub::Usage {
                 by,
-                since_days,
+                since,
                 managed_only,
             } => {
                 let group =
                     GroupBy::parse(&by).with_context(|| format!("regroupement inconnu : {by}"))?;
+                let range = parse_since(&since)?;
                 let mut client = Client::connect_or_spawn(&socket).await?;
                 let query = UsageQuery {
                     group_by: vec![group],
-                    range: if since_days > 0 {
-                        TimeRange::last_days(since_days)
-                    } else {
-                        TimeRange::all()
-                    },
+                    range,
                     include_unmanaged: !managed_only,
                     ..Default::default()
                 };
                 match client.call(Cmd::GetUsage { query }).await? {
                     Reply::Usage { rows, totals } => {
                         println!(
-                            "{:<32} {:>9} {:>9} {:>9} {:>8} {:>10}",
+                            "{:<32} {:>9} {:>9} {:>9} {:>8} {:>11}",
                             group.label_fr(),
                             "entrée",
                             "sortie",
@@ -185,14 +182,19 @@ impl Cli {
                                 .next()
                                 .cloned()
                                 .unwrap_or_else(|| "-".into());
+                            let cost = match (r.cost_usd, r.cost_estimated) {
+                                (Some(v), true) => format!("{}*", fmt_usd(v)),
+                                (Some(v), false) => fmt_usd(v),
+                                (None, _) => "-".into(),
+                            };
                             println!(
-                                "{:<32} {:>9} {:>9} {:>9} {:>8} {:>10}",
+                                "{:<32} {:>9} {:>9} {:>9} {:>8} {:>11}",
                                 truncate(&key, 32),
                                 fmt_tokens(r.tokens.input),
                                 fmt_tokens(r.tokens.output),
                                 fmt_tokens(r.tokens.cache_read + r.tokens.cache_creation),
                                 r.messages,
-                                r.cost_usd.map(fmt_usd).unwrap_or_else(|| "-".into()),
+                                cost,
                             );
                         }
                         println!(
@@ -204,6 +206,11 @@ impl Cli {
                                 .map(fmt_usd)
                                 .unwrap_or_else(|| "coût inconnu".into())
                         );
+                        if rows.iter().any(|r| r.cost_estimated) {
+                            println!(
+                                "* tarif approché : modèle absent de la grille de config.toml"
+                            );
+                        }
                         Ok(())
                     }
                     other => bail!("réponse inattendue : {other:?}"),
@@ -248,6 +255,37 @@ fn init_tracing(quiet: bool) -> Result<()> {
         builder.with_writer(std::io::stderr).init();
     }
     Ok(())
+}
+
+/// `7d`, `24h`, `90m`, `today`, `all`.
+fn parse_since(spec: &str) -> Result<TimeRange> {
+    let spec = spec.trim().to_lowercase();
+    if spec.is_empty() || spec == "all" || spec == "tout" || spec == "0" {
+        return Ok(TimeRange::all());
+    }
+    if spec == "today" || spec == "aujourd'hui" {
+        let now = orchestra_core::now();
+        return Ok(TimeRange {
+            since: Some(now.replace_time(time::Time::MIDNIGHT)),
+            until: None,
+        });
+    }
+    let (digits, unit) = spec.split_at(spec.len() - 1);
+    let n: i64 = digits.parse().with_context(|| {
+        format!("fenêtre illisible : {spec} (exemples : 7d, 24h, 90m, today, all)")
+    })?;
+    anyhow::ensure!(n > 0, "la fenêtre doit être positive");
+    let duration = match unit {
+        "d" | "j" => time::Duration::days(n),
+        "h" => time::Duration::hours(n),
+        "m" => time::Duration::minutes(n),
+        "w" | "s" => time::Duration::weeks(n),
+        other => anyhow::bail!("unité inconnue « {other} » (d, h, m, w)"),
+    };
+    Ok(TimeRange {
+        since: Some(orchestra_core::now() - duration),
+        until: None,
+    })
 }
 
 fn truncate(s: &str, width: usize) -> String {

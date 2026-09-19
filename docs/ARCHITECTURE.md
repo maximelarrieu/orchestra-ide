@@ -52,6 +52,16 @@ toucher au disque ni au réseau.
   la correspondance SQL vers types.
 - `bus.rs` — persiste **puis** diffuse. C'est cet ordre qui permet à un client de
   reprendre sans trou : tout événement reçu porte déjà son `seq`.
+- `watcher.rs` — suit les transcripts de Claude Code pour compter **toutes** les
+  sessions de la machine, pas seulement celles qu'Orchestra lance. Détection par
+  sondage à la seconde plutôt que par inotify : avec une poignée de fichiers le coût
+  est négligeable, et cela évite les limites de surveillance sur un dossier qui grossit
+  à chaque session, ainsi qu'une dépendance encore en préversion. Pour un agent piloté,
+  le chemin rapide reste sa propre sortie standard ; ce surveillant est le filet.
+- `ledger.rs` — agrège et tarifie. L'agrégat SQL est toujours découpé par modèle,
+  même quand l'affichage ne l'est pas : une ligne couvrant deux modèles coûte la somme
+  de ses parties, jamais la moyenne de leurs tarifs. C'est ce qui fait que les lignes
+  totalisent le total.
 - `server.rs` — socket Unix, une tâche par connexion. Un `flock` garantit un seul
   daemon. Un client en retard est resynchronisé depuis la base.
 - `daemon.rs` — la boucle qui traite les commandes.
@@ -84,7 +94,21 @@ Il n'existe pas de SDK Rust officiel, donc on pilote le CLI en sous-processus.
 
 **SQLite dès le premier jour.** La v1 stockait en fichiers plats et n'a jamais pu
 répondre à « combien m'a coûté cette feature ». Le coût est une table de première
-classe, alimentée par deux sources dédoublonnées sur l'identifiant de message de l'API.
+classe, alimentée par deux sources réconciliées sur l'identifiant de message de l'API.
+
+**Fusionner, pas ignorer.** Le plan prévoyait un `INSERT OR IGNORE` sur cet
+identifiant. La lecture des vrais transcripts a montré que les copies d'une même
+réponse ne sont pas identiques : les premières annoncent un `output_tokens` partiel.
+Garder la première aurait sous-compté d'un facteur cent. Chaque champ garde donc le
+maximum vu, ce qui est commutatif et idempotent. Détails et mesures dans
+`docs/CLAUDE_CLI_NOTES.md`.
+
+**Le dépôt git prime sur le chemin.** Pour rattacher une session à un projet, la
+racine du dépôt est consultée avant tout préfixe de chemin. Sans cela, une seule
+session lancée dans le dossier personnel y crée un projet, et toutes les sessions
+suivantes s'y rattachent par préfixe : tous les dépôts disparaissent dans une ligne.
+Un dossier trop large (la racine, `/tmp`, le dossier personnel) ne devient jamais un
+projet ; ses sessions sont comptées « hors projet ».
 
 **Un worktree par ticket.** Un agent de la v1 a exécuté `mv *.md docs/` sur le dépôt
 lui-même. Les agents ne voient plus que leur worktree, et un garde `PreToolUse` refuse
@@ -98,8 +122,8 @@ Sept tables, décrites dans `crates/orchestra-daemon/src/store/migrations/0001_i
 `events` est append-only et sa clé primaire auto-incrémentée sert de curseur aux clients.
 `usage_samples` a pour clé primaire `message_id`, l'identifiant de la réponse API : le
 flux d'un agent piloté et le transcript sur disque rapportent la même réponse, et le
-transcript la répète même une fois par bloc de contenu. Un `INSERT OR IGNORE` suffit
-donc à garantir un seul échantillon par réponse.
+transcript la répète une fois par bloc de contenu, avec des totaux partiels sur les
+premiers blocs. L'écriture fusionne donc par maximum au lieu d'ignorer les doublons.
 
 Les agrégats de coût sont de simples `GROUP BY` : rien n'est matérialisé, et
 l'attribution (projet, ticket, agent) est dénormalisée à l'insertion pour que le
