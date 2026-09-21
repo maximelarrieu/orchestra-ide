@@ -7,7 +7,6 @@
 use orchestra_core::pricing::{fmt_tokens, fmt_usd};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Row, Sparkline, Table, Wrap};
 use ratatui::Frame;
 
@@ -23,47 +22,19 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if has_trend {
-            [
-                Constraint::Length(2),
-                Constraint::Min(4),
-                Constraint::Length(4),
-            ]
+            [Constraint::Min(4), Constraint::Length(4)]
         } else {
-            [
-                Constraint::Length(2),
-                Constraint::Min(4),
-                Constraint::Length(0),
-            ]
+            [Constraint::Min(4), Constraint::Length(0)]
         })
         .split(area);
 
-    render_controls(app, frame, chunks[0]);
-    render_table(app, frame, chunks[1]);
+    // The screen's three settings (« m », « p », « u ») are announced by the
+    // key bar, each with the value it stands at: a control line here would
+    // have repeated them, and the table's title already spells them out.
+    render_table(app, frame, chunks[0]);
     if has_trend {
-        render_trend(app, frame, chunks[2]);
+        render_trend(app, frame, chunks[1]);
     }
-}
-
-fn render_controls(app: &App, frame: &mut Frame<'_>, area: Rect) {
-    let c = &app.cost;
-    let key = |k: &str, label: String| {
-        vec![
-            Span::styled(k.to_string(), Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!(" {label}   ")),
-        ]
-    };
-    let mut spans = Vec::new();
-    spans.extend(key("m", format!("par {}", c.group.label_fr())));
-    spans.extend(key("p", c.period.label_fr().to_string()));
-    spans.extend(key(
-        "u",
-        if c.include_unmanaged {
-            "sessions libres incluses".into()
-        } else {
-            "agents seulement".into()
-        },
-    ));
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_table(app: &App, frame: &mut Frame<'_>, area: Rect) {

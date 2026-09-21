@@ -124,6 +124,74 @@ pub fn commits_ahead(project: &Project, branch: &str) -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// Bring the local default branch up to what the remote now holds.
+///
+/// Called after a pull request was merged over there: without it, this machine
+/// keeps an older default branch and the next ticket branches from the past.
+/// Fast-forward only and on the default branch, like every move we make here.
+pub fn pull_default_branch(project: &Project) -> Result<()> {
+    let Some(remote) = default_remote(&project.path) else {
+        return Ok(());
+    };
+    git(&project.path, &["fetch".into(), remote.clone()])
+        .with_context(|| format!("fetch de {remote}"))?;
+    let head = current_branch(&project.path);
+    if head.as_deref() != Some(project.default_branch.as_str()) {
+        bail!(
+            "le dépôt est sur « {} », pas sur « {} »",
+            head.unwrap_or_else(|| "un commit détaché".into()),
+            project.default_branch
+        );
+    }
+    let remote_ref = format!("{remote}/{}", project.default_branch);
+    git(
+        &project.path,
+        &["merge".into(), "--ff-only".into(), remote_ref.clone()],
+    )
+    .with_context(|| format!("avance rapide sur {remote_ref}"))?;
+    Ok(())
+}
+
+/// The remote a push would go to: `origin` when it exists, else the first one
+/// declared, and `None` for a repository that has none.
+pub fn default_remote(repo: &Path) -> Option<String> {
+    let out = git(repo, &["remote".into()]).ok()?;
+    let mut names = out.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = names.next()?.to_string();
+    if out.lines().any(|l| l.trim() == "origin") {
+        return Some("origin".into());
+    }
+    Some(first)
+}
+
+/// Push a branch to the project's remote.
+///
+/// Returns the remote it went to. A repository without a remote is not an
+/// error: there is simply nowhere to push, and the merge already happened.
+pub fn push_branch(repo: &Path, branch: &str) -> Result<Option<String>> {
+    let Some(remote) = default_remote(repo) else {
+        return Ok(None);
+    };
+    git(repo, &["push".into(), remote.clone(), branch.to_string()])
+        .with_context(|| format!("push de {branch} vers {remote}"))?;
+    Ok(Some(remote))
+}
+
+/// Tracked files changed but not committed. Untracked files are left out on
+/// purpose: they are the user's own business, not a reason to refuse a merge.
+pub fn tracked_changes(repo: &Path) -> Vec<String> {
+    git(
+        repo,
+        &[
+            "status".into(),
+            "--porcelain".into(),
+            "--untracked-files=no".into(),
+        ],
+    )
+    .map(|out| out.lines().map(str::to_string).collect())
+    .unwrap_or_default()
+}
+
 /// Files changed in the worktree but not committed, so a half-finished run is
 /// visible rather than silent.
 pub fn dirty_files(worktree: &Path) -> Vec<String> {
@@ -161,12 +229,22 @@ pub fn merge_fast_forward(project: &Project, branch: &str) -> Result<usize> {
             project.default_branch
         );
     }
-    let dirty = dirty_files(&project.path);
+    // Only tracked changes block: an untracked file cannot conflict with a
+    // fast-forward, and refusing on one stopped a real merge because a README
+    // draft was sitting in the repository. If the merge really would overwrite
+    // an untracked file, git says so itself and that message is passed on.
+    let dirty = tracked_changes(&project.path);
     if !dirty.is_empty() {
         bail!(
-            "le dépôt principal a {} fichier(s) non commité(s) : la fusion attendra que \
-             tu aies rangé",
-            dirty.len()
+            "le dépôt principal a {} fichier(s) modifié(s) non commité(s) ({}) : \
+             la fusion attendra que tu aies rangé",
+            dirty.len(),
+            dirty
+                .iter()
+                .map(|l| l.split_whitespace().last().unwrap_or(l))
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     let commits = commits_ahead(project, branch).len();
@@ -383,11 +461,71 @@ mod tests {
         let wt = ensure(&f.project, &plan).unwrap();
         commit(&wt.path, "cache.rs", "le cache");
 
+        // Un fichier jamais suivi n'empêche rien : il ne peut pas entrer en
+        // conflit avec une avance rapide. C'est ce qui avait bloqué une vraie
+        // fusion, pour un brouillon de README posé à la racine.
         std::fs::write(f.project.path.join("brouillon.txt"), "en cours").unwrap();
+        merge_fast_forward(&f.project, &wt.branch).expect("un fichier non suivi ne bloque pas");
+        assert!(f.project.path.join("cache.rs").exists());
+    }
+
+    #[test]
+    fn a_repository_without_a_remote_is_not_a_push_failure() {
+        // Rien à pousser n'est pas une erreur : la fusion, elle, a bien eu lieu.
+        let f = fixture();
+        assert!(default_remote(&f.project.path).is_none());
+        assert_eq!(push_branch(&f.project.path, "main").unwrap(), None);
+    }
+
+    #[test]
+    fn the_branch_goes_to_origin_when_there_is_one() {
+        let f = fixture();
+        // Un dépôt nu fait un remote parfaitement réel.
+        let bare = f.project.path.parent().unwrap().join("origine.git");
+        Command::new("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .arg(&bare)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&f.project.path)
+            .args(["remote", "add", "origin"])
+            .arg(&bare)
+            .output()
+            .unwrap();
+
+        assert_eq!(default_remote(&f.project.path).as_deref(), Some("origin"));
+        assert_eq!(
+            push_branch(&f.project.path, "main").unwrap().as_deref(),
+            Some("origin")
+        );
+        let there = Command::new("git")
+            .arg("-C")
+            .arg(&bare)
+            .args(["log", "--oneline", "main"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&there.stdout).contains("départ"),
+            "le commit est arrivé sur le remote"
+        );
+    }
+
+    #[test]
+    fn a_tracked_change_left_uncommitted_stops_the_fusion() {
+        let f = fixture();
+        let plan = plan_for(&f.project, &ticket(1, "cache"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        commit(&wt.path, "cache.rs", "le cache");
+
+        // Celui-là est suivi : le fusionner par-dessus écraserait un travail
+        // en cours.
+        std::fs::write(f.project.path.join("fichier.txt"), "modifié").unwrap();
         let err = merge_fast_forward(&f.project, &wt.branch).unwrap_err();
         assert!(
-            format!("{err:#}").contains("non commité"),
-            "on dit pourquoi on ne fusionne pas : {err:#}"
+            format!("{err:#}").contains("fichier.txt"),
+            "on nomme ce qui bloque : {err:#}"
         );
     }
 

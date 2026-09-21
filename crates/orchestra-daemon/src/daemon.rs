@@ -145,6 +145,46 @@ impl Daemon {
         if count > 0 {
             tracing::info!(agents = count, "agents orphelins marqués comme arrêtés");
         }
+
+        // A running ticket is a task walking its stages, and that task died
+        // with the daemon. Left « en cours », it waits for a walker that will
+        // never come back, and `launch` refuses it because it is already
+        // running. Marked failed, it says what happened and can be relaunched
+        // — the relaunch picks up where it stopped.
+        let orphans = self
+            .store
+            .list_tickets(None, Some(vec![TicketStatus::Running]))
+            .await?;
+        for ticket in &orphans {
+            let mut recovered = ticket.clone();
+            recovered.status = TicketStatus::Failed;
+            recovered.updated_at = orchestra_core::now();
+            self.store.update_ticket(recovered).await?;
+            let _ = self
+                .bus
+                .publish(
+                    NewEvent::new(EventKind::TicketStatusChanged {
+                        from: TicketStatus::Running,
+                        to: TicketStatus::Failed,
+                    })
+                    .project(ticket.project_id)
+                    .ticket(ticket.id),
+                )
+                .await;
+            self.bus
+                .warn(format!(
+                    "le daemon a redémarré pendant le ticket #{} : relance-le, il reprendra \
+                     où il s'est arrêté",
+                    ticket.number
+                ))
+                .await;
+        }
+        if !orphans.is_empty() {
+            tracing::info!(
+                tickets = orphans.len(),
+                "tickets orphelins rendus relançables"
+            );
+        }
         Ok(count)
     }
 
@@ -234,7 +274,10 @@ impl Daemon {
             }
             Command::ListRoles { project_id } => self.list_roles(project_id).await,
             Command::ListAgents { only_active } => self.list_agents(only_active).await,
-            Command::LaunchTicket { ticket_id, .. } => self.launch_ticket(ticket_id).await,
+            Command::LaunchTicket {
+                ticket_id,
+                open_panes,
+            } => self.launch_ticket(ticket_id, open_panes).await,
             Command::CancelTicket { ticket_id } => {
                 self.supervisor
                     .cancel_ticket(ticket_id)
@@ -244,6 +287,7 @@ impl Daemon {
             }
             Command::IntegrateTicket { ticket_id } => self.integrate_ticket(ticket_id).await,
             Command::FinishTicket { ticket_id } => self.finish_ticket(ticket_id).await,
+            Command::ReopenTicket { ticket_id } => self.reopen_ticket(ticket_id).await,
             Command::SteerAgent {
                 agent_id,
                 text,
@@ -270,10 +314,8 @@ impl Daemon {
             Command::Subscribe { .. } | Command::Unsubscribe => Err(ApiError::internal(
                 "abonnement traité par la connexion, pas par le cœur",
             )),
-            // Phase 4: zellij panes.
-            Command::OpenPane { .. } => Err(ApiError::unsupported(
-                "les panes zellij arrivent en phase 4",
-            )),
+            Command::OpenPane { agent_id } => self.open_pane(agent_id).await,
+            Command::TakeOver { agent_id } => self.take_over(agent_id).await,
             // The guard decides on its own; nothing asks the daemon any more.
             Command::Hook { .. } => Ok(Reply::Hook {
                 allow: true,
@@ -381,9 +423,13 @@ impl Daemon {
             .list_tickets(project_id, status)
             .await
             .map_err(internal)?;
+        let open_prs = crate::github::open_pull_requests(&self.store).await;
         let mut out = Vec::with_capacity(tickets.len());
         for ticket in tickets {
-            out.push(self.summarise(ticket).await.map_err(internal)?);
+            let url = open_prs.get(&ticket.id).cloned();
+            let mut summary = self.summarise(ticket).await.map_err(internal)?;
+            summary.pull_request = url;
+            out.push(summary);
         }
         out.sort_by_key(|s| (s.ticket.status.board_order(), -s.ticket.number));
         Ok(Reply::Tickets { tickets: out })
@@ -401,6 +447,7 @@ impl Daemon {
                 .count(),
             cost_usd: cost.cost_usd,
             tokens: cost.tokens,
+            pull_request: None,
             ticket,
         })
     }
@@ -444,6 +491,8 @@ impl Daemon {
             .map_err(internal)?;
 
         let review = self.last_review(ticket_id).await?;
+        let checks = self.last_checks(ticket_id).await?;
+        let pull_request = crate::github::open_pull_request(&self.store, ticket_id).await;
 
         Ok(Reply::Ticket {
             detail: Box::new(TicketDetail {
@@ -454,6 +503,9 @@ impl Daemon {
                 cost_usd: ticket_cost.cost_usd,
                 recent_events,
                 review,
+                checks,
+                pull_request,
+                integration_mode: self.cfg.integration.mode,
             }),
         })
     }
@@ -652,7 +704,11 @@ impl Daemon {
     }
 
     /// Start the team of a planned ticket.
-    async fn launch_ticket(&self, ticket_id: TicketId) -> Result<Reply, ApiError> {
+    async fn launch_ticket(
+        &self,
+        ticket_id: TicketId,
+        open_panes: bool,
+    ) -> Result<Reply, ApiError> {
         let ticket = self
             .store
             .ticket(ticket_id)
@@ -674,7 +730,7 @@ impl Daemon {
         let catalog = self.catalog_for(Some(&project));
 
         self.supervisor
-            .launch(ticket, project, catalog)
+            .launch(ticket, project, catalog, open_panes)
             .await
             .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
         Ok(Reply::Ack)
@@ -710,6 +766,13 @@ impl Daemon {
                     "aucune relecture n'a rendu de verdict sur ce ticket",
                 ))
             }
+        }
+        // A request already waiting for its human: reopening it would spend an
+        // agent to land on the very same one.
+        if let Some(url) = crate::github::open_pull_request(&self.store, ticket_id).await {
+            return Err(ApiError::invalid(format!(
+                "une pull request attend déjà sur ce ticket : {url}"
+            )));
         }
         let project = self
             .store
@@ -756,6 +819,70 @@ impl Daemon {
         Ok(Reply::Ack)
     }
 
+    /// Send a closed ticket back to « à relire ».
+    ///
+    /// For the merge you want to redo another way — a pull request instead of a
+    /// local fusion, say. The branch still holds the work and the verdict is
+    /// still on record, so the ticket lands exactly where the decision was.
+    async fn reopen_ticket(&self, ticket_id: TicketId) -> Result<Reply, ApiError> {
+        let mut ticket = self
+            .store
+            .ticket(ticket_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("ticket"))?;
+        // Only a closed ticket is reopened. A running one would be yanked out
+        // from under its own team, and a failed one is relaunched instead —
+        // that path already resumes where it stopped.
+        match ticket.status {
+            TicketStatus::Done | TicketStatus::Cancelled => {}
+            TicketStatus::Failed => {
+                return Err(ApiError::invalid(
+                    "ce ticket a échoué : relance-le plutôt, il reprendra où il s'est arrêté",
+                ))
+            }
+            other => {
+                return Err(ApiError::invalid(format!(
+                    "ce ticket est « {} » : seul un ticket fermé se rouvre",
+                    other.label_fr()
+                )))
+            }
+        }
+        ensure_transition(ticket.status, TicketStatus::Review)?;
+        let project = self
+            .store
+            .project(ticket.project_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("projet du ticket"))?;
+
+        // Its checkout was cleaned up when it closed; the branch was not.
+        self.supervisor
+            .ensure_worktree(&mut ticket, &project)
+            .await
+            .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+
+        let from = ticket.status;
+        ticket.status = TicketStatus::Review;
+        ticket.updated_at = orchestra_core::now();
+        self.store
+            .update_ticket(ticket.clone())
+            .await
+            .map_err(internal)?;
+        self.bus
+            .publish(
+                NewEvent::new(EventKind::TicketStatusChanged {
+                    from,
+                    to: TicketStatus::Review,
+                })
+                .project(ticket.project_id)
+                .ticket(ticket.id),
+            )
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
     /// The last verdict a relecture rendered on this ticket.
     async fn last_review(
         &self,
@@ -784,6 +911,114 @@ impl Daemon {
             }),
             _ => None,
         }))
+    }
+
+    /// What the repository's checks said on their last pass.
+    ///
+    /// Read from the ticket's whole history like the verdict, and for the same
+    /// reason: this is what decides whether the branch can be integrated, so
+    /// it must not depend on which events happen to be recent.
+    async fn last_checks(
+        &self,
+        ticket_id: TicketId,
+    ) -> Result<Option<orchestra_core::checks::ChecksOutcome>, ApiError> {
+        let filter = EventFilter {
+            ticket_id: Some(ticket_id),
+            tags: vec![orchestra_core::events::EventTag::CheckFinished],
+            ..Default::default()
+        };
+        // A pass is a handful of commands, and a ticket runs few passes.
+        let events = self
+            .store
+            .recent_events(filter, 64)
+            .await
+            .map_err(internal)?;
+        Ok(crate::checks::last_pass(&events))
+    }
+
+    /// Show the pane that follows an agent, opening one if there is none.
+    ///
+    /// Focusing an existing pane rather than opening a second one is the whole
+    /// point of keeping its id: two panes tailing the same agent would show the
+    /// same thing twice and hide something else.
+    async fn open_pane(&self, agent_id: orchestra_core::model::AgentId) -> Result<Reply, ApiError> {
+        if !crate::zellij::inside() {
+            return Err(ApiError::unsupported(
+                "pas de session zellij : lance le daemon depuis zellij pour avoir des panes",
+            ));
+        }
+        let agent = self
+            .store
+            .agent(agent_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("agent"))?;
+
+        if let Some(pane_id) = agent.pane_id.clone() {
+            if crate::zellij::focus(&pane_id).await {
+                return Ok(Reply::Pane { pane_id });
+            }
+            // The pane was closed by hand: forget it and open another.
+        }
+        let worktree = self.agent_worktree(&agent).await?;
+        let pane_id = self
+            .supervisor
+            .open_tail_pane(agent, &worktree)
+            .await
+            .ok_or_else(|| ApiError::internal("zellij n'a pas ouvert le pane"))?;
+        Ok(Reply::Pane { pane_id })
+    }
+
+    /// Hand an agent back to the user, in a session they drive themselves.
+    ///
+    /// The way out when an agent goes round in circles: its Claude session is
+    /// still there, so `--resume` reopens the whole conversation in a pane. It
+    /// stops being ours — `Manual` — but the watcher keeps counting it, since
+    /// the session id has not changed.
+    async fn take_over(&self, agent_id: orchestra_core::model::AgentId) -> Result<Reply, ApiError> {
+        if !crate::zellij::inside() {
+            return Err(ApiError::unsupported(
+                "pas de session zellij : lance le daemon depuis zellij pour reprendre la main",
+            ));
+        }
+        let agent = self
+            .store
+            .agent(agent_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("agent"))?;
+        // Two hands on one session would each undo the other's turn.
+        if agent.status.is_active() {
+            return Err(ApiError::conflict(
+                "cet agent tourne encore : arrête-le avant de reprendre la main",
+            ));
+        }
+        let worktree = self.agent_worktree(&agent).await?;
+        let pane_id = self
+            .supervisor
+            .hand_over(agent, &worktree, &self.cfg.daemon.claude_bin)
+            .await
+            .ok_or_else(|| ApiError::internal("zellij n'a pas ouvert le pane"))?;
+        Ok(Reply::Pane { pane_id })
+    }
+
+    /// Where an agent worked, recreated from its branch if the folder is gone.
+    async fn agent_worktree(
+        &self,
+        agent: &orchestra_core::model::Agent,
+    ) -> Result<PathBuf, ApiError> {
+        let ticket = self
+            .store
+            .ticket(agent.ticket_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("ticket de l'agent"))?;
+        match ticket.worktree_path.filter(|p| p.exists()) {
+            Some(path) => Ok(path),
+            None => Err(ApiError::conflict(
+                "le worktree de ce ticket n'existe plus : relance le ticket pour le recréer",
+            )),
+        }
     }
 
     /// Accept a team, possibly edited by the user, and move the ticket on.
@@ -955,6 +1190,96 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_ticket_orphaned_by_a_restart_becomes_relaunchable() {
+        // La tâche qui déroulait les étapes meurt avec le daemon. Laissé « en
+        // cours », le ticket attend un exécutant qui ne reviendra jamais, et
+        // « lancer » le refuse puisqu'il tourne déjà.
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Running).await;
+        daemon.recover_on_boot().await.unwrap();
+
+        let back = daemon.store.ticket(ticket.id).await.unwrap().unwrap();
+        assert_eq!(back.status, TicketStatus::Failed);
+        assert!(
+            orchestra_core::model::can_transition(back.status, TicketStatus::Running),
+            "et il peut repartir"
+        );
+
+        // Un ticket déjà fini n'est pas touché.
+        let (daemon, done) = daemon_with_ticket(TicketStatus::Review).await;
+        daemon.recover_on_boot().await.unwrap();
+        let back = daemon.store.ticket(done.id).await.unwrap().unwrap();
+        assert_eq!(back.status, TicketStatus::Review);
+    }
+
+    #[tokio::test]
+    async fn a_closed_ticket_can_be_sent_back_to_review() {
+        // Le cas réel : fusionné en local, alors qu'on le voulait en pull
+        // request. La branche porte toujours le travail.
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Done).await;
+        // Sans dépôt git sous la main, la recréation du worktree échoue et
+        // c'est elle qui parle — le statut, lui, n'a pas bougé.
+        let err = daemon.reopen_ticket(ticket.id).await.unwrap_err();
+        assert!(format!("{err:?}").contains("dépôt git"), "{err:?}");
+        let back = daemon.store.ticket(ticket.id).await.unwrap().unwrap();
+        assert_eq!(
+            back.status,
+            TicketStatus::Done,
+            "rien n'a été changé à moitié"
+        );
+
+        // Et un ticket qui n'est pas fermé n'a rien à rouvrir.
+        let (daemon, running) = daemon_with_ticket(TicketStatus::Running).await;
+        let err = daemon.reopen_ticket(running.id).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("seul un ticket fermé"),
+            "{err:?}"
+        );
+
+        // Un ticket échoué se relance, il ne se rouvre pas.
+        let (daemon, failed) = daemon_with_ticket(TicketStatus::Failed).await;
+        let err = daemon.reopen_ticket(failed.id).await.unwrap_err();
+        assert!(format!("{err:?}").contains("relance"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_ticket_whose_request_is_pending_is_not_reopened() {
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Review).await;
+        record_verdict(&daemon, &ticket, Verdict::Ready).await;
+        daemon
+            .bus
+            .publish(
+                NewEvent::new(EventKind::PullRequestOpened {
+                    url: "https://github.com/o/r/pull/12".into(),
+                    number: Some(12),
+                })
+                .project(ticket.project_id)
+                .ticket(ticket.id),
+            )
+            .await
+            .unwrap();
+
+        let err = daemon.integrate_ticket(ticket.id).await.unwrap_err();
+        assert!(format!("{err:?}").contains("pull request"), "{err:?}");
+
+        // Fermée, elle ne bloque plus rien.
+        daemon
+            .bus
+            .publish(
+                NewEvent::new(EventKind::PullRequestClosed {
+                    url: "https://github.com/o/r/pull/12".into(),
+                    merged: false,
+                })
+                .project(ticket.project_id)
+                .ticket(ticket.id),
+            )
+            .await
+            .unwrap();
+        assert!(crate::github::open_pull_request(&daemon.store, ticket.id)
+            .await
+            .is_none());
     }
 
     #[tokio::test]

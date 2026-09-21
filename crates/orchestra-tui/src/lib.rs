@@ -4,6 +4,7 @@ pub mod app;
 pub mod client;
 pub mod forms;
 pub mod keymap;
+pub mod keys;
 mod run;
 pub mod screens;
 mod tail;

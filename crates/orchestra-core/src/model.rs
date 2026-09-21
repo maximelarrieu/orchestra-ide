@@ -158,6 +158,10 @@ pub fn can_transition(from: TicketStatus, to: TicketStatus) -> bool {
         (Review, Done) | (Review, Running) => true,
         // A failed ticket can be relaunched from a stage.
         (Failed, Running) => true,
+        // Reopening: a ticket closed one way can be sent back to the moment
+        // where it was waiting for a decision. Its branch still holds the work,
+        // and the relecture's verdict is still on record.
+        (Done | Cancelled, Review) => true,
         (Draft | Planned | Running | Review, Cancelled) => true,
         _ => false,
     }
@@ -791,9 +795,13 @@ mod tests {
         assert!(can_transition(Review, Done));
         assert!(can_transition(Failed, Running));
         assert!(can_transition(Running, Cancelled));
-        // Nothing comes back from a terminal state except Failed -> Running.
+        // A closed ticket comes back where a decision was expected, not in the
+        // middle of a run: its team has finished, its branch is there.
+        assert!(can_transition(Done, Review));
+        assert!(can_transition(Cancelled, Review));
         assert!(!can_transition(Done, Running));
         assert!(!can_transition(Cancelled, Running));
+        assert!(!can_transition(Done, Planned));
         assert!(!can_transition(Draft, Running));
         assert!(!can_transition(Draft, Done));
         assert!(check_transition(Draft, Done).is_err());

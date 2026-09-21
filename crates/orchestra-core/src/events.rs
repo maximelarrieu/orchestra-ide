@@ -119,8 +119,13 @@ pub enum EventTag {
     Usage,
     AgentSteered,
     AgentResult,
+    TicketResumed,
     ReviewVerdict,
+    CheckStarted,
+    CheckFinished,
     TicketMerged,
+    PullRequestOpened,
+    PullRequestClosed,
     HookBlocked,
     PaneOpened,
     PaneClosed,
@@ -130,7 +135,7 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 25] = [
+    pub const ALL: [EventTag; 30] = [
         EventTag::ProjectAdded,
         EventTag::TicketCreated,
         EventTag::TicketStatusChanged,
@@ -148,8 +153,13 @@ impl EventTag {
         EventTag::Usage,
         EventTag::AgentSteered,
         EventTag::AgentResult,
+        EventTag::TicketResumed,
         EventTag::ReviewVerdict,
+        EventTag::CheckStarted,
+        EventTag::CheckFinished,
         EventTag::TicketMerged,
+        EventTag::PullRequestOpened,
+        EventTag::PullRequestClosed,
         EventTag::HookBlocked,
         EventTag::PaneOpened,
         EventTag::PaneClosed,
@@ -177,8 +187,13 @@ impl EventTag {
             EventTag::Usage => "usage",
             EventTag::AgentSteered => "agent_steered",
             EventTag::AgentResult => "agent_result",
+            EventTag::TicketResumed => "ticket_resumed",
             EventTag::ReviewVerdict => "review_verdict",
+            EventTag::CheckStarted => "check_started",
+            EventTag::CheckFinished => "check_finished",
             EventTag::TicketMerged => "ticket_merged",
+            EventTag::PullRequestOpened => "pull_request_opened",
+            EventTag::PullRequestClosed => "pull_request_closed",
             EventTag::HookBlocked => "hook_blocked",
             EventTag::PaneOpened => "pane_opened",
             EventTag::PaneClosed => "pane_closed",
@@ -286,6 +301,12 @@ pub enum EventKind {
         total_cost_usd: Option<f64>,
         text: String,
     },
+    /// A ticket picked up where it stopped, rather than run again from the
+    /// start. `skipped` names the roles whose work was taken as it stands.
+    TicketResumed {
+        #[serde(default)]
+        skipped: Vec<String>,
+    },
     /// What the relecture concluded, and who goes back to work.
     ReviewVerdict {
         /// 1 for the first relecture, 2 after one correction round, …
@@ -298,12 +319,42 @@ pub enum EventKind {
         #[serde(default)]
         roles: Vec<String>,
     },
+    /// A verification of the repository is running in the ticket's worktree.
+    ///
+    /// Published before the command starts: a suite takes minutes, and a
+    /// screen that says nothing during them looks like a screen that froze.
+    CheckStarted {
+        /// 1 for the first pass of the gate, 2 after one repair round, …
+        round: u32,
+        command: String,
+    },
+    /// What that verification came back with. This is a measurement, not an
+    /// opinion: it is what opens or closes the integration.
+    CheckFinished {
+        round: u32,
+        run: Box<crate::checks::CheckRun>,
+    },
     /// The ticket's branch went into the default branch, in fast-forward.
     TicketMerged {
         branch: String,
         into: String,
         /// Commits the branch brought in.
         commits: usize,
+        /// The remote the default branch was pushed to, when it was.
+        #[serde(default)]
+        pushed_to: Option<String>,
+    },
+    /// A pull request was opened for the ticket's branch.
+    PullRequestOpened {
+        url: String,
+        #[serde(default)]
+        number: Option<u64>,
+    },
+    /// That pull request left the open state, one way or the other.
+    PullRequestClosed {
+        url: String,
+        /// True when it was merged, false when it was closed without merging.
+        merged: bool,
     },
     /// The `PreToolUse` guard refused a call.
     HookBlocked {
@@ -349,8 +400,13 @@ impl EventKind {
             EventKind::Usage { .. } => EventTag::Usage,
             EventKind::AgentSteered { .. } => EventTag::AgentSteered,
             EventKind::AgentResult { .. } => EventTag::AgentResult,
+            EventKind::TicketResumed { .. } => EventTag::TicketResumed,
             EventKind::ReviewVerdict { .. } => EventTag::ReviewVerdict,
+            EventKind::CheckStarted { .. } => EventTag::CheckStarted,
+            EventKind::CheckFinished { .. } => EventTag::CheckFinished,
             EventKind::TicketMerged { .. } => EventTag::TicketMerged,
+            EventKind::PullRequestOpened { .. } => EventTag::PullRequestOpened,
+            EventKind::PullRequestClosed { .. } => EventTag::PullRequestClosed,
             EventKind::HookBlocked { .. } => EventTag::HookBlocked,
             EventKind::PaneOpened { .. } => EventTag::PaneOpened,
             EventKind::PaneClosed { .. } => EventTag::PaneClosed,

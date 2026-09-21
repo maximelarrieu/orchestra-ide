@@ -53,21 +53,11 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         None => Line::from(Span::styled(
-            "Tab champ suivant   Entrée nouvelle ligne   Ctrl-S créer   Échap annuler",
+            "Dis ce qui ne va pas aujourd'hui et ce que tu attends. Plus c'est concret, meilleure est l'équipe proposée.",
             Style::default().add_modifier(Modifier::DIM),
         )),
     };
-    frame.render_widget(
-        Paragraph::new(vec![
-            hint,
-            Line::from(Span::styled(
-                "Dis ce qui ne va pas aujourd'hui et ce que tu attends. Plus c'est concret, meilleure est l'équipe proposée.",
-                Style::default().add_modifier(Modifier::DIM),
-            )),
-        ])
-        .wrap(Wrap { trim: true }),
-        chunks[2],
-    );
+    frame.render_widget(Paragraph::new(hint).wrap(Wrap { trim: true }), chunks[2]);
 }
 
 /// The field's text with a cursor when it has focus.

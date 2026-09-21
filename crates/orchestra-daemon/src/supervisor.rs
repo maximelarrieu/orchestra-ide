@@ -9,7 +9,7 @@
 //! conflict, and one process per role is what makes each of them visible and
 //! steerable on its own.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -36,6 +36,10 @@ use crate::worktree;
 
 /// Rules appended to every role's prompt.
 const FOOTER: &str = include_str!("../../../assets/roles/_footer.md");
+
+/// The shape every pull request description follows. Handed to the integrator
+/// when, and only when, a request is what this run will produce.
+const PR_TEMPLATE: &str = include_str!("../../../assets/pr_template.md");
 
 /// How long an interrupted agent is given to finish its turn cleanly.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -66,6 +70,10 @@ pub struct Supervisor {
     cache_dir: PathBuf,
     running: Arc<Mutex<HashMap<AgentId, Running>>>,
     tickets: Arc<Mutex<HashMap<TicketId, tokio::task::JoinHandle<()>>>>,
+    /// Tickets launched with `open_panes`, which get a pane per agent even
+    /// when `zellij.auto_pane` is off. Per run, not per configuration: the
+    /// choice belongs to the launch that asked for it.
+    panes_wanted: Arc<Mutex<HashSet<TicketId>>>,
 }
 
 impl Supervisor {
@@ -84,6 +92,7 @@ impl Supervisor {
             cache_dir,
             running: Arc::new(Mutex::new(HashMap::new())),
             tickets: Arc::new(Mutex::new(HashMap::new())),
+            panes_wanted: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -96,7 +105,13 @@ impl Supervisor {
     }
 
     /// Start the team of a planned ticket.
-    pub async fn launch(&self, ticket: Ticket, project: Project, catalog: Catalog) -> Result<()> {
+    pub async fn launch(
+        &self,
+        ticket: Ticket,
+        project: Project,
+        catalog: Catalog,
+        open_panes: bool,
+    ) -> Result<()> {
         let team = ticket
             .team
             .clone()
@@ -154,15 +169,71 @@ impl Supervisor {
 
         let me = self.clone();
         let ticket_id = ticket.id;
+        if open_panes {
+            self.panes_wanted.lock().await.insert(ticket_id);
+        }
         let handle = tokio::spawn(async move {
             let outcome = me.run_team(ticket, project, team, catalog, wt.path).await;
             if let Err(e) = outcome {
                 tracing::error!("exécution du ticket interrompue : {e:#}");
             }
             me.tickets.lock().await.remove(&ticket_id);
+            me.panes_wanted.lock().await.remove(&ticket_id);
         });
         self.tickets.lock().await.insert(ticket_id, handle);
         Ok(())
+    }
+
+    /// The ticket's worktree, recreated from its branch if it is not there.
+    ///
+    /// A worktree is a checkout, not the work: it is deleted once a ticket is
+    /// integrated, and the branch is what holds the commits. So a ticket picked
+    /// up again — reopened, integrated a second way — gets its checkout back
+    /// instead of a dead end.
+    pub async fn ensure_worktree(
+        &self,
+        ticket: &mut Ticket,
+        project: &Project,
+    ) -> Result<(String, PathBuf)> {
+        if let (Some(branch), Some(path)) = (ticket.branch.clone(), ticket.worktree_path.clone()) {
+            if path.exists() {
+                return Ok((branch, path));
+            }
+        }
+        anyhow::ensure!(
+            worktree::is_repository(&project.path),
+            "{} n'est pas un dépôt git",
+            project.path.display()
+        );
+        let plan = worktree::plan_for(
+            project,
+            ticket,
+            &self
+                .cfg
+                .daemon
+                .worktrees_dir
+                .clone()
+                .unwrap_or_else(orchestra_core::config::Paths::worktrees_dir),
+            &self.cfg.daemon.branch_prefix,
+        );
+        let _ = worktree::prune(project);
+        let wt = worktree::ensure(project, &plan)?;
+        ticket.branch = Some(wt.branch.clone());
+        ticket.worktree_path = Some(wt.path.clone());
+        ticket.updated_at = orchestra_core::now();
+        self.store.update_ticket(ticket.clone()).await?;
+        let _ = self
+            .bus
+            .publish(
+                NewEvent::new(EventKind::WorktreeCreated {
+                    path: wt.path.clone(),
+                    branch: wt.branch.clone(),
+                })
+                .project(project.id)
+                .ticket(ticket.id),
+            )
+            .await;
+        Ok((wt.branch, wt.path))
     }
 
     /// Launch the integrator on a ticket the relecture cleared.
@@ -188,19 +259,19 @@ impl Supervisor {
             cfg.role
         );
         anyhow::ensure!(!self.is_running(ticket.id).await, "ce ticket tourne déjà");
-        let branch = ticket
-            .branch
-            .clone()
-            .context("ce ticket n'a pas de branche : rien à intégrer")?;
-        let worktree_path = ticket
-            .worktree_path
-            .clone()
-            .context("ce ticket n'a pas de worktree")?;
-        anyhow::ensure!(
-            worktree_path.exists(),
-            "le worktree {} a disparu : relance le ticket avant de l'intégrer",
-            worktree_path.display()
-        );
+        // The gate is not decoration on a screen: a branch whose checks are
+        // red does not reach the default branch, whichever client asks. The
+        // TUI hides the key; this is what makes hiding it beside the point.
+        if let Some(last) = self.last_checks(ticket.id).await {
+            if let Some(failed) = last.failed() {
+                anyhow::bail!(
+                    "les vérifications du dépôt refusent cette branche : {}",
+                    failed.label_fr()
+                );
+            }
+        }
+        let mut ticket = ticket;
+        let (branch, worktree_path) = self.ensure_worktree(&mut ticket, &project).await?;
 
         let me = self.clone();
         let ticket_id = ticket.id;
@@ -237,7 +308,7 @@ impl Supervisor {
 
         let member = orchestra_core::model::TeamMember {
             role: cfg.role.clone(),
-            objective: integration_objective(&project.default_branch, &branch, cfg.push),
+            objective: integration_objective(&project.default_branch, &branch, cfg.push, cfg.mode),
             depends_on: Vec::new(),
             model: None,
             effort: None,
@@ -245,6 +316,12 @@ impl Supervisor {
             parallel_ok: false,
         };
 
+        // The template only costs tokens where a request is what comes out.
+        let appendix = if cfg.mode.is_pr() {
+            format!("\n\n{PR_TEMPLATE}")
+        } else {
+            String::new()
+        };
         let step = self
             .run_member(Step {
                 ticket: &ticket,
@@ -255,8 +332,10 @@ impl Supervisor {
                 worktree_path: &worktree_path,
                 handoffs: &mut handoffs,
                 blocking: &[],
+                blocked_by: Blocked::Review,
                 // The one place this is not `Confined`.
                 git: GitPolicy::Full,
+                appendix: &appendix,
             })
             .await;
         if !matches!(step, StepOutcome::Done) {
@@ -269,6 +348,27 @@ impl Supervisor {
             )
             .await;
             return Ok(());
+        }
+
+        // A pull request replaces the fusion: the branch goes up, GitHub holds
+        // it, and the merge is the user's click. Falling back to the local
+        // fusion when there is nowhere to open one is better than stopping.
+        if cfg.mode.is_pr() {
+            match self
+                .open_pull_request(&ticket, &project, &branch, &worktree_path, &handoffs)
+                .await
+            {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(e) => {
+                    self.warn_ticket(
+                        ticket.id,
+                        project.id,
+                        format!("pull request impossible : {e:#} — fusion locale à la place"),
+                    )
+                    .await;
+                }
+            }
         }
 
         // The fusion itself is ours. An agent that fails leaves the default
@@ -286,6 +386,30 @@ impl Supervisor {
             }
         };
 
+        // The integrator pushes its own branch when asked, but nothing was
+        // pushing the branch that just received it: the fusion is ours, so is
+        // sending it out. Off unless `integration.push` says otherwise —
+        // publishing is outward-facing and stays the user's call.
+        let pushed_to = if cfg.push {
+            match worktree::push_branch(&project.path, &project.default_branch) {
+                Ok(remote) => remote,
+                Err(e) => {
+                    self.warn_ticket(
+                        ticket.id,
+                        project.id,
+                        format!(
+                            "fusion faite, mais le push a échoué : {e:#}. La branche par \
+                             défaut est à jour en local."
+                        ),
+                    )
+                    .await;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let _ = self
             .bus
             .publish(
@@ -293,6 +417,7 @@ impl Supervisor {
                     branch: branch.clone(),
                     into: project.default_branch.clone(),
                     commits,
+                    pushed_to,
                 })
                 .project(project.id)
                 .ticket(ticket.id),
@@ -324,6 +449,185 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Push the branch and open a pull request for it.
+    ///
+    /// Returns false when this project cannot have one — no remote, or no `gh`
+    /// — so the caller falls back to the local fusion.
+    async fn open_pull_request(
+        &self,
+        ticket: &Ticket,
+        project: &Project,
+        branch: &str,
+        worktree_path: &Path,
+        handoffs: &[(String, String)],
+    ) -> Result<bool> {
+        if worktree::default_remote(&project.path).is_none() {
+            self.warn_ticket(
+                ticket.id,
+                project.id,
+                "ce dépôt n'a pas de remote : pas de pull request possible".into(),
+            )
+            .await;
+            return Ok(false);
+        }
+        if !crate::github::is_available() {
+            self.warn_ticket(
+                ticket.id,
+                project.id,
+                "« gh » est introuvable : installe-le pour ouvrir des pull requests".into(),
+            )
+            .await;
+            return Ok(false);
+        }
+
+        worktree::push_branch(&project.path, branch)?;
+        let title = format!("#{} {}", ticket.number, ticket.title);
+        // What the integrator wrote following the template, if it did. The
+        // assembled version is the floor, not the goal: an agent that has just
+        // read the whole branch writes a better description than a format
+        // string can.
+        let body = match written_pr_body(worktree_path) {
+            Some(text) => text,
+            None => assembled_pr_body(ticket, handoffs),
+        };
+        let body = format!("{body}\n\n{}", self.pr_footer(ticket, branch).await);
+        let pr = crate::github::create_pr(
+            &project.path,
+            &project.default_branch,
+            branch,
+            &title,
+            &body,
+        )?;
+        let _ = self
+            .bus
+            .publish(
+                NewEvent::new(EventKind::PullRequestOpened {
+                    url: pr.url.clone(),
+                    number: pr.number,
+                })
+                .project(project.id)
+                .ticket(ticket.id),
+            )
+            .await;
+        // The ticket stays « à relire » on purpose: the work is not in the
+        // default branch until someone merges. The watcher below closes it.
+        Ok(true)
+    }
+
+    /// Follow the pull requests we opened until GitHub answers.
+    ///
+    /// Polling rather than a webhook: the daemon is a local process on a laptop
+    /// with no address to be called back at, and one `gh` call a minute per
+    /// open request is nothing.
+    pub async fn watch_pull_requests(self, cancel: tokio_util::sync::CancellationToken) {
+        let every = std::time::Duration::from_secs(self.cfg.integration.pr_poll_secs.max(10));
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = tokio::time::sleep(every) => {}
+            }
+            if let Err(e) = self.poll_pull_requests().await {
+                tracing::debug!("suivi des pull requests : {e:#}");
+            }
+        }
+    }
+
+    async fn poll_pull_requests(&self) -> Result<()> {
+        let waiting = self
+            .store
+            .list_tickets(None, Some(vec![TicketStatus::Review]))
+            .await?;
+        for ticket in waiting {
+            let Some(url) = crate::github::open_pull_request(&self.store, ticket.id).await else {
+                continue;
+            };
+            let Some(project) = self.store.project(ticket.project_id).await? else {
+                continue;
+            };
+            // A failure here is usually being offline; the next round asks
+            // again rather than deciding anything.
+            let state = match crate::github::pr_state(&project.path, &url) {
+                Ok(state) => state,
+                Err(e) => {
+                    tracing::debug!("état de {url} indisponible : {e:#}");
+                    continue;
+                }
+            };
+            match state {
+                crate::github::PrState::Open => continue,
+                crate::github::PrState::Merged => {
+                    self.close_pull_request(&ticket, &project, &url, true).await
+                }
+                crate::github::PrState::Closed => {
+                    self.close_pull_request(&ticket, &project, &url, false)
+                        .await
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn close_pull_request(
+        &self,
+        ticket: &Ticket,
+        project: &Project,
+        url: &str,
+        merged: bool,
+    ) {
+        let _ = self
+            .bus
+            .publish(
+                NewEvent::new(EventKind::PullRequestClosed {
+                    url: url.to_string(),
+                    merged,
+                })
+                .project(project.id)
+                .ticket(ticket.id),
+            )
+            .await;
+
+        if !merged {
+            self.warn_ticket(
+                ticket.id,
+                project.id,
+                format!(
+                    "la pull request du ticket #{} a été fermée sans fusion : la branche \
+                     reste, le ticket est annulé",
+                    ticket.number
+                ),
+            )
+            .await;
+            self.finish_ticket(ticket, TicketStatus::Cancelled).await;
+            return;
+        }
+
+        // The merge happened over there; this machine has to catch up before
+        // the default branch can move again.
+        if let Err(e) = worktree::pull_default_branch(project) {
+            self.warn_ticket(
+                ticket.id,
+                project.id,
+                format!(
+                    "pull request fusionnée, mais « {} » n'a pas pu être mise à jour ici : {e:#}",
+                    project.default_branch
+                ),
+            )
+            .await;
+        }
+        if self.cfg.integration.remove_worktree {
+            if let Some(path) = ticket.worktree_path.clone() {
+                if worktree::remove(project, &path).is_ok() {
+                    if let Ok(Some(mut current)) = self.store.ticket(ticket.id).await {
+                        current.worktree_path = None;
+                        current.updated_at = orchestra_core::now();
+                        let _ = self.store.update_ticket(current).await;
+                    }
+                }
+            }
+        }
+        self.finish_ticket(ticket, TicketStatus::Done).await;
+    }
+
     /// Walk the stages, one role at a time, then hold the relecture loop.
     async fn run_team(
         &self,
@@ -336,9 +640,80 @@ impl Supervisor {
         let mut handoffs: Vec<(String, String)> = Vec::new();
         let mut failed = false;
         let mut next_stage = 0u32;
+        // The gate runs immediately before every relecture, so the last thing
+        // to happen before a verdict is always a measurement. This says
+        // whether the stage loop already did it.
+        let mut gated = false;
+
+        // A ticket relaunched after an interruption picks up where it stopped.
+        // A rôle that already finished has its work in the branch and its
+        // handoff in the store; running it again would pay a second time for
+        // what is already there, and let it undo its own work.
+        let prior = self
+            .store
+            .agents_of_ticket(ticket.id)
+            .await
+            .unwrap_or_default();
+        let done_before: Vec<String> = team
+            .ordered()
+            .iter()
+            .filter(|(_, m)| finished_handoff(&prior, &m.role).is_some())
+            .map(|(_, m)| m.role.clone())
+            .collect();
+        if !done_before.is_empty() {
+            let _ = self
+                .bus
+                .publish(
+                    NewEvent::new(EventKind::TicketResumed {
+                        skipped: done_before.clone(),
+                    })
+                    .project(project.id)
+                    .ticket(ticket.id),
+                )
+                .await;
+        }
 
         for (stage, member) in team.ordered() {
             next_stage = stage + 1;
+            if let Some(handoff) = finished_handoff(&prior, &member.role) {
+                handoffs.push((member.role.clone(), handoff));
+                continue;
+            }
+            // The relecture is a team member like the others, so this is where
+            // the gate belongs: right before it, never after. Reading a branch
+            // that does not build is an hour of an expensive agent spent on
+            // what `cargo build` says in twenty seconds.
+            let mut appendix = String::new();
+            if member.role == self.cfg.review.role {
+                let mut gate_stage = stage;
+                match self
+                    .checks_gate(
+                        &ticket,
+                        &project,
+                        &team,
+                        &catalog,
+                        &worktree_path,
+                        &mut handoffs,
+                        &mut gate_stage,
+                    )
+                    .await
+                {
+                    StepOutcome::Done => {}
+                    StepOutcome::Cancelled => {
+                        self.finish_ticket(&ticket, TicketStatus::Cancelled).await;
+                        return Ok(());
+                    }
+                    StepOutcome::Failed => {
+                        failed = true;
+                        break;
+                    }
+                }
+                gated = true;
+                next_stage = gate_stage.max(stage) + 1;
+                if let Some(outcome) = self.last_checks(ticket.id).await {
+                    appendix = checks_appendix(&outcome);
+                }
+            }
             let step = self
                 .run_member(Step {
                     ticket: &ticket,
@@ -349,7 +724,9 @@ impl Supervisor {
                     worktree_path: &worktree_path,
                     handoffs: &mut handoffs,
                     blocking: &[],
+                    blocked_by: Blocked::Review,
                     git: GitPolicy::Confined,
+                    appendix: &appendix,
                 })
                 .await;
             match step {
@@ -365,7 +742,34 @@ impl Supervisor {
             }
         }
 
+        // A team whose reviewer was taken out still gets its gate: the branch
+        // is what leaves, whoever read it.
+        if !failed && !gated {
+            match self
+                .checks_gate(
+                    &ticket,
+                    &project,
+                    &team,
+                    &catalog,
+                    &worktree_path,
+                    &mut handoffs,
+                    &mut next_stage,
+                )
+                .await
+            {
+                StepOutcome::Done => {}
+                StepOutcome::Cancelled => {
+                    self.finish_ticket(&ticket, TicketStatus::Cancelled).await;
+                    return Ok(());
+                }
+                StepOutcome::Failed => failed = true,
+            }
+        }
+
         if !failed {
+            // A verdict already on record must not be published again: it would
+            // count as a new round and read as if the relecture had just spoken.
+            let verdict_is_fresh = !done_before.contains(&self.cfg.review.role);
             match self
                 .review_rounds(
                     &ticket,
@@ -375,6 +779,7 @@ impl Supervisor {
                     &worktree_path,
                     &mut handoffs,
                     next_stage,
+                    verdict_is_fresh,
                 )
                 .await
             {
@@ -407,7 +812,9 @@ impl Supervisor {
             worktree_path,
             handoffs,
             blocking,
+            blocked_by,
             git,
+            appendix,
         } = step;
         let Some(role) = catalog.get(&member.role) else {
             self.warn_ticket(
@@ -432,7 +839,9 @@ impl Supervisor {
                 worktree_path,
                 handoffs,
                 blocking,
+                blocked_by,
                 git,
+                appendix,
             })
             .await;
 
@@ -463,6 +872,200 @@ impl Supervisor {
         }
     }
 
+    /// The repository's own checks, run in the ticket's worktree.
+    ///
+    /// This is the one claim of the whole run that nobody had to be asked for.
+    /// The relecture *reports* that the tests pass; this *measures* it, and an
+    /// exit code cannot be optimistic. So it runs before the reviewer is paid
+    /// for reading a branch that does not build, and again after any
+    /// correction round, so that « à relire » means what it says.
+    ///
+    /// A red gate sends back the last role that wrote code, with the command's
+    /// own output rather than a summary of it. Still red once the budget is
+    /// spent, the ticket fails — which is what happened: the team did not
+    /// deliver something that builds. It can be relaunched, and the relaunch
+    /// keeps the work that is already in the branch.
+    #[allow(clippy::too_many_arguments)]
+    async fn checks_gate(
+        &self,
+        ticket: &Ticket,
+        project: &Project,
+        team: &Team,
+        catalog: &Catalog,
+        worktree_path: &Path,
+        handoffs: &mut Vec<(String, String)>,
+        stage: &mut u32,
+    ) -> StepOutcome {
+        let cfg = &self.cfg.checks;
+        let commands = crate::checks::commands(cfg, &project.path);
+        if commands.is_empty() {
+            return StepOutcome::Done;
+        }
+        let timeout = std::time::Duration::from_secs(cfg.timeout_secs.max(1));
+        // The reviewer is not sent back to fix a build: it did not write it.
+        let workers: Vec<String> = team
+            .members
+            .iter()
+            .map(|m| m.role.clone())
+            .filter(|r| r != &self.cfg.review.role)
+            .collect();
+
+        // A resumed ticket does not get its repair budget back, for the same
+        // reason a resumed relecture does not: the rounds were paid for.
+        let (last_round, mut spent) = self.checks_record(ticket.id).await;
+        let mut round = last_round + 1;
+
+        loop {
+            let mut runs = Vec::new();
+            for check in &commands {
+                self.publish_ticket(
+                    ticket,
+                    EventKind::CheckStarted {
+                        round,
+                        command: check.label(),
+                    },
+                )
+                .await;
+                let run = crate::checks::run(check, worktree_path, timeout).await;
+                let refused = !run.ok;
+                self.publish_ticket(
+                    ticket,
+                    EventKind::CheckFinished {
+                        round,
+                        run: Box::new(run.clone()),
+                    },
+                )
+                .await;
+                runs.push(run);
+                // The first refusal ends the pass: what follows would only
+                // report on a tree already known not to hold.
+                if refused {
+                    break;
+                }
+            }
+
+            let outcome = orchestra_core::checks::ChecksOutcome { round, runs };
+            if outcome.passed() {
+                return StepOutcome::Done;
+            }
+            let Some(failure) = outcome.failed().cloned() else {
+                return StepOutcome::Done;
+            };
+
+            let Some(role) = last_worker(handoffs, &workers) else {
+                self.warn_ticket(
+                    ticket.id,
+                    project.id,
+                    format!(
+                        "{} et personne dans l'équipe ne peut le reprendre : le ticket \
+                         passe sous tes yeux",
+                        failure.label_fr()
+                    ),
+                )
+                .await;
+                return StepOutcome::Failed;
+            };
+            if spent >= cfg.max_rounds {
+                self.warn_ticket(
+                    ticket.id,
+                    project.id,
+                    format!(
+                        "{} encore après {spent} tour(s) de réparation : le ticket \
+                         s'arrête là plutôt que d'en payer un de plus",
+                        failure.label_fr()
+                    ),
+                )
+                .await;
+                return StepOutcome::Failed;
+            }
+            spent += 1;
+
+            let Some(base) = team.member(&role).cloned() else {
+                return StepOutcome::Failed;
+            };
+            let items = outcome.blocking_lines();
+            let mut member = base.clone();
+            member.objective = correction_objective(&base.objective, &items, Blocked::Checks);
+            let step = self
+                .run_member(Step {
+                    ticket,
+                    project,
+                    catalog,
+                    member,
+                    stage: *stage,
+                    worktree_path,
+                    handoffs,
+                    blocking: &items,
+                    blocked_by: Blocked::Checks,
+                    git: GitPolicy::Confined,
+                    appendix: "",
+                })
+                .await;
+            if !matches!(step, StepOutcome::Done) {
+                return step;
+            }
+            *stage += 1;
+            round += 1;
+        }
+    }
+
+    /// What the gate said on its last pass, `None` when it never ran.
+    pub async fn last_checks(
+        &self,
+        ticket_id: TicketId,
+    ) -> Option<orchestra_core::checks::ChecksOutcome> {
+        let filter = orchestra_core::events::EventFilter {
+            ticket_id: Some(ticket_id),
+            tags: vec![orchestra_core::events::EventTag::CheckFinished],
+            ..Default::default()
+        };
+        let events = self
+            .store
+            .recent_events(filter, 64)
+            .await
+            .unwrap_or_default();
+        crate::checks::last_pass(&events)
+    }
+
+    /// The highest pass this ticket has run, and how many of them came back
+    /// red. The second is the repair budget already spent.
+    async fn checks_record(&self, ticket_id: TicketId) -> (u32, u32) {
+        let filter = orchestra_core::events::EventFilter {
+            ticket_id: Some(ticket_id),
+            tags: vec![orchestra_core::events::EventTag::CheckFinished],
+            ..Default::default()
+        };
+        let events = self
+            .store
+            .recent_events(filter, 64)
+            .await
+            .unwrap_or_default();
+        let mut last = 0u32;
+        let mut red: Vec<u32> = Vec::new();
+        for event in events {
+            let EventKind::CheckFinished { round, run } = event.kind else {
+                continue;
+            };
+            last = last.max(round);
+            if !run.ok && !red.contains(&round) {
+                red.push(round);
+            }
+        }
+        (last, red.len() as u32)
+    }
+
+    /// One event about the ticket rather than about an agent.
+    async fn publish_ticket(&self, ticket: &Ticket, kind: EventKind) {
+        let _ = self
+            .bus
+            .publish(
+                NewEvent::new(kind)
+                    .project(ticket.project_id)
+                    .ticket(ticket.id),
+            )
+            .await;
+    }
+
     /// Read the relecture's verdict and, while it blocks, send the named roles
     /// back to work and have it read the branch again.
     ///
@@ -479,6 +1082,7 @@ impl Supervisor {
         worktree_path: &Path,
         handoffs: &mut Vec<(String, String)>,
         first_stage: u32,
+        verdict_is_fresh: bool,
     ) -> StepOutcome {
         let cfg = &self.cfg.review;
         let Some(reviewer) = team.member(&cfg.role).cloned() else {
@@ -498,7 +1102,11 @@ impl Supervisor {
         }
 
         let mut stage = first_stage;
-        let mut rounds_done = 0u32;
+        // Each blocking verdict opened exactly one correction round, so the
+        // record says how many have been spent — a resumed ticket does not get
+        // its budget back.
+        let mut rounds_done = self.blocking_verdicts(ticket.id).await;
+        let mut fresh = verdict_is_fresh;
         loop {
             let Some(text) = handoffs
                 .iter()
@@ -525,7 +1133,7 @@ impl Supervisor {
             // waking the whole team on an unattributed remark costs more than
             // it repairs.
             let named = review.roles_to_fix(&workers);
-            let to_fix: Vec<String> = if review.verdict.is_ready() {
+            let mut to_fix: Vec<String> = if review.verdict.is_ready() {
                 Vec::new()
             } else if named.is_empty() {
                 workers.last().cloned().into_iter().collect()
@@ -533,36 +1141,73 @@ impl Supervisor {
                 named
             };
 
-            let _ = self
-                .bus
-                .publish(
-                    NewEvent::new(EventKind::ReviewVerdict {
-                        round: rounds_done + 1,
-                        verdict: review.verdict,
-                        blocking: review.blocking_lines(),
-                        roles: to_fix.clone(),
-                    })
-                    .project(project.id)
-                    .ticket(ticket.id),
-                )
-                .await;
+            if fresh {
+                let _ = self
+                    .bus
+                    .publish(
+                        NewEvent::new(EventKind::ReviewVerdict {
+                            round: rounds_done + 1,
+                            verdict: review.verdict,
+                            blocking: review.blocking_lines(),
+                            roles: to_fix.clone(),
+                        })
+                        .project(project.id)
+                        .ticket(ticket.id),
+                    )
+                    .await;
+            }
 
             if review.verdict.is_ready() {
                 return StepOutcome::Done;
             }
-            if rounds_done >= cfg.max_rounds {
-                self.warn_ticket(
-                    ticket.id,
-                    project.id,
-                    format!(
-                        "la relecture bloque encore après {rounds_done} tour(s) de \
-                         correction : le ticket passe en relecture humaine"
-                    ),
-                )
-                .await;
-                return StepOutcome::Done;
+
+            // On a resumed ticket, the roles this verdict named may already
+            // have come back to work before the interruption. Their commits
+            // are in the branch; only the relecture that would have checked
+            // them is missing.
+            let settled = corrected_since_review(
+                &self
+                    .store
+                    .agents_of_ticket(ticket.id)
+                    .await
+                    .unwrap_or_default(),
+                &cfg.role,
+            );
+            let redone: Vec<String> = to_fix
+                .iter()
+                .filter(|r| settled.contains(r))
+                .cloned()
+                .collect();
+            to_fix.retain(|r| !settled.contains(r));
+
+            if to_fix.is_empty() {
+                if !redone.is_empty() {
+                    self.warn_ticket(
+                        ticket.id,
+                        project.id,
+                        format!(
+                            "« {} » avait déjà corrigé avant l'interruption : on enchaîne \
+                             sur la relecture",
+                            redone.join(", ")
+                        ),
+                    )
+                    .await;
+                }
+            } else {
+                if rounds_done >= cfg.max_rounds {
+                    self.warn_ticket(
+                        ticket.id,
+                        project.id,
+                        format!(
+                            "la relecture bloque encore après {rounds_done} tour(s) de \
+                             correction : le ticket passe en relecture humaine"
+                        ),
+                    )
+                    .await;
+                    return StepOutcome::Done;
+                }
+                rounds_done += 1;
             }
-            rounds_done += 1;
 
             for role in &to_fix {
                 let Some(base) = team.member(role) else {
@@ -570,7 +1215,7 @@ impl Supervisor {
                 };
                 let items = blocking_for(&review, role, &to_fix);
                 let mut member = base.clone();
-                member.objective = correction_objective(&base.objective, &items);
+                member.objective = correction_objective(&base.objective, &items, Blocked::Review);
                 let step = self
                     .run_member(Step {
                         ticket,
@@ -581,7 +1226,9 @@ impl Supervisor {
                         worktree_path,
                         handoffs,
                         blocking: &items,
+                        blocked_by: Blocked::Review,
                         git: GitPolicy::Confined,
+                        appendix: "",
                     })
                     .await;
                 if !matches!(step, StepOutcome::Done) {
@@ -590,11 +1237,36 @@ impl Supervisor {
                 stage += 1;
             }
 
+            // The gate again, and for the same reason as the first time: the
+            // roles that just came back rewrote code, and the relecture about
+            // to read it should not be the one to find out that it no longer
+            // builds. Running it here rather than at the end is what makes the
+            // rule hold — before every verdict, a measurement.
+            match self
+                .checks_gate(
+                    ticket,
+                    project,
+                    team,
+                    catalog,
+                    worktree_path,
+                    handoffs,
+                    &mut stage,
+                )
+                .await
+            {
+                StepOutcome::Done => {}
+                other => return other,
+            }
+            let appendix = match self.last_checks(ticket.id).await {
+                Some(outcome) => checks_appendix(&outcome),
+                None => String::new(),
+            };
+
             let mut again = reviewer.clone();
             again.objective = format!(
                 "Relire à nouveau la branche après le tour de correction {rounds_done} : \
-                 vérifier que chaque point que tu avais bloqué est levé, refaire tourner \
-                 les vérifications du dépôt, puis rendre ton verdict.",
+                 vérifier que chaque point que tu avais bloqué est levé, puis rendre ton \
+                 verdict.",
             );
             let step = self
                 .run_member(Step {
@@ -606,14 +1278,82 @@ impl Supervisor {
                     worktree_path,
                     handoffs,
                     blocking: &[],
+                    blocked_by: Blocked::Review,
                     git: GitPolicy::Confined,
+                    appendix: &appendix,
                 })
                 .await;
             if !matches!(step, StepOutcome::Done) {
                 return step;
             }
             stage += 1;
+            // From here the verdict is one we produced, so it is published.
+            fresh = true;
         }
+    }
+
+    /// The facts under every description, written by us rather than asked of
+    /// an agent: they must be right, and only the daemon knows them all.
+    async fn pr_footer(&self, ticket: &Ticket, branch: &str) -> String {
+        let verdict = match self.last_verdict(ticket.id).await {
+            Some((round, verdict)) => format!("relecture {round} : {}", verdict.label_fr()),
+            None => "sans verdict enregistré".to_string(),
+        };
+        let cost = match self.ledger.ticket_cost(ticket.id).await {
+            Ok(cost) => format!(
+                "{} tokens · {} (indicatif)",
+                orchestra_core::pricing::fmt_tokens(cost.tokens.total()),
+                cost.cost_usd
+                    .map(orchestra_core::pricing::fmt_usd)
+                    .unwrap_or_else(|| "coût inconnu".into())
+            ),
+            Err(_) => String::new(),
+        };
+        format!(
+            "---\n\nTicket #{} — {} · branche `{branch}` · {verdict} · {cost}\n\n\
+             Ouverte par Orchestra.",
+            ticket.number, ticket.title
+        )
+    }
+
+    /// The last verdict a relecture rendered, and which round it was.
+    async fn last_verdict(
+        &self,
+        ticket_id: TicketId,
+    ) -> Option<(u32, orchestra_core::review::Verdict)> {
+        let filter = orchestra_core::events::EventFilter {
+            ticket_id: Some(ticket_id),
+            tags: vec![orchestra_core::events::EventTag::ReviewVerdict],
+            ..Default::default()
+        };
+        self.store
+            .recent_events(filter, 1)
+            .await
+            .ok()?
+            .into_iter()
+            .find_map(|e| match e.kind {
+                EventKind::ReviewVerdict { round, verdict, .. } => Some((round, verdict)),
+                _ => None,
+            })
+    }
+
+    /// How many blocking verdicts this ticket already collected: one per
+    /// correction round spent.
+    async fn blocking_verdicts(&self, ticket_id: TicketId) -> u32 {
+        let filter = orchestra_core::events::EventFilter {
+            ticket_id: Some(ticket_id),
+            tags: vec![orchestra_core::events::EventTag::ReviewVerdict],
+            ..Default::default()
+        };
+        self.store
+            .recent_events(filter, 50)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|e| {
+                matches!(&e.kind, EventKind::ReviewVerdict { verdict, .. } if !verdict.is_ready())
+            })
+            .count() as u32
     }
 
     /// Everything one role needs to run, grouped so the call stays readable.
@@ -627,7 +1367,9 @@ impl Supervisor {
             worktree_path,
             handoffs,
             blocking,
+            blocked_by,
             git,
+            appendix,
         } = spec;
         let model = member
             .model
@@ -664,12 +1406,20 @@ impl Supervisor {
             ended_at: None,
         };
         self.store.insert_agent(agent.clone()).await?;
+        let label = crate::zellij::pane_name(&project.name, &member.role, ticket.number);
 
-        let prompt = build_prompt(ticket, member, worktree_path, handoffs, blocking);
+        let prompt = build_prompt(
+            ticket,
+            member,
+            worktree_path,
+            handoffs,
+            blocking,
+            blocked_by,
+        );
         let prompt_file = write_prompt_file(
             &self.cache_dir,
             &role.name,
-            &format!("{}\n\n{FOOTER}", role.system_prompt),
+            &format!("{}\n\n{FOOTER}{appendix}", role.system_prompt),
         )?;
 
         loop {
@@ -686,7 +1436,6 @@ impl Supervisor {
             let outcome = self
                 .run_attempt(
                     &mut agent,
-                    project,
                     role,
                     &prompt_file,
                     &turn_prompt,
@@ -696,6 +1445,7 @@ impl Supervisor {
                     budget,
                     resume,
                     git,
+                    &label,
                 )
                 .await?;
 
@@ -726,7 +1476,6 @@ impl Supervisor {
     async fn run_attempt(
         &self,
         agent: &mut Agent,
-        project: &Project,
         role: &RoleDefinition,
         prompt_file: &Path,
         prompt: &str,
@@ -736,16 +1485,13 @@ impl Supervisor {
         budget: Option<f64>,
         resume: Option<Uuid>,
         git: GitPolicy,
+        // `[projet] rôle #12`: the session's name, and its pane's.
+        label: &str,
     ) -> Result<AgentOutcome> {
         let mut cmd = ClaudeCommand::new(&self.cfg.daemon.claude_bin, worktree_path, prompt);
         cmd.session_id = Some(agent.session_id);
         cmd.resume = resume;
-        cmd.name = Some(format!(
-            "[{}] {} #{}",
-            project.name,
-            agent.role,
-            ticket_number(agent)
-        ));
+        cmd.name = Some(label.to_string());
         cmd.model = model;
         cmd.effort = Some(effort);
         cmd.permission_mode = Some("bypassPermissions".into());
@@ -803,6 +1549,12 @@ impl Supervisor {
             project_id: Some(agent.project_id),
             session_id: agent.session_id,
         };
+
+        // The pane comes after the agent is on record: what runs in it is
+        // `orchestra tail <id>`, which asks the daemon for that very agent.
+        if self.cfg.zellij.auto_pane || self.panes_wanted.lock().await.contains(&agent.ticket_id) {
+            self.open_pane(agent, label, worktree_path, None).await;
+        }
 
         let mut result_line: Option<(String, bool, Option<String>)> = None;
         let mut cancelled = false;
@@ -1018,6 +1770,113 @@ impl Supervisor {
         }
         self.emit(agent, EventKind::AgentStatusChanged { status, reason })
             .await;
+        // A pane that still says « backend #12 » an hour after backend stopped
+        // is a screen that lies by omission. The mark goes on as the agent
+        // ends, wherever it ended from.
+        if !status.is_active() {
+            self.mark_pane(agent).await;
+        }
+    }
+
+    /// Open a pane following this agent, on demand rather than on spawn.
+    pub async fn open_tail_pane(&self, agent: Agent, worktree: &Path) -> Option<String> {
+        let mut agent = agent;
+        let label = self.pane_label(&agent).await;
+        self.open_pane(&mut agent, &label, worktree, None).await
+    }
+
+    /// Hand an agent's session back to the user, in a pane they drive.
+    ///
+    /// The status change is the important half: from here on the daemon does
+    /// not steer, cancel or count turns for it. The watcher still counts its
+    /// tokens, because the session id is the same one it was already tailing.
+    pub async fn hand_over(
+        &self,
+        agent: Agent,
+        worktree: &Path,
+        claude_bin: &str,
+    ) -> Option<String> {
+        let mut agent = agent;
+        // Plain here: the mark is put on by `set_status` below, and putting it
+        // on twice is how a pane ends up called « ☰ ☰ … ».
+        let label = self.pane_label(&agent).await;
+        let command = vec![
+            claude_bin.to_string(),
+            "--resume".to_string(),
+            agent.session_id.to_string(),
+        ];
+        let pane_id = self
+            .open_pane(&mut agent, &label, worktree, Some(command))
+            .await?;
+        self.set_status(&mut agent, AgentStatus::Manual, None).await;
+        Some(pane_id)
+    }
+
+    /// `[projet] rôle #12`, rebuilt from the store for a pane opened later.
+    async fn pane_label(&self, agent: &Agent) -> String {
+        let number = match self.store.ticket(agent.ticket_id).await {
+            Ok(Some(ticket)) => ticket.number,
+            _ => 0,
+        };
+        let project = match self.store.project(agent.project_id).await {
+            Ok(Some(project)) => project.name,
+            _ => "orchestra".to_string(),
+        };
+        crate::zellij::pane_name(&project, &agent.role, number)
+    }
+
+    /// Open the pane that shows this agent, and remember its id.
+    ///
+    /// Best-effort throughout: no pane, no zellij, no matter. `command` is what
+    /// runs in it, and defaults to following the agent's log.
+    async fn open_pane(
+        &self,
+        agent: &mut Agent,
+        label: &str,
+        cwd: &Path,
+        command: Option<Vec<String>>,
+    ) -> Option<String> {
+        if !crate::zellij::inside() {
+            return None;
+        }
+        let command = match command {
+            Some(c) => c,
+            // Our own binary rather than whatever `orchestra` a PATH resolves
+            // to: the pane must follow the daemon it belongs to.
+            None => vec![
+                std::env::current_exe().ok()?.display().to_string(),
+                "tail".into(),
+                agent.id.to_string(),
+            ],
+        };
+        let pane_id = crate::zellij::new_pane(label, cwd, &command).await?;
+        agent.pane_id = Some(pane_id.clone());
+        if let Err(e) = self.store.update_agent(agent.clone()).await {
+            tracing::warn!("pane non rattaché à l'agent : {e:#}");
+        }
+        self.emit(
+            agent,
+            EventKind::PaneOpened {
+                pane_id: pane_id.clone(),
+            },
+        )
+        .await;
+        Some(pane_id)
+    }
+
+    /// Put the outcome in the pane's name, so a wall of them reads at a glance.
+    async fn mark_pane(&self, agent: &Agent) {
+        let (Some(pane_id), true) = (agent.pane_id.as_deref(), crate::zellij::inside()) else {
+            return;
+        };
+        let Ok(Some(ticket)) = self.store.ticket(agent.ticket_id).await else {
+            return;
+        };
+        let Ok(Some(project)) = self.store.project(agent.project_id).await else {
+            return;
+        };
+        let base = crate::zellij::pane_name(&project.name, &agent.role, ticket.number);
+        crate::zellij::rename(pane_id, &crate::zellij::finished_name(&base, agent.status)).await;
     }
 
     async fn finish_ticket(&self, ticket: &Ticket, to: TicketStatus) {
@@ -1101,6 +1960,33 @@ impl Supervisor {
 }
 
 /// One role's run, as `run_team` hands it over.
+/// Why a role is being sent back to work.
+///
+/// The two are not the same thing to the agent that reads them: a verdict is
+/// someone's reading of the branch, a red check is the branch refusing to
+/// build. Naming the source is what lets it answer the right one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blocked {
+    Review,
+    Checks,
+}
+
+impl Blocked {
+    fn title_fr(self) -> &'static str {
+        match self {
+            Blocked::Review => "Ce que la relecture bloque",
+            Blocked::Checks => "Ce que les vérifications du dépôt refusent",
+        }
+    }
+
+    fn order_fr(self) -> &'static str {
+        match self {
+            Blocked::Review => "Corrige exactement ces points.",
+            Blocked::Checks => "Fais repasser cette commande au vert.",
+        }
+    }
+}
+
 struct RoleRun<'a> {
     ticket: &'a Ticket,
     project: &'a Project,
@@ -1109,11 +1995,15 @@ struct RoleRun<'a> {
     stage: u32,
     worktree_path: &'a Path,
     handoffs: &'a [(String, String)],
-    /// What the relecture blocked on, when this run is a correction round.
+    /// What blocked, when this run is a correction round.
     blocking: &'a [String],
+    /// Where that came from, so the prompt names it truthfully.
+    blocked_by: Blocked,
     /// What this run may do with git. Only the integrator gets more than the
     /// confined policy.
     git: GitPolicy,
+    /// Added to the role's own instructions for this run alone.
+    appendix: &'a str,
 }
 
 /// One step of the walk: a member to run, and the ticket's memory to fold its
@@ -1129,7 +2019,9 @@ struct Step<'a> {
     worktree_path: &'a Path,
     handoffs: &'a mut Vec<(String, String)>,
     blocking: &'a [String],
+    blocked_by: Blocked,
     git: GitPolicy,
+    appendix: &'a str,
 }
 
 /// What one step left the ticket in.
@@ -1160,28 +2052,96 @@ fn blocking_for(
     }
 }
 
-/// What a role is asked to do when it comes back after a verdict.
-fn correction_objective(original: &str, blocking: &[String]) -> String {
+/// The handoff of the last agent of this role that finished, if it left one.
+///
+/// This is what makes a relaunch a resumption: the work is in the branch and
+/// what the role said is in the store, so the stage can be taken as done.
+fn finished_handoff(prior: &[Agent], role: &str) -> Option<String> {
+    prior
+        .iter()
+        .filter(|a| a.role == role && a.status == AgentStatus::Done)
+        .max_by_key(|a| a.started_at)
+        .and_then(|a| a.handoff.clone())
+        .filter(|h| !h.trim().is_empty())
+}
+
+/// Roles that finished a run started after the last relecture: on a resumed
+/// ticket, they have already answered the verdict that is about to be read.
+fn corrected_since_review(prior: &[Agent], review_role: &str) -> Vec<String> {
+    let Some(last_review) = prior
+        .iter()
+        .filter(|a| a.role == review_role && a.status == AgentStatus::Done)
+        .filter_map(|a| a.started_at)
+        .max()
+    else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for agent in prior.iter().filter(|a| {
+        a.role != review_role
+            && a.status == AgentStatus::Done
+            && a.started_at.is_some_and(|s| s > last_review)
+    }) {
+        if !out.contains(&agent.role) {
+            out.push(agent.role.clone());
+        }
+    }
+    out
+}
+
+/// What the reviewer is told about the gate that has just run for it.
+///
+/// Its role asks it to find how the project verifies itself and run it. That
+/// has already happened, twenty seconds ago, by something that cannot be
+/// mistaken about the result — so it is handed over rather than paid for a
+/// second time at agent prices. With the command named, because a reviewer
+/// that cannot see what ran has to take our word for it, and this whole gate
+/// exists so that nobody has to take anybody's word for it.
+fn checks_appendix(outcome: &orchestra_core::checks::ChecksOutcome) -> String {
+    if outcome.runs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\n## Les vérifications du dépôt ont déjà tourné\n\nOrchestra les a lancées \
+         dans ce worktree juste avant toi :\n\n",
+    );
+    for run in &outcome.runs {
+        out.push_str(&format!("- {}\n", run.label_fr()));
+    }
+    out.push_str(
+        "\nNe les relance pas : ce résultat fait foi, et le temps que tu y passerais \
+         est mieux employé à lire le code. S'il te semble qu'une vérification manque \
+         au dépôt, dis-le dans ton rapport plutôt que de la lancer à la main.\n",
+    );
+    out
+}
+
+/// The last role that actually wrote something, which is the one to hand a
+/// broken build to: it has the freshest context, and a compiler error is
+/// almost always about what was just written.
+fn last_worker(handoffs: &[(String, String)], workers: &[String]) -> Option<String> {
+    handoffs
+        .iter()
+        .rev()
+        .map(|(role, _)| role)
+        .find(|role| workers.contains(role))
+        .cloned()
+        .or_else(|| workers.last().cloned())
+}
+
+/// What a role is asked to do when it comes back, after a verdict or a red
+/// check.
+fn correction_objective(original: &str, blocking: &[String], blocked_by: Blocked) -> String {
     let list = blocking
         .iter()
         .map(|l| format!("- {l}"))
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
-        "Lever ce que la relecture a bloqué, et rien d'autre :\n{list}\n\n         (ton objectif initial était : {original})"
-    )
-}
-
-enum AgentOutcome {
-    Done { handoff: String },
-    Failed { reason: String },
-    Cancelled,
-}
-
-fn ticket_number(agent: &Agent) -> String {
-    // The number is not on the agent; the name is cosmetic, so the short id
-    // is a good enough stand-in when it is not to hand.
-    agent.ticket_id.to_string()[..8].to_string()
+    let head = match blocked_by {
+        Blocked::Review => "Lever ce que la relecture a bloqué, et rien d'autre :",
+        Blocked::Checks => "Réparer ce que la vérification du dépôt refuse, et rien d'autre :",
+    };
+    format!("{head}\n{list}\n\n         (ton objectif initial était : {original})")
 }
 
 /// What a resumed agent is told.
@@ -1197,9 +2157,53 @@ pub fn resume_prompt(member: &orchestra_core::model::TeamMember, worktree: &Path
     )
 }
 
+enum AgentOutcome {
+    Done { handoff: String },
+    Failed { reason: String },
+    Cancelled,
+}
+
+/// Where the integrator leaves the description it wrote.
+const PR_BODY_FILE: &str = "PR.md";
+
+/// What the integrator wrote following the template, if it wrote anything.
+///
+/// An empty file counts as nothing: a run that created it and gave up should
+/// not open a request with a blank description.
+fn written_pr_body(worktree: &Path) -> Option<String> {
+    std::fs::read_to_string(worktree.join(PR_BODY_FILE))
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+/// The description used when the integrator left none.
+///
+/// The brief says what was asked, the last handoff says what was delivered:
+/// crude next to a written one, but never empty, and the sections line up with
+/// the template so a request always reads the same way.
+fn assembled_pr_body(ticket: &Ticket, handoffs: &[(String, String)]) -> String {
+    let mut out = String::from("## Pourquoi\n\n");
+    out.push_str(ticket.brief.trim());
+    if let Some((role, last)) = handoffs.last() {
+        out.push_str(&format!(
+            "\n\n## Ce que « {role} » a livré\n\n{}",
+            orchestra_core::claude::stream::truncate(last.trim(), 20_000)
+        ));
+    }
+    out
+}
+
 /// What the integrator is told to do, in one sentence it can act on.
-fn integration_objective(default_branch: &str, branch: &str, push: bool) -> String {
-    let push = if push {
+fn integration_objective(
+    default_branch: &str,
+    branch: &str,
+    push: bool,
+    mode: orchestra_core::config::IntegrationMode,
+) -> String {
+    let ending = if mode.is_pr() {
+        " Quand tu auras fini, la branche sera poussée et une pull request ouverte          dessus : laisse-la dans un état qu'on peut relire, et dis dans ton résumé ce          qu'il faut savoir pour la valider."
+    } else if push {
         " Pousse ensuite la branche sur son remote."
     } else {
         " Ne pousse rien : ce dépôt s'intègre en local."
@@ -1207,8 +2211,8 @@ fn integration_objective(default_branch: &str, branch: &str, push: bool) -> Stri
     format!(
         "Rendre « {branch} » fusionnable en avance rapide dans « {default_branch} » : \
          rapatrier {default_branch} dans ta branche, régler les conflits, rejouer les \
-         vérifications du projet et laisser un historique propre.{push} La fusion \
-         finale ne t'appartient pas : c'est le daemon qui la fait.",
+         vérifications du projet et laisser un historique propre.{ending} La fusion \
+         finale ne t'appartient pas.",
     )
 }
 
@@ -1220,6 +2224,7 @@ pub fn build_prompt(
     worktree: &std::path::Path,
     handoffs: &[(String, String)],
     blocking: &[String],
+    blocked_by: Blocked,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -1246,15 +2251,16 @@ pub fn build_prompt(
         // Repeated even though the objective already carries them: an agent
         // that has just read three handoffs needs the blocking list where it
         // cannot be missed.
-        out.push_str("\n## Ce que la relecture bloque\n\n");
+        out.push_str(&format!("\n## {}\n\n", blocked_by.title_fr()));
         for line in blocking {
             out.push_str(&format!("- {line}\n"));
         }
-        out.push_str(
-            "\nCorrige exactement ces points. Ne refais pas le reste, n'en profite pas \
-             pour autre chose, et si tu penses qu'un point n'en est pas un, dis-le dans \
-             ton résumé au lieu de l'ignorer en silence.\n",
-        );
+        out.push_str(&format!(
+            "\n{} Ne refais pas le reste, n'en profite pas pour autre chose, et si tu \
+             penses qu'un point n'en est pas un, dis-le dans ton résumé au lieu de \
+             l'ignorer en silence.\n",
+            blocked_by.order_fr()
+        ));
     }
 
     out.push_str(&format!(
@@ -1300,6 +2306,97 @@ mod tests {
         }
     }
 
+    /// An agent row as the store hands it back.
+    fn agent(role: &str, status: AgentStatus, minute: i64, handoff: Option<&str>) -> Agent {
+        Agent {
+            id: Uuid::new_v4(),
+            ticket_id: Uuid::new_v4(),
+            project_id: Uuid::new_v4(),
+            role: role.into(),
+            objective: "o".into(),
+            stage: 0,
+            session_id: Uuid::new_v4(),
+            model: "sonnet".into(),
+            effort: Effort::High,
+            max_budget_usd: None,
+            status,
+            exit_reason: None,
+            pid: None,
+            pane_id: None,
+            attempt: 1,
+            handoff: handoff.map(str::to_string),
+            started_at: Some(orchestra_core::now() + time::Duration::minutes(minute)),
+            ended_at: None,
+        }
+    }
+
+    #[test]
+    fn a_relaunch_takes_finished_work_as_it_stands() {
+        let prior = vec![
+            agent("backend", AgentStatus::Done, 1, Some("fait : le cache")),
+            agent("tests", AgentStatus::Crashed, 2, None),
+        ];
+        assert_eq!(
+            finished_handoff(&prior, "backend").as_deref(),
+            Some("fait : le cache")
+        );
+        // Interrompu, donc à refaire.
+        assert!(finished_handoff(&prior, "tests").is_none());
+        assert!(finished_handoff(&prior, "docs").is_none());
+
+        // Un agent terminé sans rien dire ne vaut pas un passage de relais.
+        let muet = vec![agent("docs", AgentStatus::Done, 1, Some("  "))];
+        assert!(finished_handoff(&muet, "docs").is_none());
+
+        // La dernière reprise d'un rôle fait foi.
+        let deux = vec![
+            agent("backend", AgentStatus::Done, 1, Some("premier jet")),
+            agent("backend", AgentStatus::Done, 3, Some("après relecture")),
+        ];
+        assert_eq!(
+            finished_handoff(&deux, "backend").as_deref(),
+            Some("après relecture")
+        );
+    }
+
+    #[test]
+    fn a_correction_already_made_is_not_paid_for_twice() {
+        // Le cas réel : la relecture bloque, le rôle corrige, le daemon
+        // redémarre avant que la relecture suivante ait pu tourner.
+        let prior = vec![
+            agent("frontend", AgentStatus::Done, 1, Some("livré")),
+            agent(
+                "reviewer",
+                AgentStatus::Done,
+                2,
+                Some("VERDICT: corrections"),
+            ),
+            agent("frontend", AgentStatus::Done, 3, Some("corrigé")),
+            agent("reviewer", AgentStatus::Crashed, 4, None),
+        ];
+        assert_eq!(
+            corrected_since_review(&prior, "reviewer"),
+            vec!["frontend".to_string()],
+            "le tour de correction est déjà dans la branche"
+        );
+
+        // Sans relecture, personne n'a de correction à son actif.
+        let avant = vec![agent("frontend", AgentStatus::Done, 1, Some("livré"))];
+        assert!(corrected_since_review(&avant, "reviewer").is_empty());
+
+        // Et un rôle qui a fini avant la relecture n'a pas répondu au verdict.
+        let apres = vec![
+            agent("frontend", AgentStatus::Done, 1, Some("livré")),
+            agent(
+                "reviewer",
+                AgentStatus::Done,
+                2,
+                Some("VERDICT: corrections"),
+            ),
+        ];
+        assert!(corrected_since_review(&apres, "reviewer").is_empty());
+    }
+
     #[test]
     fn the_prompt_carries_the_ticket_the_objective_and_the_boundary() {
         let prompt = build_prompt(
@@ -1308,6 +2405,7 @@ mod tests {
             Path::new("/home/u/wt/7-cache"),
             &[],
             &[],
+            Blocked::Review,
         );
         assert!(prompt.contains("#7 — Ajouter un cache"));
         assert!(prompt.contains("On veut un cache"));
@@ -1337,6 +2435,7 @@ mod tests {
             Path::new("/home/u/wt/7-cache"),
             &handoffs,
             &[],
+            Blocked::Review,
         );
         assert!(prompt.contains("### architect"));
         assert!(prompt.contains("Plan écrit dans docs/."));
@@ -1349,19 +2448,59 @@ mod tests {
     }
 
     #[test]
+    fn the_description_written_by_the_integrator_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            written_pr_body(dir.path()).is_none(),
+            "pas de fichier, pas de description"
+        );
+
+        std::fs::write(dir.path().join(PR_BODY_FILE), "   \n\n  ").unwrap();
+        assert!(
+            written_pr_body(dir.path()).is_none(),
+            "un fichier vide ne vaut pas une description"
+        );
+
+        std::fs::write(
+            dir.path().join(PR_BODY_FILE),
+            "\n## Ce que ça change\n\nLe thème clair se garde.\n\n",
+        )
+        .unwrap();
+        let body = written_pr_body(dir.path()).unwrap();
+        assert!(body.starts_with("## Ce que ça change"), "{body}");
+        assert!(body.ends_with("se garde."), "les bords sont nettoyés");
+    }
+
+    #[test]
+    fn the_assembled_description_keeps_the_same_shape() {
+        // Sans fichier écrit, la requête doit quand même se lire comme les
+        // autres : mêmes titres de section, dans le même ordre.
+        let handoffs = vec![("integrator".to_string(), "fusion propre".to_string())];
+        let body = assembled_pr_body(&ticket(), &handoffs);
+        assert!(body.starts_with("## Pourquoi"), "{body}");
+        assert!(body.contains("On veut un cache"), "{body}");
+        assert!(body.contains("## Ce que « integrator » a livré"), "{body}");
+        assert!(
+            !body.contains("Ouverte par Orchestra"),
+            "le pied de page est ajouté par le daemon, pas ici"
+        );
+    }
+
+    #[test]
     fn a_correction_round_says_what_to_fix_and_what_not_to_touch() {
         let blocking = vec![
             "store/rows.rs:88 boucle quand offset dépasse le total".to_string(),
             "rien ne couvre la liste vide".to_string(),
         ];
         let mut m = member("backend");
-        m.objective = correction_objective(&m.objective, &blocking);
+        m.objective = correction_objective(&m.objective, &blocking, Blocked::Review);
         let prompt = build_prompt(
             &ticket(),
             &m,
             Path::new("/home/u/wt/7-cache"),
             &[("reviewer".to_string(), "VERDICT: corrections".to_string())],
             &blocking,
+            Blocked::Review,
         );
         assert!(prompt.contains("Ce que la relecture bloque"));
         assert!(prompt.contains("boucle quand offset"));
@@ -1433,8 +2572,190 @@ mod tests {
             created_at: orchestra_core::now(),
         };
         let catalog = Catalog::load(dir.path(), None);
-        let err = sup.launch(ticket(), project, catalog).await.unwrap_err();
+        let err = sup
+            .launch(ticket(), project, catalog, false)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("équipe acceptée"), "{err}");
+    }
+
+    /// A supervisor over an in-memory store, plus a project and a ticket the
+    /// events can hang off.
+    async fn gated(
+        commands: Vec<String>,
+        max_rounds: u32,
+    ) -> (Supervisor, Ticket, Project, tempfile::TempDir) {
+        let store = Store::open_memory().unwrap();
+        let bus = EventBus::new(store.clone());
+        let mut cfg = Config::default();
+        cfg.checks.commands = commands;
+        cfg.checks.max_rounds = max_rounds;
+        cfg.checks.timeout_secs = 20;
+        let cfg = Arc::new(cfg);
+        let ledger = UsageLedger::new(store.clone(), &cfg);
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project {
+            id: Uuid::new_v4(),
+            name: "p".into(),
+            path: dir.path().to_path_buf(),
+            default_branch: "main".into(),
+            zellij_tab: None,
+            kind: ProjectKind::Managed,
+            created_at: orchestra_core::now(),
+        };
+        let mut t = ticket();
+        t.project_id = project.id;
+        store.insert_project(project.clone()).await.unwrap();
+        store.insert_ticket(t.clone()).await.unwrap();
+        let sup = Supervisor::new(store, bus, ledger, cfg, dir.path().to_path_buf());
+        (sup, t, project, dir)
+    }
+
+    fn team_of(roles: &[&str]) -> Team {
+        Team {
+            members: roles.iter().map(|r| member(r)).collect(),
+            stages: roles.iter().map(|r| vec![r.to_string()]).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_green_gate_lets_the_relecture_happen() {
+        let (sup, t, project, dir) = gated(vec!["true".into()], 2).await;
+        let team = team_of(&["backend", "reviewer"]);
+        let catalog = Catalog::load(dir.path(), None);
+        let mut handoffs = vec![("backend".to_string(), "fait".to_string())];
+        let mut stage = 1;
+        let out = sup
+            .checks_gate(
+                &t,
+                &project,
+                &team,
+                &catalog,
+                dir.path(),
+                &mut handoffs,
+                &mut stage,
+            )
+            .await;
+        assert!(matches!(out, StepOutcome::Done));
+
+        let outcome = sup.last_checks(t.id).await.expect("une passe a eu lieu");
+        assert!(outcome.passed());
+        assert_eq!(outcome.round, 1);
+        assert_eq!(outcome.runs[0].command, "true");
+    }
+
+    #[tokio::test]
+    async fn a_red_gate_fails_the_ticket_rather_than_paying_a_relecture() {
+        // `max_rounds = 0` : aucune réparation n'est due, donc rien ne tente de
+        // lancer un agent — ce que ce test mesure, c'est la décision.
+        let (sup, t, project, dir) = gated(vec!["false".into()], 0).await;
+        let team = team_of(&["backend", "reviewer"]);
+        let catalog = Catalog::load(dir.path(), None);
+        let mut handoffs = vec![("backend".to_string(), "fait".to_string())];
+        let mut stage = 1;
+        let out = sup
+            .checks_gate(
+                &t,
+                &project,
+                &team,
+                &catalog,
+                dir.path(),
+                &mut handoffs,
+                &mut stage,
+            )
+            .await;
+        assert!(
+            matches!(out, StepOutcome::Failed),
+            "un rouge arrête le ticket"
+        );
+
+        let outcome = sup.last_checks(t.id).await.unwrap();
+        assert!(!outcome.passed());
+        assert_eq!(outcome.failed().unwrap().command, "false");
+    }
+
+    #[tokio::test]
+    async fn a_project_with_no_check_is_not_held_back_by_one() {
+        let (sup, t, project, dir) = gated(vec![], 2).await;
+        let team = team_of(&["backend", "reviewer"]);
+        let catalog = Catalog::load(dir.path(), None);
+        let mut handoffs = Vec::new();
+        let mut stage = 1;
+        let out = sup
+            .checks_gate(
+                &t,
+                &project,
+                &team,
+                &catalog,
+                dir.path(),
+                &mut handoffs,
+                &mut stage,
+            )
+            .await;
+        assert!(matches!(out, StepOutcome::Done));
+        assert!(sup.last_checks(t.id).await.is_none(), "rien n'a tourné");
+    }
+
+    #[tokio::test]
+    async fn a_first_command_that_refuses_stops_the_pass() {
+        // Le reste ne rapporterait que sur un arbre dont on sait déjà qu'il ne
+        // tient pas, et chaque commande coûte du temps réel.
+        let (sup, t, project, dir) = gated(vec!["false".into(), "true".into()], 0).await;
+        let team = team_of(&["backend", "reviewer"]);
+        let catalog = Catalog::load(dir.path(), None);
+        let mut handoffs = vec![("backend".to_string(), "fait".to_string())];
+        let mut stage = 1;
+        let _ = sup
+            .checks_gate(
+                &t,
+                &project,
+                &team,
+                &catalog,
+                dir.path(),
+                &mut handoffs,
+                &mut stage,
+            )
+            .await;
+        let outcome = sup.last_checks(t.id).await.unwrap();
+        assert_eq!(outcome.runs.len(), 1, "la seconde n'a pas été lancée");
+    }
+
+    #[tokio::test]
+    async fn the_relecture_is_handed_the_result_instead_of_running_it_again() {
+        let (sup, t, project, dir) = gated(vec!["true".into()], 2).await;
+        let team = team_of(&["backend", "reviewer"]);
+        let catalog = Catalog::load(dir.path(), None);
+        let mut handoffs = Vec::new();
+        let mut stage = 1;
+        sup.checks_gate(
+            &t,
+            &project,
+            &team,
+            &catalog,
+            dir.path(),
+            &mut handoffs,
+            &mut stage,
+        )
+        .await;
+        let appendix = checks_appendix(&sup.last_checks(t.id).await.unwrap());
+        assert!(appendix.contains("Ne les relance pas"), "{appendix}");
+        assert!(
+            appendix.contains("true"),
+            "la commande est nommée : {appendix}"
+        );
+    }
+
+    #[test]
+    fn a_broken_build_goes_to_whoever_wrote_last() {
+        let workers = vec!["architect".to_string(), "backend".to_string()];
+        let handoffs = vec![
+            ("architect".to_string(), "plan".to_string()),
+            ("backend".to_string(), "code".to_string()),
+            ("reviewer".to_string(), "VERDICT: prêt".to_string()),
+        ];
+        assert_eq!(last_worker(&handoffs, &workers).as_deref(), Some("backend"));
+        // Personne n'a encore rendu la main : le dernier rôle de l'équipe.
+        assert_eq!(last_worker(&[], &workers).as_deref(), Some("backend"));
     }
 
     #[tokio::test]

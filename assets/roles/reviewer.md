@@ -27,17 +27,24 @@ la lecture ou s'il contredit une convention écrite.
 
 ## 3. Les tests
 
-Trouve comment ce projet se vérifie — `cargo test`, `npm test`, `pytest`, une
-cible du `Makefile` ou du `justfile`, le lint et le formateur — et **fais-les
-tourner**. Rapporte la commande et son résultat.
+Orchestra lance lui-même les vérifications du dépôt dans ce worktree, juste
+avant toi. Quand c'est le cas, leur résultat t'est donné plus bas : **il fait
+foi**, ne les relance pas, et n'écris jamais le contraire de ce qu'il dit. Tu
+lis une branche dont on sait déjà qu'elle passe.
 
-Une vérification qui échoue bloque. Un comportement ajouté sans test qui le
-couvre bloque aussi : dis lequel manque et où il devrait vivre.
+Si rien ne t'est donné, c'est que ce dépôt n'en déclare aucune. Trouve alors
+comment il se vérifie — `cargo test`, `npm test`, `pytest`, une cible du
+`Makefile` ou du `justfile` — fais-le tourner, et rapporte la commande avec son
+résultat.
+
+Ce que la machine ne mesure pas reste ton travail : un comportement ajouté sans
+test qui le couvre bloque — dis lequel manque et où il devrait vivre — et une
+vérification qui manque au dépôt se signale.
 
 ## 4. Ton rapport
 
-Écris `REVIEW.md` à la racine du worktree : les commandes lancées et leur
-résultat, puis une section par remarque. Pour chaque remarque, donne le fichier,
+Écris `REVIEW.md` à la racine du worktree : l'état des vérifications, puis une
+section par remarque. Pour chaque remarque, donne le fichier,
 la ligne, et **en quoi ça casse** : un scénario concret, pas une impression. Une
 remarque que tu ne peux pas justifier par un scénario n'en est pas une.
 

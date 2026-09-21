@@ -89,6 +89,10 @@ toucher au disque ni au réseau.
   c'est là qu'est le travail.
 - `hooks.rs` — les réglages passés par session à un agent, et la reconnaissance
   d'un refus dans le flux.
+- `checks.rs` — les vérifications du dépôt, lancées par le daemon dans le
+  worktree : quelles commandes, et ce qu'elles ont rendu.
+- `zellij.rs` — les panes. Tout y est best-effort et sous échéance ; rien n'y
+  peut faire échouer un ticket. Faits sur le CLI dans `docs/ZELLIJ_NOTES.md`.
 
 ### `orchestra-tui`
 
@@ -98,6 +102,17 @@ l'état, donc toute la machine se teste sans terminal ; le rendu se teste avec
 
 Les raccourcis évitent `Alt` et les accords `Ctrl+b` / `Ctrl+g`, réservés à zellij
 par la configuration de l'utilisateur.
+
+**Ce que font les touches est écrit une seule fois** (`keys.rs`). `keymap.rs` dit
+quelle touche produit quelle action ; `keys.rs` dit ce que l'écran courant sait
+faire, et le bandeau du bas comme l'aide lisent cette même liste : une commande que
+l'écran n'offre pas ne s'affiche jamais, et une nouvelle commande ne peut pas être
+oubliée d'un des deux endroits. Deux rangs seulement — ce que cet écran est seul à
+savoir faire, en avant ; ce qui marche partout, estompé derrière une barre — et la
+touche est entre crochets pour qu'on voie où elle finit. Quand la place manque, ce
+sont les touches communes qui sautent d'abord, puisque l'aide les redit ; « ? » est
+la dernière à partir, et le rendu lui garde sa place. Un champ de saisie ouvert
+n'annonce que ses propres touches : `?` et `q` s'y écriraient dans le texte.
 
 **La couleur ne porte jamais une information seule** (`theme.rs`). Chaque statut a
 son symbole en plus de sa teinte, et la palette n'oppose pas le rouge au vert, qui
@@ -155,6 +170,35 @@ intitulés plausibles au lieu de choisir dans le catalogue, ce qui s'est produit
 premier essai. La réponse est revalidée à l'arrivée : un schéma est une indication
 forte, pas une garantie.
 
+**Ce qui se mesure ne se demande pas.** La relecture est un agent : ce qu'elle
+dit des tests est un rapport, et rien ne distingue un rapport honnête d'un
+rapport pressé. Un code de sortie, si. Le daemon lance donc lui-même les
+vérifications du dépôt dans le worktree du ticket (`daemon/src/checks.rs`, règles
+dans `core/src/checks.rs`), **juste avant chaque passage du relecteur** — jamais
+après : lire une branche qui ne compile pas coûte une heure d'agent à
+`effort: high` pour ce que `cargo build` dit en vingt secondes. L'invariant tient
+en une phrase : avant tout verdict, une mesure. Donc un ticket qui arrive en
+« à relire » est un ticket dont la dernière passe était verte.
+
+Un rouge renvoie au travail le dernier rôle qui a écrit du code, avec la sortie
+de la commande plutôt qu'un résumé — un compilateur dit mieux que nous ce qu'il
+refuse. Toujours rouge une fois `checks.max_rounds` épuisé, le ticket **échoue**,
+ce qui est exactement ce qui s'est passé : l'équipe n'a pas livré quelque chose
+qui tient. Il se relance, et la relance garde le travail déjà dans la branche.
+
+La commande vient de `checks.commands` ou, à défaut, du **dépôt principal** —
+jamais de la branche : une branche qui choisit son examinateur n'est pas
+examinée. Ce qui s'exécute ensuite est bien le code de la branche, et il ne peut
+pas en être autrement puisque des tests sont du code ; c'était déjà vrai quand le
+relecteur les lançait depuis son shell. Ce que la porte retire, c'est la
+possibilité d'annoncer un vert sans l'avoir obtenu. Rien ne passe par un shell :
+la commande est découpée à l'avance, donc un `;` dans la configuration reste un
+argument. Le résultat est un événement comme le reste — `CheckStarted`,
+`CheckFinished` — et c'est de ces événements que se relit la dernière passe :
+pas de colonne de plus à tenir en phase. L'intégration le vérifie côté daemon,
+pas seulement dans l'écran, et le relecteur reçoit le résultat en annexe de son
+prompt pour qu'il n'ait ni à le refaire ni à nous croire sur parole.
+
 **Toute équipe finit par une relecture.** Le relecteur n'est pas laissé au jugement
 de l'orchestrateur : le daemon l'ajoute à la fin de chaque proposition, où
 l'utilisateur peut encore l'enlever avant d'accepter. Son verdict est lu par la
@@ -165,6 +209,63 @@ contexte le plus frais — puis il relit. La boucle est bornée par
 par un verdict lisible arrête tout et rend le ticket en « à relire ». Un tour de
 correction est un nouvel agent, pas une reprise de session : il apparaît sur le
 ticket sous le même rôle, suffixé « reprise N ».
+
+**Le tableau est un kanban.** Une ligne par ticket disait le statut ; une colonne par
+étape dit *où en est le travail* — à faire, en cours, à relire, PR à valider, fusionné.
+« À relire » et « PR à valider » sont le même statut vu de deux endroits : ce qui
+attend tes yeux ici, ce qui attend ton clic sur GitHub. Les deux colonnes de bord —
+la PR et les tickets arrêtés — n'apparaissent que si elles portent quelque chose, pour
+qu'un projet qui n'ouvre jamais de requête ne traîne pas une colonne vide. `h`/`l`
+changent de colonne, `j`/`k` descendent dedans, et la colonne du curseur est celle qui
+porte la marque de focus. Le volet des projets est un sélecteur, pas une vue : il a la
+largeur d'un nom, le reste va au tableau.
+
+**Un ticket fermé se rouvre.** Fusionné en local alors qu'on le voulait en pull
+request, annulé trop vite : `Done | Cancelled → Review` existe, parce que le travail
+est dans la branche et que le verdict est dans les événements — seule la décision est
+reprise. Le worktree, lui, est recréé depuis la branche : un worktree est une copie de
+travail, pas le travail, et le supprimer à la fermeture ne doit pas fermer la porte.
+Un ticket en cours ne se rouvre pas, et un ticket échoué se relance.
+
+**Une pull request a une forme, et c'est l'agent qui l'écrit.** Le squelette vit dans
+`assets/pr_template.md` et n'est ajouté au prompt de l'intégrateur que lorsqu'une
+requête est ce qui sortira du run : il ne coûte rien ailleurs. L'agent écrit `PR.md`
+dans son worktree — cinq sections, dans cet ordre, sans en ajouter — et le daemon y
+accroche le pied de page qu'il est seul à connaître : ticket, branche, verdict de la
+relecture, tokens et coût. Ce partage n'est pas cosmétique : la substance vient de
+celui qui a lu la branche, les faits de celui qui les a mesurés, et personne n'a à
+croire un agent sur les chiffres. Sans `PR.md`, une description est assemblée depuis
+le brief et le dernier passage de relais, avec les mêmes titres de section : moins
+bonne, jamais absente, et toujours à la même forme.
+
+**Ou bien la branche part en pull request.** `integration.mode = "pr"` remplace la
+fusion locale : le daemon pousse la branche et ouvre une requête avec `gh` — déjà
+installé, déjà authentifié, aucun jeton à garder ici. Le ticket reste alors « à
+relire » avec le lien, parce que le travail n'est pas dans la branche par défaut tant
+que personne n'a cliqué. Une tâche interroge les requêtes ouvertes une fois par
+minute : fusionnée, le ticket se termine, le worktree est nettoyé et la branche par
+défaut locale rattrape le remote ; fermée sans fusion, le ticket est annulé et la
+branche reste. Un `gh` muet — hors ligne, quota — ne décide de rien : la requête
+reste ouverte jusqu'à ce qu'on puisse lire son état. Un projet sans remote retombe
+sur la fusion locale plutôt que de s'arrêter.
+
+**Pousser reste une décision.** `integration.push` est à faux par défaut et couvre les
+deux côtés : l'intégrateur envoie sa branche, et le daemon envoie la branche par
+défaut une fois la fusion faite — sans quoi le travail s'arrêtait sur la machine, la
+branche principale en avance sur son remote sans que rien ne le dise. Un dépôt sans
+remote n'est pas une erreur, et un push raté ne défait pas la fusion : il est signalé,
+la branche par défaut est à jour en local.
+
+**Un ticket interrompu se reprend, il ne se refait pas.** Les agents meurent avec le
+daemon qui les a lancés, et la tâche qui déroulait les étapes aussi. Au démarrage,
+les agents restés « en cours » sont marqués plantés et **le ticket qui les portait
+passe en « échoué »** : laissé « en cours », il attendait un exécutant qui ne
+reviendrait jamais, et `launch` le refusait puisqu'il tournait déjà. Relancé, il
+reprend : un rôle qui a un agent terminé avec un passage de relais est sauté, son
+travail étant déjà dans la branche, et un tour de correction déjà effectué avant la
+coupure n'est pas rejoué — on enchaîne sur la relecture qui manquait. Les tours de
+correction déjà dépensés sont recomptés depuis les verdicts enregistrés : une reprise
+ne rend pas son budget.
 
 **L'écran interroge, il n'attend pas.** La boucle reçoit un tic par seconde ; elle ne
 faisait que redessiner avec lui, sans le passer à l'application. Donc rien n'était
@@ -206,6 +307,33 @@ session lancée dans le dossier personnel y crée un projet, et toutes les sessi
 suivantes s'y rattachent par préfixe : tous les dépôts disparaissent dans une ligne.
 Un dossier trop large (la racine, `/tmp`, le dossier personnel) ne devient jamais un
 projet ; ses sessions sont comptées « hors projet ».
+
+**Un pane par agent, et une porte de sortie.** Le multiplexeur est déjà là ; ce
+qui manquait, c'est une fenêtre par agent. `zellij action new-pane` rend
+l'identifiant du pane qu'il vient d'ouvrir (`terminal_<n>`) : on le garde dans
+`agents.pane_id`, et c'est ce qui permet ensuite de le remettre au premier plan
+plutôt que d'en ouvrir un deuxième sur le même agent. Le pane fait tourner
+`orchestra tail <id>` — **pas** un `claude` interactif : un `claude` lancé à la
+main n'a pas de sortie structurée, donc ni steering, ni annulation, ni comptage
+par le daemon. Le pane est une vue ; le daemon garde la main. À la fin d'un
+agent, son pane est renommé avec un symbole (`✓`, `✗`, `⊘`) : un mur de panes se
+lit à un mètre, et c'est exactement la distance où la couleur cesse d'être
+lisible.
+
+La porte de sortie est `T`. La session Claude de l'agent existe toujours, donc
+`claude --resume <session_id>` la rouvre entière dans un pane, dans le worktree
+du ticket : l'agent passe en « manuel », le daemon cesse de le piloter, et le
+watcher continue de compter ses tokens puisque l'identifiant de session n'a pas
+bougé. Réservée à un agent arrêté : deux mains sur une même session se défont
+l'une l'autre.
+
+Tout cela est sous échéance. Un `zellij action` dont le client ne joint pas son
+serveur **n'échoue pas, il attend** — mesuré : `dump-layout` tué à 5 s. Sans
+délai, un pane qui n'arrive pas gèlerait la tâche qui déroule les étapes du
+ticket, donc le ticket. Chaque appel a trois secondes et son échec ne coûte
+qu'une ligne de journal. Et rien n'est tenté hors d'une session zellij, ce qui
+se lit dans l'environnement (`ZELLIJ`) plutôt qu'en essayant : sur une machine
+sans zellij, le module ne lance aucun processus.
 
 **Un worktree par ticket.** Un agent de la v1 a exécuté `mv *.md docs/` sur le dépôt
 lui-même. Les agents ne voient plus que leur worktree, et un garde `PreToolUse` refuse

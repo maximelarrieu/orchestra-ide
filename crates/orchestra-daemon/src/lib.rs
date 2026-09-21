@@ -5,7 +5,9 @@
 //! `orchestra-core::protocol`.
 
 pub mod bus;
+pub mod checks;
 pub mod daemon;
+pub mod github;
 pub mod hooks;
 pub mod init;
 pub mod ledger;
@@ -17,6 +19,7 @@ pub mod supervisor;
 pub mod watcher;
 pub mod worker;
 pub mod worktree;
+pub mod zellij;
 
 use std::path::Path;
 
@@ -50,6 +53,7 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     if let Err(e) = daemon.recover_on_boot().await {
         tracing::warn!("reprise des agents orphelins impossible : {e:#}");
     }
+    let supervisor = daemon.supervisor().clone();
     let core = tokio::spawn(daemon.run());
     bus.publish_kind(EventKind::DaemonStarted {
         version: orchestra_core::VERSION.to_string(),
@@ -68,9 +72,17 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
         }
     });
 
+    // Pull requests are answered on GitHub, not here: something has to notice.
+    let pull_requests = tokio::spawn({
+        let supervisor = supervisor.clone();
+        let cancel = cancel.clone();
+        async move { supervisor.watch_pull_requests(cancel).await }
+    });
+
     let result = server::serve(guard, handle, started_at, shutdown).await;
     cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), watching).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), pull_requests).await;
     // Dropping the last handle ends the core loop.
     drop(bus);
     core.abort();

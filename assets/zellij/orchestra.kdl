@@ -1,0 +1,34 @@
+// Disposition zellij pour Orchestra : `zellij -l orchestra`.
+//
+// Un seul onglet au départ, et le tableau de bord en grand. Les panes des
+// agents s'ouvrent à côté, un par agent, quand le daemon en lance — c'est lui
+// qui les place, pas cette disposition : il ne sait pas à l'avance combien
+// l'équipe comptera de rôles.
+//
+// Le daemon n'est pas lancé ici. Le tableau de bord le démarre tout seul s'il
+// ne tourne pas déjà, et un daemon lancé depuis cet onglet hérite de la
+// session zellij, ce qui est exactement ce qu'il faut pour qu'il puisse
+// ouvrir des panes.
+layout {
+    tab name="orchestra" focus=true {
+        pane name="tableau de bord" {
+            command "orchestra"
+            args "tui"
+        }
+    }
+
+    // Les deux barres habituelles de zellij. Retire-les si ta configuration
+    // les met déjà.
+    pane_template name="bars" {
+        plugin location="zellij:status-bar"
+    }
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+        children
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+}

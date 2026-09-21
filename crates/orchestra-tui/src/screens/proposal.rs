@@ -33,14 +33,12 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
             Constraint::Length(4),
             Constraint::Min(5),
             Constraint::Length(4),
-            Constraint::Length(1),
         ])
         .split(area);
 
     render_summary(app, frame, chunks[0]);
     render_members(app, frame, chunks[1]);
     render_detail(app, frame, chunks[2]);
-    render_keys(app, frame, chunks[3]);
 
     if let EditorMode::Objective { buffer } = &editor.mode {
         render_objective_editor(buffer, frame, area);
@@ -143,16 +141,6 @@ fn render_detail(app: &App, frame: &mut Frame<'_>, area: Rect) {
         Paragraph::new(text)
             .block(pane_block("Objectif — « o » pour le réécrire", false))
             .wrap(Wrap { trim: true }),
-        area,
-    );
-}
-
-fn render_keys(_app: &App, frame: &mut Frame<'_>, area: Rect) {
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "j/k choisir   J/K déplacer   m modèle   e effort   o objectif   a ajouter   d retirer   y accepter   r replanifier   q retour",
-            Style::default().add_modifier(Modifier::DIM),
-        ))),
         area,
     );
 }

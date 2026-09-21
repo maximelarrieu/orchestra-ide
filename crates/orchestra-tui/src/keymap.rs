@@ -3,6 +3,10 @@
 //! The user's zellij config binds `Alt+h/j/k/l`, `Ctrl+b` and `Ctrl+g`, so the
 //! TUI never uses `Alt` and avoids those two chords: every binding here is a
 //! plain key or a `Ctrl` chord outside that set.
+//!
+//! What each key *does* is not here but in [`crate::keys`], which the key bar
+//! and the help overlay both read: a table of bindings written twice is a
+//! table that drifts.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -89,35 +93,6 @@ pub fn map_input(key: KeyEvent) -> Option<Action> {
         _ => return None,
     })
 }
-
-/// One line of the help overlay.
-pub const HELP: &[(&str, &str)] = &[
-    ("1..6", "aller à un écran"),
-    ("Tab / Maj-Tab", "écran suivant / précédent"),
-    ("h j k l", "se déplacer"),
-    ("g / G", "début / fin"),
-    ("Entrée", "ouvrir"),
-    ("q", "retour"),
-    (":", "palette de commandes"),
-    ("R", "rafraîchir"),
-    ("?", "cette aide"),
-    ("Q / Ctrl-C", "quitter"),
-    ("", ""),
-    ("écran Coût", ""),
-    ("m", "changer le regroupement"),
-    ("p", "changer la période"),
-    ("u", "inclure/exclure les sessions libres"),
-    ("", ""),
-    ("Tableau / Ticket", ""),
-    ("n", "nouveau ticket"),
-    ("p", "planifier le ticket"),
-    ("a", "relire l'équipe proposée"),
-    ("", ""),
-    ("saisie", ""),
-    ("Tab", "champ suivant"),
-    ("Ctrl-S", "valider"),
-    ("Échap", "annuler"),
-];
 
 #[cfg(test)]
 mod tests {

@@ -147,6 +147,32 @@ pub fn ticket(status: TicketStatus) -> Badge {
     }
 }
 
+/// A key the current screen alone offers.
+///
+/// Weight carries the distinction and colour only backs it up: on a monochrome
+/// terminal the screen's own key still stands out from the ones that work
+/// everywhere, which are dimmed.
+pub fn key() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// What a key of the current screen does.
+pub fn key_label() -> Style {
+    Style::default()
+}
+
+/// A key that holds everywhere: there, but set back.
+pub fn key_dim() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
+}
+
+/// The brackets around a key: they separate, they do not draw the eye.
+pub fn bracket() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
+}
+
 /// A slow spinner, so a working agent is visibly alive even in a silence.
 pub fn spinner(tick: u64) -> &'static str {
     const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];

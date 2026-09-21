@@ -95,6 +95,63 @@ pub enum Msg {
     Tick,
 }
 
+/// A column of the board.
+///
+/// Statuses are the daemon's vocabulary; these are the user's. « À relire » and
+/// « PR à valider » are the same status seen from two places: what waits for
+/// your eyes here, and what waits for your click on GitHub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lane {
+    Todo,
+    Running,
+    Review,
+    PullRequest,
+    Merged,
+    Stopped,
+}
+
+impl Lane {
+    /// Left to right, the way work moves.
+    pub const ALL: [Lane; 6] = [
+        Lane::Todo,
+        Lane::Running,
+        Lane::Review,
+        Lane::PullRequest,
+        Lane::Merged,
+        Lane::Stopped,
+    ];
+
+    pub fn title_fr(self) -> &'static str {
+        match self {
+            Lane::Todo => "À faire",
+            Lane::Running => "En cours",
+            Lane::Review => "À relire",
+            Lane::PullRequest => "PR à valider",
+            Lane::Merged => "Fusionné",
+            Lane::Stopped => "Arrêtés",
+        }
+    }
+
+    /// Columns that are always there, even empty: they are the shape of the
+    /// workflow. The other two only show up when they hold something, so a
+    /// project that never opens a request does not carry an empty column.
+    pub fn always_shown(self) -> bool {
+        !matches!(self, Lane::PullRequest | Lane::Stopped)
+    }
+
+    pub fn of(t: &TicketSummary) -> Lane {
+        use orchestra_core::model::TicketStatus::*;
+        match t.ticket.status {
+            Draft | Planned => Lane::Todo,
+            Running => Lane::Running,
+            Review if t.pull_request.is_some() => Lane::PullRequest,
+            Review => Lane::Review,
+            Done => Lane::Merged,
+            Failed | Cancelled => Lane::Stopped,
+        }
+    }
+}
+
 /// A project as the board shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectRow {
@@ -325,6 +382,74 @@ impl App {
         self.projects.get(self.project_selected)
     }
 
+    /// The board's columns and what they hold, as indices into `tickets`.
+    pub fn lanes(&self) -> Vec<(Lane, Vec<usize>)> {
+        Lane::ALL
+            .iter()
+            .filter_map(|lane| {
+                let held: Vec<usize> = self
+                    .tickets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| Lane::of(t) == *lane)
+                    .map(|(i, _)| i)
+                    .collect();
+                if held.is_empty() && !lane.always_shown() {
+                    return None;
+                }
+                Some((*lane, held))
+            })
+            .collect()
+    }
+
+    /// Which column holds the selection, and where in it.
+    pub fn selected_lane(&self) -> Option<(usize, usize)> {
+        let lanes = self.lanes();
+        lanes.iter().enumerate().find_map(|(col, (_, held))| {
+            held.iter()
+                .position(|i| *i == self.ticket_selected)
+                .map(|row| (col, row))
+        })
+    }
+
+    /// Move one column over, keeping roughly the same height. Past the first
+    /// column, the focus goes back to the projects.
+    fn move_lane(&mut self, delta: isize) {
+        if self.screen != Screen::Board {
+            return;
+        }
+        if self.board_pane == BoardPane::Projects {
+            if delta > 0 {
+                self.board_pane = BoardPane::Tickets;
+            }
+            return;
+        }
+        let lanes = self.lanes();
+        let (col, row) = match self.selected_lane() {
+            Some(pos) => pos,
+            None => {
+                // Nothing selected in a column: take the first ticket there is.
+                if let Some(first) = lanes.iter().find_map(|(_, held)| held.first()) {
+                    self.ticket_selected = *first;
+                }
+                return;
+            }
+        };
+        // Empty columns are stepped over: there is nothing to land on.
+        let mut next = col as isize + delta;
+        while next >= 0 && (next as usize) < lanes.len() {
+            let held = &lanes[next as usize].1;
+            if let Some(i) = held.get(row.min(held.len().saturating_sub(1))) {
+                self.ticket_selected = *i;
+                return;
+            }
+            next += delta;
+        }
+        if next < 0 {
+            self.board_pane = BoardPane::Projects;
+        }
+    }
+
     pub fn selected_ticket(&self) -> Option<&TicketSummary> {
         self.tickets.get(self.ticket_selected)
     }
@@ -453,8 +578,8 @@ impl App {
             }
             Action::NextScreen => self.go(self.screen.next()),
             Action::PrevScreen => self.go(self.screen.prev()),
-            Action::Left => self.board_pane = BoardPane::Projects,
-            Action::Right => self.board_pane = BoardPane::Tickets,
+            Action::Left => self.move_lane(-1),
+            Action::Right => self.move_lane(1),
             Action::Up => self.move_selection(-1),
             Action::Down => self.move_selection(1),
             Action::Top => self.set_selection(0),
@@ -660,9 +785,21 @@ impl App {
             'f' if self.can_integrate() => {
                 let branch = detail.ticket.branch.clone().unwrap_or_default();
                 let into = detail.project.default_branch.clone();
+                let question = match detail.integration_mode {
+                    orchestra_core::config::IntegrationMode::Pr => {
+                        format!("Pousser « {branch} » et ouvrir une pull request vers « {into} » ?")
+                    }
+                    _ => format!("Intégrer « {branch} » dans « {into} » et terminer le ticket ?"),
+                };
+                self.ask(question, Command::IntegrateTicket { ticket_id });
+            }
+            // A ticket closed one way, to be closed another: the branch and the
+            // verdict are still there, only the decision is taken back.
+            'o' if detail.ticket.status.is_terminal() => {
+                let number = detail.ticket.number;
                 self.ask(
-                    format!("Intégrer « {branch} » dans « {into} » et terminer le ticket ?"),
-                    Command::IntegrateTicket { ticket_id },
+                    format!("Rouvrir le ticket #{number} ? Il repasse « à relire »."),
+                    Command::ReopenTicket { ticket_id },
                 );
             }
             't' if detail.ticket.status == orchestra_core::model::TicketStatus::Review => {
@@ -677,7 +814,7 @@ impl App {
     }
 
     /// True when the open ticket can be handed to the integrator: relu, rien
-    /// ne bloque, et une branche à fusionner.
+    /// ne bloque, une branche à livrer, et rien déjà en vol.
     pub fn can_integrate(&self) -> bool {
         let Some(detail) = self.ticket.as_ref() else {
             return false;
@@ -685,6 +822,21 @@ impl App {
         detail.ticket.status == orchestra_core::model::TicketStatus::Review
             && detail.ticket.branch.is_some()
             && detail.review.as_ref().is_some_and(|r| r.is_ready())
+            // A green relecture on a red build integrates nothing: the daemon
+            // refuses it too, and offering the key would only produce an
+            // error the user did not ask for.
+            && detail.checks.as_ref().is_none_or(|c| c.passed())
+            // A request is already waiting for its human: pressing the key
+            // again would only reopen the same one.
+            && detail.pull_request.is_none()
+    }
+
+    /// What the integration key does on this project, in the user's words.
+    pub fn integration_label(&self) -> &'static str {
+        match self.ticket.as_ref().map(|d| d.integration_mode) {
+            Some(orchestra_core::config::IntegrationMode::Pr) => "ouvrir la pull request",
+            _ => "intégrer et terminer",
+        }
     }
 
     /// Ask for a team, and start following what the orchestrator does.
@@ -812,6 +964,16 @@ impl App {
         let active = agent.agent.status.is_active();
         let agent_id = agent.agent.id;
         match c {
+            'o' => {
+                self.outbox.push(Command::OpenPane { agent_id });
+                self.status = "ouverture du pane…".into();
+            }
+            // Only once it has stopped: two hands on one Claude session would
+            // each undo the other's turn, and the daemon refuses it anyway.
+            'T' if !active => {
+                self.outbox.push(Command::TakeOver { agent_id });
+                self.status = "reprise en main…".into();
+            }
             's' if active => {
                 self.steer = Some(String::new());
                 self.steer_hard = false;
@@ -944,7 +1106,23 @@ impl App {
             (Screen::Board, BoardPane::Projects) => {
                 (self.projects.len(), &mut self.project_selected)
             }
-            (Screen::Board, BoardPane::Tickets) => (self.tickets.len(), &mut self.ticket_selected),
+            (Screen::Board, BoardPane::Tickets) => {
+                // Up and down stay in the column; left and right change it.
+                let lanes = self.lanes();
+                match self.selected_lane() {
+                    Some((col, row)) => {
+                        let held = &lanes[col].1;
+                        let next = (row as isize + delta).clamp(0, held.len() as isize - 1);
+                        self.ticket_selected = held[next as usize];
+                    }
+                    None => {
+                        if let Some(first) = lanes.iter().find_map(|(_, held)| held.first()) {
+                            self.ticket_selected = *first;
+                        }
+                    }
+                }
+                return;
+            }
             (Screen::Cost, _) => (self.cost.rows.len(), &mut self.cost.selected),
             (Screen::Proposal, _) => {
                 self.editor.move_selection(delta);
@@ -986,7 +1164,16 @@ impl App {
             (Screen::Board, BoardPane::Projects) => {
                 (self.projects.len(), &mut self.project_selected)
             }
-            (Screen::Board, BoardPane::Tickets) => (self.tickets.len(), &mut self.ticket_selected),
+            // The ends of a column, not of the whole board.
+            (Screen::Board, BoardPane::Tickets) => {
+                let lanes = self.lanes();
+                if let Some((col, _)) = self.selected_lane() {
+                    let held = &lanes[col].1;
+                    let row = index.min(held.len().saturating_sub(1));
+                    self.ticket_selected = held[row];
+                }
+                return;
+            }
             (Screen::Cost, _) => (self.cost.rows.len(), &mut self.cost.selected),
             _ => return,
         };
@@ -1208,16 +1395,23 @@ impl App {
                 }
                 let count = self.ticket.as_ref().map(|d| d.agents.len()).unwrap_or(0);
                 self.agent_selected = self.agent_selected.min(count.saturating_sub(1));
-                // While watching, follow the team: when one agent hands over to
-                // the next, the screen moves with it.
-                if self.screen == Screen::Agent
+                // The cursor follows the team: while watching, the screen moves
+                // to whoever takes over; on the ticket, it is what scrolls the
+                // list to the agent that works — one of a dozen rows, in a pane
+                // that shows six. A row the user picked himself is never moved
+                // out from under him there.
+                let may_follow = match self.screen {
+                    Screen::Ticket => !self.agent_pinned,
+                    _ => true,
+                };
+                if may_follow
                     && !self
                         .watched_agent()
                         .is_some_and(|a| a.agent.status.is_active())
                 {
                     let previous = self.watched_agent_id();
                     self.select_liveliest_agent();
-                    if self.watched_agent_id() != previous {
+                    if self.screen == Screen::Agent && self.watched_agent_id() != previous {
                         self.log.clear();
                         if let Some(id) = self.watched_agent_id() {
                             self.outbox.push(Command::Subscribe {
@@ -1235,6 +1429,12 @@ impl App {
             Reply::Agents { agents } => self.adopt_live_agent(agents),
             Reply::Status { status } => {
                 self.daemon_version = Some(status.version.clone());
+            }
+            // The pane is on screen already; what the line adds is which one,
+            // for a session where a dozen of them are open.
+            Reply::Pane { pane_id } => {
+                self.status = format!("pane {pane_id}");
+                self.refresh_open_ticket(None);
             }
             Reply::Pong | Reply::Ack | Reply::Subscribed { .. } => {}
             _ => {}
@@ -1283,14 +1483,49 @@ impl App {
                 self.stop_planning();
                 self.status = format!("planification échouée : {error}");
             }
+            EventKind::PullRequestOpened { url, .. } => {
+                self.status = format!("pull request ouverte : {url}");
+                self.request_tickets();
+                self.refresh_open_ticket(e.ticket_id);
+            }
+            EventKind::PullRequestClosed { merged, .. } => {
+                self.status = if *merged {
+                    "pull request fusionnée — ticket terminé".into()
+                } else {
+                    "pull request fermée sans fusion".into()
+                };
+                self.request_tickets();
+                self.refresh_open_ticket(e.ticket_id);
+            }
+            // A gate that refuses is the one thing that changes what the
+            // ticket can do next, so it is said out loud rather than left in
+            // the activity strip.
+            EventKind::CheckFinished { run, .. } => {
+                if !run.ok {
+                    self.status = format!("✗ {}", run.label_fr());
+                }
+                self.request_tickets();
+                self.refresh_open_ticket(e.ticket_id);
+            }
+            EventKind::CheckStarted { command, .. } => {
+                self.status = format!("vérification : {command}…");
+            }
             // Two moments the user must not have to go looking for.
             EventKind::ReviewVerdict { round, verdict, .. } => {
                 self.status = format!("relecture {round} : {}", verdict.label_fr());
                 self.request_tickets();
                 self.refresh_open_ticket(e.ticket_id);
             }
-            EventKind::TicketMerged { branch, into, .. } => {
-                self.status = format!("{branch} fusionnée dans {into}");
+            EventKind::TicketMerged {
+                branch,
+                into,
+                pushed_to,
+                ..
+            } => {
+                self.status = match pushed_to {
+                    Some(remote) => format!("{branch} fusionnée dans {into}, poussée sur {remote}"),
+                    None => format!("{branch} fusionnée dans {into}"),
+                };
                 self.request_tickets();
                 self.refresh_open_ticket(e.ticket_id);
             }
@@ -1396,11 +1631,32 @@ pub fn describe(e: &Event) -> Option<String> {
         } => {
             format!("agent terminé ({subtype}, {num_turns} tours)")
         }
+        EventKind::PullRequestOpened { url, number } => match number {
+            Some(n) => format!("pull request #{n} ouverte — {url}"),
+            None => format!("pull request ouverte — {url}"),
+        },
+        EventKind::PullRequestClosed { merged, .. } => {
+            if *merged {
+                "pull request fusionnée".to_string()
+            } else {
+                "pull request fermée sans fusion".to_string()
+            }
+        }
+        EventKind::TicketResumed { skipped } if skipped.is_empty() => "ticket repris".to_string(),
+        EventKind::TicketResumed { skipped } => {
+            format!("ticket repris — déjà fait : {}", skipped.join(", "))
+        }
         EventKind::TicketMerged {
             branch,
             into,
             commits,
-        } => format!("{branch} fusionnée dans {into} ({commits} commits)"),
+            pushed_to,
+        } => match pushed_to {
+            Some(remote) => {
+                format!("{branch} fusionnée dans {into} ({commits} commits), poussée sur {remote}")
+            }
+            None => format!("{branch} fusionnée dans {into} ({commits} commits)"),
+        },
         EventKind::ReviewVerdict {
             round,
             verdict,
@@ -1413,6 +1669,11 @@ pub fn describe(e: &Event) -> Option<String> {
                 format!(" — {} repasse(nt)", roles.join(", "))
             };
             format!("relecture {round} : {}{who}", verdict.label_fr())
+        }
+        EventKind::CheckStarted { command, .. } => format!("vérification : {command}…"),
+        EventKind::CheckFinished { run, .. } => {
+            let mark = if run.ok { "✓" } else { "✗" };
+            format!("{mark} {}", run.label_fr())
         }
         EventKind::HookBlocked { tool, reason } => format!("{tool} bloqué : {reason}"),
         EventKind::UnmanagedSessionSeen { cwd, .. } => {

@@ -484,13 +484,39 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
+    /// Spawn the stand-in, retrying while Linux says its file is busy.
+    ///
+    /// Writing a script and executing it right away races with every other
+    /// test that forks: the child inherits the descriptor still open for
+    /// writing, and `exec` answers ETXTBSY until it closes. Nothing to do with
+    /// the code under test — but it made the suite fail about one run in ten.
+    async fn spawn_stand_in(cmd: &ClaudeCommand) -> (ClaudeProcess, mpsc::Receiver<ProcessEvent>) {
+        for _ in 0..50 {
+            match ClaudeProcess::spawn(cmd).await {
+                Ok(pair) => return pair,
+                Err(e) if is_text_busy(&e) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await
+                }
+                Err(e) => panic!("{e:#}"),
+            }
+        }
+        panic!("le processus de test n'a jamais pu démarrer");
+    }
+
+    fn is_text_busy(e: &anyhow::Error) -> bool {
+        e.chain().any(|c| {
+            c.downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.raw_os_error() == Some(26))
+        })
+    }
+
     #[tokio::test]
     async fn the_stream_of_a_stand_in_process_is_parsed() {
         let dir = tempfile::tempdir().unwrap();
         let mut c = ClaudeCommand::new(stand_in(dir.path()), dir.path(), "salut");
         c.prompt_via = PromptVia::Stdin;
 
-        let (mut process, mut rx) = ClaudeProcess::spawn(&c).await.unwrap();
+        let (mut process, mut rx) = spawn_stand_in(&c).await;
         assert!(process.pid() > 0);
 
         process
@@ -531,7 +557,7 @@ mod tests {
         let mut c = ClaudeCommand::new(stand_in(dir.path()), dir.path(), "salut");
         c.one_shot = true;
 
-        let (mut process, mut rx) = ClaudeProcess::spawn(&c).await.unwrap();
+        let (mut process, mut rx) = spawn_stand_in(&c).await;
         let mut lines = 0;
         // The channel closes on its own, without anyone closing stdin later.
         while rx.recv().await.is_some() {
@@ -549,7 +575,7 @@ mod tests {
     async fn a_process_can_be_stopped() {
         let dir = tempfile::tempdir().unwrap();
         let c = ClaudeCommand::new(stand_in(dir.path()), dir.path(), "salut");
-        let (mut process, _rx) = ClaudeProcess::spawn(&c).await.unwrap();
+        let (mut process, _rx) = spawn_stand_in(&c).await;
         // `cat` ignores SIGINT's default only when interactive; either way the
         // grace period bounds the wait and the process must be gone after.
         let status = process

@@ -85,6 +85,11 @@ pub enum Command {
     FinishTicket {
         ticket_id: TicketId,
     },
+    /// Send a closed ticket back to « à relire », worktree recreated if it was
+    /// cleaned up: its branch still holds the work.
+    ReopenTicket {
+        ticket_id: TicketId,
+    },
     SteerAgent {
         agent_id: AgentId,
         text: String,
@@ -116,7 +121,14 @@ pub enum Command {
         #[serde(default)]
         query: UsageQuery,
     },
+    /// Show the pane that follows this agent, opening one if there is none.
     OpenPane {
+        agent_id: AgentId,
+    },
+    /// Hand an agent back to the user: a pane with `claude --resume` on its
+    /// session, in its worktree. The agent stops being ours and becomes
+    /// [`crate::model::AgentStatus::Manual`].
+    TakeOver {
         agent_id: AgentId,
     },
     ListRoles {
@@ -305,6 +317,10 @@ pub struct TicketSummary {
     pub tokens: Tokens,
     #[serde(default)]
     pub cost_usd: Option<f64>,
+    /// The pull request waiting for its human, when there is one: « à relire »
+    /// and « PR à valider » are two different places to look.
+    #[serde(default)]
+    pub pull_request: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -322,6 +338,18 @@ pub struct TicketDetail {
     /// history rather than from the events that happen to be recent.
     #[serde(default)]
     pub review: Option<ReviewOutcome>,
+    /// What the repository's own checks said on their last pass, when there
+    /// are any. `None` means this project declares none — not that they
+    /// failed — so a project without a gate is never held back by one.
+    #[serde(default)]
+    pub checks: Option<crate::checks::ChecksOutcome>,
+    /// The pull request opened for this ticket, while it is open.
+    #[serde(default)]
+    pub pull_request: Option<String>,
+    /// How this project integrates, so the screen names the key for what it
+    /// really does.
+    #[serde(default)]
+    pub integration_mode: crate::config::IntegrationMode,
 }
 
 /// The last relecture verdict of a ticket.

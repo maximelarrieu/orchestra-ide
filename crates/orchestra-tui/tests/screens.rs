@@ -144,6 +144,9 @@ fn detail(with_proposal: bool, with_team: bool) -> TicketDetail {
         cost_usd: Some(0.097),
         recent_events: vec![],
         review: None,
+        checks: None,
+        pull_request: None,
+        integration_mode: orchestra_core::config::IntegrationMode::Merge,
     }
 }
 
@@ -181,7 +184,7 @@ fn a_pending_proposal_is_shown_with_its_risks() {
     assert!(out.contains("Proposition"));
     assert!(out.contains("Deux rôles suffisent"));
     assert!(out.contains("invalidation"), "les risques sont visibles");
-    assert!(out.contains("a relire"), "la touche est proposée");
+    assert!(out.contains("[a] relire"), "la touche est proposée");
 }
 
 #[test]
@@ -233,6 +236,7 @@ fn a_verdict_and_a_fusion_are_seen_without_leaving_the_screen() {
             branch: "orch/12-cache".into(),
             into: "main".into(),
             commits: 3,
+            pushed_to: Some("origin".into()),
         },
     );
     let cmds = app.update(Msg::Event(Box::new(e)));
@@ -341,6 +345,132 @@ fn a_finished_orchestrator_run_ends_the_wait() {
     );
 }
 
+/// A board with one ticket in each column.
+fn app_on_kanban() -> App {
+    let base = detail(false, false);
+    let make = |number: i64, title: &str, status: TicketStatus, pr: Option<&str>| {
+        let mut t = base.ticket.clone();
+        t.id = Uuid::new_v4();
+        t.number = number;
+        t.title = title.into();
+        t.status = status;
+        TicketSummary {
+            ticket: t,
+            agents_total: 4,
+            agents_active: if status == TicketStatus::Running {
+                1
+            } else {
+                0
+            },
+            agents_done: 3,
+            tokens: Tokens::default(),
+            cost_usd: Some(1.25),
+            pull_request: pr.map(str::to_string),
+        }
+    };
+    let mut app = App::new();
+    app.connected = true;
+    app.update(Msg::Reply(Box::new(Reply::Tickets {
+        tickets: vec![
+            make(1, "brouillon de test", TicketStatus::Draft, None),
+            make(2, "thème clair", TicketStatus::Running, None),
+            make(3, "cache mémoire", TicketStatus::Review, None),
+            make(
+                4,
+                "export CSV",
+                TicketStatus::Review,
+                Some("https://github.com/o/r/pull/4"),
+            ),
+            make(5, "runbook", TicketStatus::Done, None),
+            make(6, "vieille idée", TicketStatus::Cancelled, None),
+        ],
+    })));
+    app.board_pane = orchestra_tui::app::BoardPane::Tickets;
+    app
+}
+
+#[test]
+fn the_board_lays_the_tickets_out_in_columns() {
+    let app = app_on_kanban();
+    let out = draw(&app, 160, 30);
+    for column in [
+        "À faire",
+        "En cours",
+        "À relire",
+        "PR à valider",
+        "Fusionné",
+        "Arrêtés",
+    ] {
+        assert!(
+            out.contains(column),
+            "colonne « {column} » absente :\n{out}"
+        );
+    }
+    assert!(out.contains("#4 export CSV"), "{out}");
+}
+
+#[test]
+fn a_column_nobody_uses_does_not_take_the_room() {
+    // Un projet qui n'ouvre jamais de PR et n'annule rien n'a pas à porter deux
+    // colonnes vides ; les quatre du flux normal restent, elles.
+    let mut app = app_on_kanban();
+    app.tickets.retain(|t| {
+        !matches!(
+            t.ticket.status,
+            TicketStatus::Cancelled | TicketStatus::Failed
+        ) && t.pull_request.is_none()
+    });
+    let lanes = app.lanes();
+    let titles: Vec<&str> = lanes.iter().map(|(l, _)| l.title_fr()).collect();
+    assert_eq!(titles, vec!["À faire", "En cours", "À relire", "Fusionné"]);
+}
+
+#[test]
+fn the_cursor_walks_the_columns_and_comes_back_to_the_projects() {
+    let mut app = app_on_kanban();
+    app.ticket_selected = 0;
+    assert_eq!(app.selected_lane(), Some((0, 0)));
+
+    app.update(Msg::Key(Action::Right));
+    assert_eq!(app.selected_ticket().unwrap().ticket.number, 2, "en cours");
+    app.update(Msg::Key(Action::Right));
+    app.update(Msg::Key(Action::Right));
+    assert_eq!(
+        app.selected_ticket().unwrap().ticket.number,
+        4,
+        "la PR est sa propre colonne"
+    );
+
+    // À gauche de la première colonne, on retourne aux projets.
+    for _ in 0..4 {
+        app.update(Msg::Key(Action::Left));
+    }
+    app.update(Msg::Key(Action::Left));
+    assert_eq!(app.board_pane, orchestra_tui::app::BoardPane::Projects);
+}
+
+#[test]
+fn up_and_down_stay_inside_a_column() {
+    let mut app = app_on_kanban();
+    // Deux tickets « à faire », pour avoir de quoi monter et descendre.
+    let mut second = app.tickets[0].clone();
+    second.ticket.id = Uuid::new_v4();
+    second.ticket.number = 7;
+    app.tickets.push(second);
+    app.ticket_selected = 0;
+
+    app.update(Msg::Key(Action::Down));
+    assert_eq!(app.selected_ticket().unwrap().ticket.number, 7);
+    app.update(Msg::Key(Action::Down));
+    assert_eq!(
+        app.selected_ticket().unwrap().ticket.number,
+        7,
+        "on ne déborde pas sur la colonne suivante"
+    );
+    app.update(Msg::Key(Action::Up));
+    assert_eq!(app.selected_ticket().unwrap().ticket.number, 1);
+}
+
 #[test]
 fn opening_a_ticket_from_the_board_asks_the_daemon_for_it() {
     let mut app = App::new();
@@ -354,6 +484,7 @@ fn opening_a_ticket_from_the_board_asks_the_daemon_for_it() {
         agents_done: 0,
         tokens: Tokens::default(),
         cost_usd: None,
+        pull_request: None,
     }];
     app.update(Msg::Reply(Box::new(Reply::Tickets { tickets: summaries })));
     app.update(Msg::Key(Action::Right));
@@ -665,8 +796,10 @@ fn on_a_finished_ticket_the_chosen_agent_is_the_one_that_opens() {
     })));
     app.screen = Screen::Ticket;
 
-    // Down to "frontend", the middle row, deliberately.
-    app.update(Msg::Key(Action::Down));
+    // Sans rien choisir, le curseur est sur le dernier agent : c'est lui qui
+    // a parlé en dernier. L'utilisateur remonte exprès sur « frontend ».
+    assert_eq!(app.watched_agent().unwrap().agent.role, "docs");
+    app.update(Msg::Key(Action::Up));
     app.update(Msg::Key(Action::Select));
     assert_eq!(app.watched_agent().unwrap().agent.role, "frontend");
 
@@ -682,6 +815,57 @@ fn on_a_finished_ticket_the_chosen_agent_is_the_one_that_opens() {
         detail: Box::new(again),
     })));
     assert_eq!(app.watched_agent().unwrap().agent.role, "frontend");
+}
+
+#[test]
+fn a_long_list_of_agents_scrolls_to_the_one_that_works() {
+    // Un ticket passé par une relecture et ses corrections a une dizaine
+    // d'agents ; le volet n'en montre que six. Celui qui travaille est le
+    // dernier, donc invisible : la liste semblait entièrement terminée.
+    let mut app = App::new();
+    let mut d = detail(false, true);
+    let base = d.agents[0].clone();
+    d.agents.clear();
+    for (i, role) in [
+        "frontend",
+        "docs",
+        "integrator",
+        "reviewer",
+        "frontend",
+        "reviewer",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let mut a = base.clone();
+        a.agent.id = Uuid::new_v4();
+        a.agent.role = (*role).into();
+        a.agent.status = AgentStatus::Done;
+        a.agent.started_at = Some(orchestra_core::now() + time::Duration::minutes(i as i64));
+        d.agents.push(a);
+    }
+    let mut working = base.clone();
+    working.agent.id = Uuid::new_v4();
+    working.agent.role = "integrator".into();
+    working.agent.status = AgentStatus::Running;
+    working.agent.started_at = Some(orchestra_core::now() + time::Duration::minutes(10));
+    d.agents.push(working);
+
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(d),
+    })));
+    app.screen = Screen::Ticket;
+
+    let out = draw(&app, 120, 30);
+    assert!(
+        out.contains("Agents (7)"),
+        "le volet dit combien il en cache :\n{out}"
+    );
+    assert!(
+        out.contains("integrator · reprise 1"),
+        "l'agent qui travaille est à l'écran :\n{out}"
+    );
+    assert!(out.contains("en cours"), "{out}");
 }
 
 #[test]
@@ -1009,7 +1193,7 @@ fn a_cleared_ticket_offers_the_integration_and_asks_before_merging() {
     assert!(app.can_integrate());
     let out = draw(&app, 120, 30);
     assert!(
-        out.contains("f intégrer"),
+        out.contains("[f] intégrer"),
         "la touche est annoncée :\n{out}"
     );
     assert!(
@@ -1029,11 +1213,41 @@ fn a_cleared_ticket_offers_the_integration_and_asks_before_merging() {
 }
 
 #[test]
+fn in_pull_request_mode_the_key_says_what_it_does() {
+    let mut app = app_on_reviewed_ticket(Verdict::Ready);
+    if let Some(d) = app.ticket.as_mut() {
+        d.integration_mode = orchestra_core::config::IntegrationMode::Pr;
+    }
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("[f] ouvrir la pull request"), "{out}");
+
+    app.update(Msg::Key(Action::Char('f')));
+    let question = app.confirm.as_ref().map(|c| c.question.clone()).unwrap();
+    assert!(question.contains("pull request"), "{question}");
+}
+
+#[test]
+fn a_request_already_waiting_is_shown_and_not_reopened() {
+    let mut app = app_on_reviewed_ticket(Verdict::Ready);
+    if let Some(d) = app.ticket.as_mut() {
+        d.integration_mode = orchestra_core::config::IntegrationMode::Pr;
+        d.pull_request = Some("https://github.com/o/r/pull/12".into());
+    }
+    assert!(
+        !app.can_integrate(),
+        "elle attend son humain, pas une deuxième ouverture"
+    );
+    let out = draw(&app, 130, 30);
+    assert!(out.contains("PR ouverte"), "{out}");
+    assert!(out.contains("pull/12"), "{out}");
+}
+
+#[test]
 fn a_ticket_the_relecture_blocks_does_not_offer_the_integration() {
     let mut app = app_on_reviewed_ticket(Verdict::Changes);
     assert!(!app.can_integrate());
     let out = draw(&app, 120, 30);
-    assert!(!out.contains("f intégrer"), "{out}");
+    assert!(!out.contains("[f] intégrer"), "{out}");
     assert!(out.contains("corrections demandées"), "{out}");
 
     let cmds = app.update(Msg::Key(Action::Char('f')));
@@ -1042,10 +1256,31 @@ fn a_ticket_the_relecture_blocks_does_not_offer_the_integration() {
 }
 
 #[test]
+fn a_closed_ticket_offers_to_be_reopened() {
+    let mut app = app_on_reviewed_ticket(Verdict::Ready);
+    if let Some(d) = app.ticket.as_mut() {
+        d.ticket.status = TicketStatus::Done;
+    }
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("[o] rouvrir"), "{out}");
+    assert!(
+        !out.contains("[f] ouvrir"),
+        "un ticket fermé ne s'intègre pas"
+    );
+
+    app.update(Msg::Key(Action::Char('o')));
+    assert!(app.confirm.is_some(), "on demande avant");
+    let cmds = app.update(Msg::Key(Action::Char('o')));
+    assert!(cmds
+        .iter()
+        .any(|c| matches!(c, Command::ReopenTicket { .. })));
+}
+
+#[test]
 fn a_branch_merged_by_hand_is_closed_from_the_ticket() {
     let mut app = app_on_reviewed_ticket(Verdict::Changes);
     let out = draw(&app, 120, 30);
-    assert!(out.contains("t marquer terminé"), "{out}");
+    assert!(out.contains("[t] marquer terminé"), "{out}");
     app.update(Msg::Key(Action::Char('t')));
     assert!(app.confirm.is_some());
     let cmds = app.update(Msg::Key(Action::Char('o')));
@@ -1106,11 +1341,17 @@ fn stopping_an_agent_also_asks_first() {
 fn how_to_leave_is_written_on_the_screen() {
     // Someone who does not know the key types "exit"; the answer should be
     // in front of them.
-    let app = app_on_ticket(false, true);
-    assert!(draw(&app, 120, 30).contains("Q quitter"));
     let mut board = App::new();
     board.connected = true;
-    assert!(draw(&board, 120, 30).contains("Q quitter"));
+    assert!(draw(&board, 120, 30).contains("[q] quitter"));
+
+    // Un écran chargé n'a pas la place de tout écrire : ce qui reste, coûte
+    // que coûte, c'est « ? », et l'aide, elle, dit comment sortir.
+    let mut app = app_on_ticket(false, true);
+    assert!(draw(&app, 120, 30).contains("[?] aide"));
+    app.update(Msg::Key(Action::Help));
+    let help = draw(&app, 120, 30);
+    assert!(help.contains("[Q] quitter"), "{help}");
 }
 
 #[test]
@@ -1122,4 +1363,199 @@ fn keys_without_meaning_do_nothing() {
         assert!(cmds.is_empty());
     }
     assert_eq!(app.screen, before);
+}
+
+#[test]
+fn the_key_bar_holds_one_line_and_never_loses_the_way_out() {
+    // L'écran Ticket est le plus chargé : c'est là que la coupe se joue.
+    for width in [60u16, 90, 120, 200] {
+        let app = app_on_reviewed_ticket(Verdict::Ready);
+        let out = draw(&app, width, 30);
+        let lines: Vec<&str> = out.lines().collect();
+        let bar = lines[lines.len() - 2];
+        assert!(
+            bar.contains("[?] aide") || bar.contains("[q] retour"),
+            "à {width} colonnes, plus rien pour s'en sortir :\n{bar}"
+        );
+        assert!(
+            bar.chars().count() <= width as usize,
+            "le bandeau déborde à {width}"
+        );
+        // Ce que l'état du ticket rend possible passe avant le reste.
+        assert!(
+            bar.contains("[f] intégrer"),
+            "la décision du moment a sauté à {width} :\n{bar}"
+        );
+    }
+}
+
+#[test]
+fn the_keys_are_written_once_not_twice() {
+    // Les touches vivent dans le bandeau ; un écran qui les redit en plus
+    // ferait deux listes qui divergent.
+    let app = app_on_ticket(false, true);
+    let out = draw(&app, 120, 30);
+    assert_eq!(
+        out.matches("[p] planifier").count(),
+        1,
+        "« p » est annoncé deux fois :\n{out}"
+    );
+}
+
+#[test]
+fn the_help_leads_with_the_screen_one_is_on() {
+    let mut app = app_on_ticket(false, true);
+    app.update(Msg::Key(Action::Help));
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("Aide — Ticket"), "{out}");
+    assert!(out.contains("Sur cet écran"), "{out}");
+    assert!(out.contains("[L] lancer"), "{out}");
+    // Les touches d'un autre écran n'ont rien à faire là.
+    assert!(!out.contains("sessions libres"), "{out}");
+    assert!(out.contains("[Q] quitter"), "la sortie est écrite : {out}");
+}
+
+#[test]
+fn a_form_does_not_advertise_keys_that_would_be_typed() {
+    let mut app = App::new();
+    app.connected = true;
+    app.screen = Screen::NewTicket;
+    let out = draw(&app, 100, 24);
+    let lines: Vec<&str> = out.lines().collect();
+    let bar = lines[lines.len() - 2];
+    assert!(bar.contains("[Ctrl-S] créer"), "{bar}");
+    assert!(
+        !bar.contains("[?] aide"),
+        "« ? » s'écrirait dans le champ : {bar}"
+    );
+}
+
+fn red_check() -> orchestra_core::checks::ChecksOutcome {
+    orchestra_core::checks::ChecksOutcome {
+        round: 1,
+        runs: vec![orchestra_core::checks::CheckRun {
+            command: "cargo test --workspace".into(),
+            ok: false,
+            code: Some(101),
+            duration_ms: 12_000,
+            tail: "error[E0308]: mismatched types\nerror: could not compile".into(),
+        }],
+    }
+}
+
+#[test]
+fn a_branch_its_own_checks_refuse_is_not_offered_for_integration() {
+    // La relecture peut très bien dire « prêt » : ce que la machine a mesuré
+    // passe avant ce qu'un agent a conclu.
+    let mut app = app_on_reviewed_ticket(Verdict::Ready);
+    if let Some(d) = app.ticket.as_mut() {
+        d.checks = Some(red_check());
+    }
+    assert!(!app.can_integrate(), "un build rouge ferme la porte");
+    let out = draw(&app, 120, 30);
+    assert!(!out.contains("[f] intégrer"), "{out}");
+    assert!(out.contains("cargo test --workspace"), "{out}");
+    assert!(
+        out.contains("could not compile"),
+        "la dernière ligne de la commande dit pourquoi :\n{out}"
+    );
+
+    // Et la touche ne fait rien non plus.
+    let cmds = app.update(Msg::Key(Action::Char('f')));
+    assert!(cmds.is_empty());
+    assert!(app.confirm.is_none());
+}
+
+#[test]
+fn a_green_gate_says_so_and_leaves_the_integration_open() {
+    let mut app = app_on_reviewed_ticket(Verdict::Ready);
+    if let Some(d) = app.ticket.as_mut() {
+        d.checks = Some(orchestra_core::checks::ChecksOutcome {
+            round: 1,
+            runs: vec![orchestra_core::checks::CheckRun {
+                command: "cargo test --workspace".into(),
+                ok: true,
+                code: Some(0),
+                duration_ms: 42_000,
+                tail: String::new(),
+            }],
+        });
+    }
+    assert!(app.can_integrate());
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("✓ vérifié"), "{out}");
+    assert!(out.contains("[f] intégrer"), "{out}");
+}
+
+#[test]
+fn a_check_that_refuses_is_said_out_loud() {
+    let mut app = app_on_ticket(false, true);
+    let event = ticket_event(
+        &app,
+        EventKind::CheckFinished {
+            round: 1,
+            run: Box::new(orchestra_core::checks::CheckRun {
+                command: "cargo build".into(),
+                ok: false,
+                code: Some(101),
+                duration_ms: 3_000,
+                tail: "error: could not compile".into(),
+            }),
+        },
+    );
+    app.update(Msg::Event(Box::new(event)));
+    assert!(app.status.contains("cargo build"), "{}", app.status);
+    assert!(app.status.contains("échoue"), "{}", app.status);
+}
+
+/// The app watching one agent of a ticket, in the state it is given.
+fn app_watching(status: AgentStatus) -> App {
+    let mut app = App::new();
+    app.connected = true;
+    app.update(Msg::Reply(Box::new(Reply::Ticket {
+        detail: Box::new(detail_with_team_agent(status)),
+    })));
+    app.screen = Screen::Ticket;
+    app.update(Msg::Key(Action::Select));
+    assert_eq!(app.screen, Screen::Agent);
+    app
+}
+
+#[test]
+fn an_agent_can_be_shown_in_its_own_pane() {
+    let mut app = app_watching(AgentStatus::Running);
+    let cmds = app.update(Msg::Key(Action::Char('o')));
+    assert!(
+        cmds.iter().any(|c| matches!(c, Command::OpenPane { .. })),
+        "« o » demande le pane : {cmds:?}"
+    );
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("[o] son pane"), "{out}");
+}
+
+#[test]
+fn taking_over_waits_for_the_agent_to_have_stopped() {
+    // Deux mains sur une même session Claude se défont l'une l'autre, donc la
+    // touche ne s'annonce ni ne part tant que l'agent tourne.
+    let mut app = app_watching(AgentStatus::Running);
+    let cmds = app.update(Msg::Key(Action::Char('T')));
+    assert!(cmds.is_empty(), "{cmds:?}");
+    assert!(!draw(&app, 120, 30).contains("[T] reprendre"));
+
+    let mut app = app_watching(AgentStatus::Failed);
+    let cmds = app.update(Msg::Key(Action::Char('T')));
+    assert!(
+        cmds.iter().any(|c| matches!(c, Command::TakeOver { .. })),
+        "un agent arrêté se reprend à la main : {cmds:?}"
+    );
+    assert!(draw(&app, 120, 30).contains("[T] reprendre la main"));
+}
+
+#[test]
+fn an_opened_pane_is_named_in_the_status_line() {
+    let mut app = app_watching(AgentStatus::Running);
+    app.update(Msg::Reply(Box::new(Reply::Pane {
+        pane_id: "terminal_7".into(),
+    })));
+    assert!(app.status.contains("terminal_7"), "{}", app.status);
 }

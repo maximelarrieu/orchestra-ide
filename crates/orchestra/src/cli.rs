@@ -52,6 +52,20 @@ enum Sub {
         /// jamais écrasée.
         #[arg(long)]
         force: bool,
+        /// Installe aussi la disposition zellij (`zellij -l orchestra`).
+        #[arg(long)]
+        zellij: bool,
+    },
+    /// Ouvre le pane zellij qui suit un agent, ou l'agent d'un ticket.
+    Open {
+        /// Identifiant d'agent, son rôle sur le ticket donné, ou un ticket.
+        cible: String,
+        #[arg(long)]
+        ticket: Option<String>,
+        /// Reprend la main : ouvre `claude --resume` sur la session de l'agent,
+        /// dans son worktree. L'agent passe en « manuel ».
+        #[arg(long)]
+        reprendre: bool,
     },
     /// Gestion des tickets de feature.
     Ticket {
@@ -131,6 +145,10 @@ enum TicketAction {
         /// Suit le déroulement jusqu'au bout.
         #[arg(long)]
         follow: bool,
+        /// Ouvre un pane zellij par agent, même si « zellij.auto_pane » est à
+        /// faux. Sans effet hors d'une session zellij.
+        #[arg(long)]
+        panes: bool,
     },
     /// Arrête le ticket et ses agents.
     Cancel { ticket: String },
@@ -143,6 +161,8 @@ enum TicketAction {
     },
     /// Marque terminé un ticket fusionné à la main.
     Finish { ticket: String },
+    /// Rouvre un ticket fermé : il repasse « à relire », worktree recréé.
+    Reopen { ticket: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -294,7 +314,7 @@ impl Cli {
                     },
                 }
             }
-            Sub::Init { force } => {
+            Sub::Init { force, zellij } => {
                 let report = orchestra_daemon::init::init(force)?;
                 for path in &report.written {
                     println!("écrit   {}", path.display());
@@ -311,6 +331,20 @@ impl Cli {
                         orchestra_core::config::Paths::roles_dir().display()
                     );
                     println!("Édite ces fichiers : ce sont les consignes que suivront tes agents.");
+                }
+                if zellij {
+                    let dir = orchestra_daemon::init::zellij_layouts_dir();
+                    let name = orchestra_core::config::Config::load()
+                        .map(|c| c.zellij.layout)
+                        .unwrap_or_else(|_| "orchestra".to_string());
+                    let (path, written) = orchestra_daemon::init::init_zellij(&dir, &name, force)?;
+                    if written {
+                        println!("\nécrit   {}", path.display());
+                        println!("Lance le tableau de bord : zellij -l {name}");
+                    } else {
+                        println!("\nconservé {}", path.display());
+                        println!("« orchestra init --zellij --force » la remplace.");
+                    }
                 }
                 Ok(())
             }
@@ -349,6 +383,26 @@ impl Cli {
                 let agent_id = resolve_agent(&mut client, &agent, ticket.as_deref()).await?;
                 drop(client);
                 orchestra_tui::tail(&socket, agent_id).await
+            }
+            Sub::Open {
+                cible,
+                ticket,
+                reprendre,
+            } => {
+                let mut client = Client::connect_or_spawn(&socket).await?;
+                let agent_id = resolve_pane_target(&mut client, &cible, ticket.as_deref()).await?;
+                let cmd = if reprendre {
+                    Cmd::TakeOver { agent_id }
+                } else {
+                    Cmd::OpenPane { agent_id }
+                };
+                match client.call(cmd).await? {
+                    Reply::Pane { pane_id } => {
+                        println!("{pane_id}");
+                        Ok(())
+                    }
+                    other => bail!("réponse inattendue : {other:?}"),
+                }
             }
             Sub::Usage {
                 by,
@@ -537,12 +591,16 @@ async fn run_ticket(action: TicketAction, socket: &std::path::Path) -> Result<()
             let id = resolve_ticket(&mut client, &ticket).await?;
             plan_ticket(&mut client, id, detach).await
         }
-        TicketAction::Launch { ticket, follow } => {
+        TicketAction::Launch {
+            ticket,
+            follow,
+            panes,
+        } => {
             let id = resolve_ticket(&mut client, &ticket).await?;
             client
                 .call(Cmd::LaunchTicket {
                     ticket_id: id,
-                    open_panes: false,
+                    open_panes: panes,
                 })
                 .await?;
             let detail = ticket_detail(&mut client, id).await?;
@@ -571,6 +629,22 @@ async fn run_ticket(action: TicketAction, socket: &std::path::Path) -> Result<()
                 return Ok(());
             }
             follow_ticket(&mut client, id, false).await
+        }
+        TicketAction::Reopen { ticket } => {
+            let id = resolve_ticket(&mut client, &ticket).await?;
+            client.call(Cmd::ReopenTicket { ticket_id: id }).await?;
+            let detail = ticket_detail(&mut client, id).await?;
+            println!(
+                "ticket #{} rouvert — {}",
+                detail.ticket.number,
+                detail
+                    .ticket
+                    .worktree_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "sans worktree".into())
+            );
+            Ok(())
         }
         TicketAction::Finish { ticket } => {
             let id = resolve_ticket(&mut client, &ticket).await?;
@@ -840,6 +914,21 @@ async fn show_ticket(client: &mut Client, ticket_id: uuid::Uuid) -> Result<()> {
         println!("\nproposition en attente d'acceptation :");
         print_proposal(proposal);
     }
+    // Before the verdict, because it comes before it in the run and because
+    // it is the one thing here nobody had to be asked for.
+    if let Some(checks) = &detail.checks {
+        if !checks.runs.is_empty() {
+            println!("\nvérifications :");
+            for run in &checks.runs {
+                println!("  {} {}", if run.ok { "✓" } else { "✗" }, run.label_fr());
+            }
+            if let Some(failed) = checks.failed() {
+                for line in failed.tail.lines() {
+                    println!("    {line}");
+                }
+            }
+        }
+    }
     if let Some(review) = &detail.review {
         println!(
             "\nrelecture {} : {}",
@@ -849,7 +938,8 @@ async fn show_ticket(client: &mut Client, ticket_id: uuid::Uuid) -> Result<()> {
         for line in &review.blocking {
             println!("  - {line}");
         }
-        if review.is_ready() && t.status == orchestra_core::model::TicketStatus::Review {
+        let green = detail.checks.as_ref().is_none_or(|c| c.passed());
+        if review.is_ready() && green && t.status == orchestra_core::model::TicketStatus::Review {
             println!("  intègre-la : orchestra ticket integrate {}", t.number);
         }
     }
@@ -879,6 +969,41 @@ async fn ticket_detail(
 }
 
 /// Accept an identifier, a `#12`, or a fragment of the title.
+/// The agent `orchestra open` is about.
+///
+/// A ticket number is accepted where an agent is expected, because that is what
+/// one has to hand: « ouvre-moi le #12 » means its agent, and which one is not
+/// a question the user should have to answer — the one that is working, or
+/// failing that the last that did.
+async fn resolve_pane_target(
+    client: &mut Client,
+    spec: &str,
+    ticket: Option<&str>,
+) -> Result<uuid::Uuid> {
+    let looks_like_a_ticket = spec
+        .strip_prefix('#')
+        .unwrap_or(spec)
+        .chars()
+        .all(|c| c.is_ascii_digit());
+    if ticket.is_none() && looks_like_a_ticket && !spec.is_empty() {
+        let ticket_id = resolve_ticket(client, spec).await?;
+        let detail = ticket_detail(client, ticket_id).await?;
+        let agent = detail
+            .agents
+            .iter()
+            .find(|a| a.agent.status.is_active())
+            .or_else(|| detail.agents.iter().max_by_key(|a| a.agent.started_at))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "aucun agent n'a tourné sur le ticket #{}",
+                    detail.ticket.number
+                )
+            })?;
+        return Ok(agent.agent.id);
+    }
+    resolve_agent(client, spec, ticket).await
+}
+
 async fn resolve_ticket(client: &mut Client, spec: &str) -> Result<uuid::Uuid> {
     if let Ok(id) = uuid::Uuid::parse_str(spec) {
         return Ok(id);

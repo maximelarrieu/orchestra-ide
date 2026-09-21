@@ -13,7 +13,8 @@ Dashboard de dev pilotant une ferme d'agents **Claude Code**. Plan de référenc
 5. **Les agents ne travaillent que dans un worktree git** créé par le daemon. Jamais dans le dépôt principal.
    L'intégrateur (`config.integration`) est le seul à qui git est ouvert, et il reste
    lui aussi dans son worktree : la fusion dans la branche par défaut est faite par le
-   daemon en `--ff-only`, pas par un agent.
+   daemon en `--ff-only`, pas par un agent — ou, en `mode = "pr"`, par l'humain qui
+   valide la pull request.
 6. **Tokens bruts = vérité.** Le `$` est indicatif, calculé à la requête depuis la grille de `config.toml`.
 7. Un seul type `Event` (`orchestra-core/src/events.rs`) : persisté dans SQLite puis diffusé. Rien n'est affiché qui ne soit un événement ou une lecture de la base.
 8. **Le coût se tarifie depuis les modèles réellement utilisés**, jamais depuis
@@ -28,7 +29,14 @@ Dashboard de dev pilotant une ferme d'agents **Claude Code**. Plan de référenc
     (`orchestra-core/src/review.rs`). Son verdict est lu par la machine : il peut
     relancer des tours de correction, bornés par `review.max_rounds`. Un verdict
     illisible arrête la boucle — le silence ne vaut pas accord.
-13. **Le superviseur décide du statut d'un agent, pas le flux.** Une interruption y
+13. **Ce qui se mesure ne se demande pas à un agent.** Les vérifications du dépôt
+    sont lancées par le daemon (`orchestra-core/src/checks.rs`, `daemon/src/checks.rs`),
+    dans le worktree, avant chaque passage du relecteur. Un verdict d'agent est un
+    avis ; un code de sortie est un fait, et c'est le fait qui ouvre l'intégration.
+14. **Rien de zellij ne peut faire échouer un ticket** (`daemon/src/zellij.rs`) :
+    tout appel a une échéance — un client qui ne joint pas son serveur attend au
+    lieu d'échouer — et un pane absent ne coûte qu'une ligne de journal.
+15. **Le superviseur décide du statut d'un agent, pas le flux.** Une interruption y
     ressemble à un échec ; seul celui qui a envoyé le signal sait ce qui s'est passé.
 
 ## Checklist avant de considérer une tâche terminée
@@ -36,7 +44,8 @@ Dashboard de dev pilotant une ferme d'agents **Claude Code**. Plan de référenc
 - [ ] `cargo build --workspace` et `cargo test --workspace` au vert, `cargo clippy --workspace -- -D warnings` propre.
 - [ ] Nouveau comportement du daemon → commande dans `protocol.rs` + gestion dans `daemon.rs` + affichage TUI si pertinent.
 - [ ] Nouvelle table / colonne → nouvelle migration `NNNN_*.sql`, jamais d'édition d'une migration livrée.
-- [ ] Faits appris sur le CLI `claude` (flags, formats) consignés dans `docs/CLAUDE_CLI_NOTES.md`.
+- [ ] Faits appris sur le CLI `claude` (flags, formats) consignés dans `docs/CLAUDE_CLI_NOTES.md`,
+      et ceux sur `zellij` dans `docs/ZELLIJ_NOTES.md`.
 
 ## Environnement
 

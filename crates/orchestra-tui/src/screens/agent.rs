@@ -34,7 +34,6 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
             Constraint::Length(2),
             Constraint::Min(4),
             Constraint::Length(input_height),
-            Constraint::Length(1),
         ])
         .split(area);
 
@@ -49,7 +48,6 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
     if app.steer.is_some() {
         render_steer(app, frame, chunks[2]);
     }
-    render_keys(app, frame, chunks[3]);
 }
 
 fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect, role: &str) {
@@ -225,25 +223,6 @@ fn render_steer(app: &App, frame: &mut Frame<'_>, area: Rect) {
     };
     frame.render_widget(
         Paragraph::new(format!("{buffer}▏")).block(pane_block(title, true)),
-        area,
-    );
-}
-
-fn render_keys(app: &App, frame: &mut Frame<'_>, area: Rect) {
-    let active = app
-        .watched_agent()
-        .map(|a| a.agent.status.is_active())
-        .unwrap_or(false);
-    let keys = if active {
-        "s consigne   S rediriger   x arrêter   j/k défiler   G suivre   q retour   Q quitter"
-    } else {
-        "j/k défiler   G suivre   q retour   Q quitter"
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            keys,
-            Style::default().add_modifier(Modifier::DIM),
-        ))),
         area,
     );
 }

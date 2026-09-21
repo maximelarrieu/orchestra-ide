@@ -4,7 +4,7 @@ use orchestra_core::pricing::{fmt_tokens, fmt_usd};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
@@ -28,20 +28,28 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
     // the room: a fixed split pushed the orchestrator's warnings off screen.
     let agents = app.ticket.as_ref().map(|d| d.agents.len()).unwrap_or(0);
     let agents_height = (agents as u16 + 3).clamp(3, 9);
+    // Two lines, plus one for each thing that is waiting on a human: an open
+    // pull request, and a verification the branch did not pass.
+    let header_height = 2 + app
+        .ticket
+        .as_ref()
+        .map(|d| {
+            u16::from(d.pull_request.is_some())
+                + u16::from(d.checks.as_ref().is_some_and(|c| c.failed().is_some()))
+        })
+        .unwrap_or(0);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(header_height),
             Constraint::Min(6),
             Constraint::Length(agents_height),
-            Constraint::Length(1),
         ])
         .split(area);
 
     render_header(app, frame, chunks[0]);
     render_brief(app, frame, chunks[1]);
     render_agents(app, frame, chunks[2]);
-    render_keys(app, frame, chunks[3]);
 }
 
 fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect) {
@@ -90,6 +98,13 @@ fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect) {
             )
         })
         .unwrap_or_default();
+    // What the repository measured about itself. Short on purpose: a refusal
+    // gets a line of its own below, so all this line has to carry is the good
+    // news — and it is already the fullest line of the screen.
+    let checks = match detail.checks.as_ref() {
+        Some(c) if c.failed().is_none() && !c.runs.is_empty() => " · ✓ vérifié",
+        _ => "",
+    };
     let second = format!(
         "{} · {} · {} tokens · {cost} (indicatif){}{review}",
         detail.project.name,
@@ -99,17 +114,46 @@ fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect) {
             .as_ref()
             .map(|b| format!(" · {b}"))
             .unwrap_or_default()
-    );
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(first),
-            Line::from(Span::styled(
-                second,
+    ) + checks;
+    let mut lines = vec![
+        Line::from(first),
+        Line::from(Span::styled(
+            second,
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+    ];
+    // A branch its own checks refuse is the first thing to know about it, and
+    // the command that refused says more than the fact that something did.
+    if let Some(run) = detail.checks.as_ref().and_then(|c| c.failed()) {
+        let mut spans = vec![Span::styled(
+            format!("✗ {}", run.label_fr()),
+            Style::default().add_modifier(Modifier::BOLD),
+        )];
+        if let Some(last) = run.tail.lines().rev().find(|l| !l.trim().is_empty()) {
+            spans.push(Span::styled(
+                format!("   {}", last.trim()),
                 Style::default().add_modifier(Modifier::DIM),
-            )),
-        ]),
-        area,
-    );
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    // A request waiting for its human is the next thing to do, so it gets a
+    // line of its own: squeezed at the end of the one above, the URL was cut
+    // by the edge of the screen, and a cut URL cannot be clicked or copied.
+    if let Some(url) = &detail.pull_request {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "⇢ PR ouverte ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(url.clone()),
+            Span::styled(
+                "  — fusionne-la et le ticket se fermera tout seul",
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_brief(app: &App, frame: &mut Frame<'_>, area: Rect) {
@@ -301,7 +345,18 @@ fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
         })
         .collect();
 
-    frame.render_widget(
+    // The pane holds six rows at most, and a ticket that went through a
+    // relecture has a dozen agents: without scrolling, the one that is working
+    // sat below the fold and the list looked entirely finished.
+    let count = detail.agents.len();
+    let shown = (area.height as usize).saturating_sub(3);
+    let title = if count > shown {
+        format!("Agents ({count}) — j/k faire défiler, Entrée suivre en direct")
+    } else {
+        "Agents — j/k choisir, Entrée suivre en direct".to_string()
+    };
+    let mut state = TableState::default().with_selected(Some(app.agent_selected));
+    frame.render_stateful_widget(
         Table::new(
             rows,
             [
@@ -316,36 +371,8 @@ fn render_agents(app: &App, frame: &mut Frame<'_>, area: Rect) {
             Row::new(vec!["rôle", "statut", "depuis", "tokens", "coût"])
                 .style(Style::default().add_modifier(Modifier::BOLD)),
         )
-        .block(pane_block(
-            "Agents — j/k choisir, Entrée suivre en direct",
-            false,
-        )),
+        .block(pane_block(&title, false)),
         area,
-    );
-}
-
-fn render_keys(app: &App, frame: &mut Frame<'_>, area: Rect) {
-    let detail = app.ticket.as_ref().expect("ticket ouvert");
-    let mut keys: Vec<&str> = vec!["p planifier"];
-    if detail.ticket.proposal.is_some() || detail.ticket.team.is_some() {
-        keys.push("a relire l'équipe");
-    }
-    keys.push("L lancer");
-    keys.push("x arrêter");
-    if app.can_integrate() {
-        keys.push("f intégrer et terminer");
-    }
-    if detail.ticket.status == orchestra_core::model::TicketStatus::Review {
-        keys.push("t marquer terminé");
-    }
-    keys.push("n nouveau ticket");
-    keys.push("q retour");
-    keys.push("Q quitter");
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            keys.join("   "),
-            Style::default().add_modifier(Modifier::DIM),
-        ))),
-        area,
+        &mut state,
     );
 }

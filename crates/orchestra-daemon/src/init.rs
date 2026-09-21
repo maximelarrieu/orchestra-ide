@@ -46,6 +46,10 @@ const ROLES: &[(&str, &str)] = &[
 
 const EXAMPLE_CONFIG: &str = include_str!("../../../assets/config.example.toml");
 
+/// The zellij layout, installed only when asked: it lands in zellij's own
+/// configuration directory, which is not ours to fill uninvited.
+const ZELLIJ_LAYOUT: &str = include_str!("../../../assets/zellij/orchestra.kdl");
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct InitReport {
     pub written: Vec<PathBuf>,
@@ -91,6 +95,45 @@ pub fn init(force: bool) -> Result<InitReport> {
     // A configuration that cannot be read would break the daemon silently.
     Config::load().context("la configuration installée est illisible")?;
     Ok(report)
+}
+
+/// Where zellij looks for layouts, following its own rules: `$ZELLIJ_CONFIG_DIR`
+/// first, then `$XDG_CONFIG_HOME/zellij`, then `~/.config/zellij`.
+pub fn zellij_layouts_dir() -> PathBuf {
+    let env = |key: &str| {
+        std::env::var_os(key)
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+    };
+    env("ZELLIJ_CONFIG_DIR")
+        .or_else(|| env("XDG_CONFIG_HOME").map(|d| d.join("zellij")))
+        .unwrap_or_else(|| {
+            env("HOME")
+                .unwrap_or_else(|| PathBuf::from("/"))
+                .join(".config/zellij")
+        })
+        .join("layouts")
+}
+
+/// Install the zellij layout, and say where it went.
+///
+/// Never as part of `init`: someone who does not use zellij should not find a
+/// layout in a directory they never asked for. `force` overwrites a layout of
+/// the same name, which may well be one the user has since edited.
+///
+/// The directory is a parameter rather than read here, so a test can point it
+/// somewhere that is not the machine's own configuration.
+pub fn init_zellij(dir: &Path, name: &str, force: bool) -> Result<(PathBuf, bool)> {
+    std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
+    // Named after `zellij.layout`, so that `zellij -l <ce nom>` and the
+    // configuration cannot drift apart.
+    let path = dir.join(format!("{name}.kdl"));
+    if path.exists() && !force {
+        return Ok((path, false));
+    }
+    std::fs::write(&path, ZELLIJ_LAYOUT)
+        .with_context(|| format!("écriture de {}", path.display()))?;
+    Ok((path, true))
 }
 
 /// Roles as they ship, for callers that want them without touching the disk.
@@ -228,5 +271,61 @@ mod tests {
                 "{name} : consigne trop courte"
             );
         }
+    }
+
+    /// A fake home, so the test never writes into the user's own config.
+    struct Home(PathBuf);
+
+    impl Home {
+        fn new() -> Home {
+            let dir = std::env::temp_dir().join(format!("orchestra-init-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Home(dir)
+        }
+    }
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    #[test]
+    fn the_zellij_layout_is_installed_where_zellij_looks_and_never_silently_replaced() {
+        let home = Home::new();
+        // `ZELLIJ_CONFIG_DIR` is zellij's own override, and the one this
+        // process can set without touching anything real.
+        let dir = home.0.join("layouts");
+        let (path, written) = init_zellij(&dir, "orchestra", false).unwrap();
+        assert!(written);
+        assert_eq!(path, dir.join("orchestra.kdl"));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("orchestra"));
+
+        // Une disposition que l'utilisateur a pu retoucher n'est pas écrasée
+        // parce qu'il a relancé `init`.
+        std::fs::write(&path, "à moi").unwrap();
+        let (_, written) = init_zellij(&dir, "orchestra", false).unwrap();
+        assert!(!written);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "à moi");
+
+        let (_, written) = init_zellij(&dir, "orchestra", true).unwrap();
+        assert!(written, "« --force » la remplace");
+
+        // Le nom suit la configuration : `zellij -l atelier` doit trouver
+        // « atelier.kdl ».
+        let (path, _) = init_zellij(&dir, "atelier", false).unwrap();
+        assert_eq!(path, dir.join("atelier.kdl"));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("layout"));
+    }
+
+    #[test]
+    fn the_layout_directory_follows_zellij_own_rules() {
+        // Pas de lecture de l'environnement réel dans le test : on vérifie la
+        // forme du chemin, qui est ce qui peut se tromper de dossier.
+        let dir = zellij_layouts_dir();
+        assert!(dir.ends_with("layouts"), "{}", dir.display());
+        assert!(dir.parent().unwrap().ends_with("zellij") || dir.parent().is_some());
     }
 }

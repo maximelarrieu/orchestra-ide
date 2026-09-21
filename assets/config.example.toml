@@ -39,16 +39,51 @@ enabled = true
 role = "reviewer"
 max_rounds = 2
 
+# Les vérifications du dépôt, lancées par le daemon lui-même dans le worktree
+# du ticket — pas par un agent. Une relecture *rapporte* que les tests passent ;
+# ceci le *mesure*, et un code de sortie ne peut pas être optimiste. C'est ce
+# résultat qui ouvre l'intégration.
+# « commands » vide : Orchestra devine la commande depuis le dépôt principal
+# (justfile, Makefile, Cargo.toml, package.json, pytest). Un dépôt qu'il ne sait
+# pas deviner n'a simplement pas de porte, plutôt qu'une porte inventée.
+# Les commandes viennent d'ici ou du dépôt principal, jamais de la branche :
+# une branche qui choisit son examinateur n'est pas examinée.
+# Un échec renvoie au travail le dernier rôle qui a écrit du code, avec la
+# sortie de la commande. Toujours rouge après « max_rounds », le ticket échoue :
+# c'est ce qui s'est passé, et il se relance sans perdre ce qui est déjà fait.
+[checks]
+enabled = true
+commands = []
+timeout_secs = 900
+max_rounds = 2
+
 # L'intégrateur est le seul agent autorisé à faire du git pour de vrai. Il se
 # lance à la main depuis l'écran Ticket, et seulement si la relecture n'a rien
 # bloqué. Il reste dans le worktree : la fusion dans la branche par défaut est
 # faite par le daemon en « --ff-only », jamais par un agent.
+# « push = true » veut dire les deux : l'intégrateur pousse sa branche, et le
+# daemon pousse la branche par défaut une fois la fusion faite. Sinon tout reste
+# sur cette machine, et c'est toi qui pousses quand tu veux.
 [integration]
 enabled = true
 role = "integrator"
+# « merge » : le daemon fusionne ici, en avance rapide.
+# « pr »    : la branche est poussée et une pull request est ouverte avec `gh` ;
+#             le ticket reste « à relire » jusqu'à ce que tu la fusionnes, et il
+#             se ferme tout seul quand c'est fait. Sans remote, on retombe sur
+#             « merge ».
+mode = "merge"
+pr_poll_secs = 60
 push = false
 remove_worktree = true
 
+# Un pane zellij par agent, qui fait tourner « orchestra tail » : une vue, pas
+# une session à piloter — le daemon garde la main. À la fin d'un agent, son pane
+# est renommé avec un symbole. « T » depuis l'écran Agent rouvre sa session
+# Claude à la main (« claude --resume ») et passe l'agent en « manuel ».
+# Le daemon doit tourner depuis zellij pour pouvoir ouvrir des panes.
+# « layout » nomme la disposition installée par « orchestra init --zellij », et
+# donc ce que prend « zellij -l ».
 [zellij]
 auto_pane = true
 layout = "orchestra"

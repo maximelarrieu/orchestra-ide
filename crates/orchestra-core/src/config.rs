@@ -19,6 +19,7 @@ pub struct Config {
     pub defaults: AgentDefaults,
     pub orchestrator: AgentDefaults,
     pub review: ReviewConfig,
+    pub checks: ChecksConfig,
     pub integration: IntegrationConfig,
     pub zellij: ZellijConfig,
     pub models: ModelsConfig,
@@ -36,6 +37,7 @@ impl Default for Config {
                 max_budget_usd: Some(2.0),
             },
             review: ReviewConfig::default(),
+            checks: ChecksConfig::default(),
             integration: IntegrationConfig::default(),
             zellij: ZellijConfig::default(),
             models: ModelsConfig::default(),
@@ -135,6 +137,44 @@ impl Default for ReviewConfig {
     }
 }
 
+/// The repository's own verification, run by the daemon rather than reported
+/// by an agent.
+///
+/// A relecture says whether the tests pass; this says so with an exit code.
+/// The two are not redundant: one judges, the other measures, and only the
+/// measurement can be trusted about itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChecksConfig {
+    pub enabled: bool,
+    /// The commands to run, in order, in the ticket's worktree. Empty means
+    /// the daemon guesses one from the main repository — see
+    /// [`crate::checks::detect`] — and a project it cannot guess simply has no
+    /// gate rather than a made-up one.
+    pub commands: Vec<String>,
+    /// How long a single command is given before it is killed. A suite that
+    /// hangs must not hold a ticket for the afternoon.
+    pub timeout_secs: u64,
+    /// How many repair rounds a red check may trigger, on the same budget
+    /// logic as [`ReviewConfig::max_rounds`]. Past it the ticket fails, which
+    /// is what it is: the team did not deliver something that builds.
+    pub max_rounds: u32,
+}
+
+impl Default for ChecksConfig {
+    fn default() -> Self {
+        ChecksConfig {
+            enabled: true,
+            commands: Vec::new(),
+            // Fifteen minutes is a long suite and a short afternoon.
+            timeout_secs: 900,
+            // The same two as the relecture, so there is one number in the
+            // user's head rather than two.
+            max_rounds: 2,
+        }
+    }
+}
+
 /// The one role allowed to run git for real.
 ///
 /// It is not part of the team: it is launched from the ticket screen, only
@@ -142,14 +182,47 @@ impl Default for ReviewConfig {
 /// — it brings the default branch into the ticket's branch and settles the
 /// conflicts there. The fusion itself is a `--ff-only` run by the daemon, so
 /// no agent ever holds a shell in the main repository.
+/// How a cleared branch reaches the default branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrationMode {
+    /// The daemon fast-forwards the default branch on this machine.
+    #[default]
+    Merge,
+    /// The branch is pushed and a pull request is opened for it; the merge is
+    /// the user's click, not ours.
+    Pr,
+}
+
+impl IntegrationMode {
+    pub fn is_pr(self) -> bool {
+        matches!(self, IntegrationMode::Pr)
+    }
+
+    pub fn label_fr(self) -> &'static str {
+        match self {
+            IntegrationMode::Merge => "fusion locale",
+            IntegrationMode::Pr => "pull request",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IntegrationConfig {
     pub enabled: bool,
     /// The role it uses, which must exist in the catalog.
     pub role: String,
-    /// Let it push the branch to the remote. Off by default: pushing is
-    /// visible outside this machine, and that is the user's call.
+    /// `merge` fuses here; `pr` pushes the branch and opens a pull request.
+    /// A project with no remote falls back to `merge`, with a warning: there
+    /// is nowhere to open a request.
+    pub mode: IntegrationMode,
+    /// How often an open pull request is checked, in seconds. Merged, the
+    /// ticket closes on its own; closed without merging, it is cancelled.
+    pub pr_poll_secs: u64,
+    /// Let Orchestra push: the integrator sends its branch up, and the daemon
+    /// sends the default branch up once the fusion is done. Off by default —
+    /// pushing is visible outside this machine, and that is the user's call.
     pub push: bool,
     /// Delete the worktree once the branch is merged. The branch is kept.
     pub remove_worktree: bool,
@@ -160,6 +233,10 @@ impl Default for IntegrationConfig {
         IntegrationConfig {
             enabled: true,
             role: "integrator".into(),
+            mode: IntegrationMode::Merge,
+            // A pull request is not a race: a minute is invisible to the user
+            // and costs one `gh` call per open request.
+            pr_poll_secs: 60,
             push: false,
             remove_worktree: true,
         }
