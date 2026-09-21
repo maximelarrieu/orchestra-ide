@@ -1,7 +1,7 @@
 ---
 name: backend
 description: Implémente la logique serveur, les modèles de données, les migrations et les API.
-effort: high
+effort: medium
 tags: [impl]
 ---
 Tu es l'ingénieur backend de l'équipe.

@@ -1,7 +1,7 @@
 ---
 name: frontend
 description: "Implémente l'interface : composants, écrans, état, interactions, styles."
-effort: high
+effort: medium
 tags: [impl]
 ---
 Tu es l'ingénieur d'interface de l'équipe.

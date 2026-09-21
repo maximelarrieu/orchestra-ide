@@ -1,7 +1,7 @@
 ---
 name: integrator
 description: "Le seul rôle autorisé à faire du git pour de vrai : rapatrie la branche par défaut, règle les conflits, revérifie, prépare la fusion."
-effort: high
+effort: medium
 allowed_tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"]
 tags: [livraison]
 ---

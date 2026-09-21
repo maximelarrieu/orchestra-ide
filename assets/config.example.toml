@@ -22,12 +22,12 @@ branch_prefix = "orch/"
 
 [defaults]
 model = "default"
-effort = "high"
+effort = "medium"
 max_budget_usd = 5.0
 
 [orchestrator]
 model = "default"
-effort = "high"
+effort = "medium"
 max_budget_usd = 2.0
 
 # Chaque ticket se termine par une relecture. Le rôle est ajouté d'office à la

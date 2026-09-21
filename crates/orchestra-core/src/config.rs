@@ -33,7 +33,7 @@ impl Default for Config {
             defaults: AgentDefaults::default(),
             orchestrator: AgentDefaults {
                 model: MODEL_DEFAULT.into(),
-                effort: Effort::High,
+                effort: Effort::Medium,
                 max_budget_usd: Some(2.0),
             },
             review: ReviewConfig::default(),
@@ -88,7 +88,7 @@ impl Default for AgentDefaults {
     fn default() -> Self {
         AgentDefaults {
             model: MODEL_DEFAULT.into(),
-            effort: Effort::High,
+            effort: Effort::Medium,
             max_budget_usd: Some(5.0),
         }
     }
@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(c.defaults.model, "sonnet");
         assert_eq!(c.defaults.effort, Effort::Max);
         // Untouched sections keep their defaults, pricing included.
-        assert_eq!(c.orchestrator.effort, Effort::High);
+        assert_eq!(c.orchestrator.effort, Effort::Medium);
         assert!(c.pricing.lookup("claude-opus-5").is_some());
     }
 
