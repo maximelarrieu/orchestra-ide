@@ -93,39 +93,50 @@ fn render_board(app: &App, frame: &mut Frame<'_>, area: Rect) {
 
 fn render_projects(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let focused = app.board_pane == BoardPane::Projects;
-    let items: Vec<ListItem> = if app.projects.is_empty() {
-        vec![ListItem::new(Line::from(vec![Span::styled(
+    let mut items: Vec<ListItem> = Vec::with_capacity(app.projects.len() + 2);
+    // "Tous les projets" sits at index 0, ahead of the real list, so a
+    // global view is one `j` shorter than any single project rather than a
+    // separate mode to learn.
+    let mut all_style = Style::default();
+    if app.project_selected == 0 {
+        all_style = all_style.add_modifier(Modifier::BOLD);
+        if focused {
+            all_style = all_style.add_modifier(Modifier::REVERSED);
+        }
+    }
+    items.push(ListItem::new(Line::from(vec![
+        Span::raw("◆ "),
+        Span::styled("Tous les projets", all_style),
+    ])));
+    if app.projects.is_empty() {
+        items.push(ListItem::new(Line::from(vec![Span::styled(
             "aucun projet",
             Style::default().add_modifier(Modifier::DIM),
-        )]))]
+        )])));
     } else {
-        app.projects
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let selected = i == app.project_selected;
-                let mut style = Style::default();
-                if selected {
-                    style = style.add_modifier(Modifier::BOLD);
-                    if focused {
-                        style = style.add_modifier(Modifier::REVERSED);
-                    }
+        items.extend(app.projects.iter().enumerate().map(|(i, p)| {
+            let selected = i + 1 == app.project_selected;
+            let mut style = Style::default();
+            if selected {
+                style = style.add_modifier(Modifier::BOLD);
+                if focused {
+                    style = style.add_modifier(Modifier::REVERSED);
                 }
-                // A project Orchestra only discovered is drawn faintly: it is
-                // there for its costs, not to work in.
-                let marker = if p.discovered { "◦" } else { "●" };
-                let marker_style = if p.discovered {
-                    Style::default().add_modifier(Modifier::DIM)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{marker} "), marker_style),
-                    Span::styled(p.name.clone(), style),
-                ]))
-            })
-            .collect()
-    };
+            }
+            // A project Orchestra only discovered is drawn faintly: it is
+            // there for its costs, not to work in.
+            let marker = if p.discovered { "◦" } else { "●" };
+            let marker_style = if p.discovered {
+                Style::default().add_modifier(Modifier::DIM)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{marker} "), marker_style),
+                Span::styled(p.name.clone(), style),
+            ]))
+        }));
+    }
     frame.render_widget(List::new(items).block(pane_block("Projets", focused)), area);
 }
 
@@ -135,7 +146,8 @@ fn render_tickets(app: &App, frame: &mut Frame<'_>, area: Rect) {
     if app.tickets.is_empty() {
         let title = match app.selected_project() {
             Some(p) => format!("Tickets — {}", p.name),
-            None => "Tickets".to_string(),
+            None if app.projects.is_empty() => "Tickets".to_string(),
+            None => "Tickets — tous les projets".to_string(),
         };
         let hint = if app.projects.is_empty() {
             "Ajoute un projet : `:project add <chemin>`"
@@ -220,6 +232,13 @@ fn render_lane(
 
         // Second line: what the card is worth and whether anyone is on it.
         let mut foot = Vec::new();
+        // Pooled across every project, a bare "#N" no longer says which one
+        // — ticket numbers only avoid collisions within a single project.
+        if app.selected_project().is_none() {
+            if let Some(name) = app.project_name(t.ticket.project_id) {
+                foot.push(name.to_string());
+            }
+        }
         if t.agents_active > 0 {
             foot.push(format!(
                 "{} {} au travail",
@@ -620,6 +639,60 @@ mod tests {
     fn renders_when_empty() {
         let out = draw(&App::new(), 80, 24);
         assert!(out.contains("aucun projet"));
+    }
+
+    #[test]
+    fn tous_les_projets_leads_the_selector_and_is_selected_by_default() {
+        let app = app_with_a_project();
+        assert!(
+            app.selected_project().is_none(),
+            "démarre sur « Tous les projets »"
+        );
+        let out = draw(&app, 80, 24);
+        assert!(out.contains("Tous les projets"));
+        // It comes before the real project, not after.
+        assert!(out.find("Tous les projets").unwrap() < out.find("orchestra").unwrap());
+    }
+
+    #[test]
+    fn a_pooled_view_names_each_ticket_s_project() {
+        let mut app = App::new();
+        app.connected = true;
+        app.board_pane = BoardPane::Tickets;
+        let project_id = Uuid::new_v4();
+        app.projects = vec![ProjectRow {
+            id: project_id,
+            name: "alpha".into(),
+            path: "/tmp/alpha".into(),
+            discovered: false,
+        }];
+        let ticket = orchestra_core::model::Ticket {
+            id: Uuid::new_v4(),
+            project_id,
+            number: 1,
+            title: "un ticket".into(),
+            brief: "b".into(),
+            status: orchestra_core::model::TicketStatus::Draft,
+            branch: None,
+            worktree_path: None,
+            proposal: None,
+            team: None,
+            created_at: orchestra_core::now(),
+            updated_at: orchestra_core::now(),
+        };
+        app.tickets = vec![orchestra_core::protocol::TicketSummary {
+            ticket,
+            agents_total: 0,
+            agents_active: 0,
+            agents_done: 0,
+            tokens: orchestra_core::model::Tokens::default(),
+            cost_usd: None,
+            pull_request: None,
+        }];
+        // Still on "Tous les projets": the card must say whose ticket it is.
+        assert!(app.selected_project().is_none());
+        let out = draw(&app, 80, 24);
+        assert!(out.contains("alpha"), "{out}");
     }
 
     #[test]

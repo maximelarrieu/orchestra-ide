@@ -308,6 +308,12 @@ pub struct App {
     pub board_pane: BoardPane,
     pub projects: Vec<ProjectRow>,
     pub project_selected: usize,
+    /// Whether a project list has ever arrived. The very first one lands the
+    /// selection on the first real project rather than on "Tous les
+    /// projets", so a single-project setup opens the way it always did;
+    /// every later refresh instead keeps wherever the cursor already was,
+    /// "Tous les projets" included.
+    projects_loaded: bool,
     pub tickets: Vec<TicketSummary>,
     pub ticket_selected: usize,
     pub cost: CostView,
@@ -356,6 +362,7 @@ impl Default for App {
             board_pane: BoardPane::Projects,
             projects: Vec::new(),
             project_selected: 0,
+            projects_loaded: false,
             tickets: Vec::new(),
             ticket_selected: 0,
             cost: CostView::default(),
@@ -378,8 +385,24 @@ impl App {
         Self::default()
     }
 
+    /// The highlighted project, or `None` on "Tous les projets" — index 0,
+    /// ahead of every real project — which is also what an empty list gives,
+    /// so every caller that already treats "no project" as "nothing to
+    /// scope to" keeps working unchanged.
     pub fn selected_project(&self) -> Option<&ProjectRow> {
-        self.projects.get(self.project_selected)
+        self.project_selected
+            .checked_sub(1)
+            .and_then(|i| self.projects.get(i))
+    }
+
+    /// A project's name from its id, for a ticket shown outside its own
+    /// project's filter — the board pools every project's tickets under
+    /// "Tous les projets", and a bare number does not say which one.
+    pub fn project_name(&self, id: ProjectId) -> Option<&str> {
+        self.projects
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.as_str())
     }
 
     /// The board's columns and what they hold, as indices into `tickets`.
@@ -776,7 +799,11 @@ impl App {
 
     fn open_new_ticket(&mut self) {
         if self.selected_project().is_none() {
-            self.status = "ajoute d'abord un projet : `:project add <chemin>`".into();
+            self.status = if self.projects.is_empty() {
+                "ajoute d'abord un projet : `:project add <chemin>`".into()
+            } else {
+                "choisis un projet plutôt que « Tous les projets »".into()
+            };
             return;
         }
         self.form.clear();
@@ -1131,7 +1158,8 @@ impl App {
     fn move_selection(&mut self, delta: isize) {
         let (len, sel) = match (self.screen, self.board_pane) {
             (Screen::Board, BoardPane::Projects) => {
-                (self.projects.len(), &mut self.project_selected)
+                // +1 for "Tous les projets", index 0, ahead of the real list.
+                (self.projects.len() + 1, &mut self.project_selected)
             }
             (Screen::Board, BoardPane::Tickets) => {
                 // Up and down stay in the column; left and right change it.
@@ -1189,7 +1217,7 @@ impl App {
     fn set_selection(&mut self, index: usize) {
         let (len, sel) = match (self.screen, self.board_pane) {
             (Screen::Board, BoardPane::Projects) => {
-                (self.projects.len(), &mut self.project_selected)
+                (self.projects.len() + 1, &mut self.project_selected)
             }
             // The ends of a column, not of the whole board.
             (Screen::Board, BoardPane::Tickets) => {
@@ -1338,6 +1366,8 @@ impl App {
         match reply {
             Reply::Projects { projects } => {
                 let previous = self.selected_project().map(|p| p.id);
+                let first_load = !self.projects_loaded;
+                self.projects_loaded = true;
                 self.projects = projects
                     .into_iter()
                     .map(|p| ProjectRow {
@@ -1347,11 +1377,22 @@ impl App {
                         discovered: p.kind == orchestra_core::model::ProjectKind::Discovered,
                     })
                     .collect();
-                // Keep the highlight on the same project across refreshes.
+                // Keep the highlight on the same project across refreshes,
+                // or on "Tous les projets" if that is where it was, or if
+                // the project it was on is simply gone. Only the very first
+                // list, with nothing chosen yet, lands on the first project
+                // instead of the aggregate — a single-project setup still
+                // opens straight onto its own board.
+                let fallback = if first_load && !self.projects.is_empty() {
+                    1
+                } else {
+                    0
+                };
                 self.project_selected = previous
                     .and_then(|id| self.projects.iter().position(|p| p.id == id))
-                    .unwrap_or(0)
-                    .min(self.projects.len().saturating_sub(1));
+                    .map(|i| i + 1)
+                    .unwrap_or(fallback)
+                    .min(self.projects.len());
                 if self.projects.is_empty() {
                     self.status =
                         "aucun projet — `:project add <chemin>` ou `orchestra project add`".into();
@@ -1778,11 +1819,62 @@ mod tests {
         for _ in 0..10 {
             app.update(Msg::Key(Action::Down));
         }
-        assert_eq!(app.project_selected, 2);
+        // 0 is "Tous les projets", 1..=3 the three real ones.
+        assert_eq!(app.project_selected, 3);
         app.update(Msg::Key(Action::Top));
         assert_eq!(app.project_selected, 0);
         app.update(Msg::Key(Action::Bottom));
-        assert_eq!(app.project_selected, 2);
+        assert_eq!(app.project_selected, 3);
+    }
+
+    #[test]
+    fn the_first_project_list_lands_on_the_first_project_not_tous() {
+        let mut app = App::new();
+        assert!(app.selected_project().is_none(), "rien encore reçu");
+        let projects = vec![
+            orchestra_core::model::Project {
+                id: Uuid::new_v4(),
+                name: "seul".into(),
+                path: "/tmp/seul".into(),
+                default_branch: "main".into(),
+                zellij_tab: None,
+                kind: orchestra_core::model::ProjectKind::Managed,
+                created_at: orchestra_core::now(),
+            },
+            orchestra_core::model::Project {
+                id: Uuid::new_v4(),
+                name: "autre".into(),
+                path: "/tmp/autre".into(),
+                default_branch: "main".into(),
+                zellij_tab: None,
+                kind: orchestra_core::model::ProjectKind::Managed,
+                created_at: orchestra_core::now(),
+            },
+        ];
+        app.update(Msg::Reply(Box::new(Reply::Projects {
+            projects: projects.clone(),
+        })));
+        assert_eq!(
+            app.selected_project().unwrap().id,
+            projects[0].id,
+            "un premier chargement ouvre directement sur un projet"
+        );
+
+        // A later refresh, with "Tous les projets" now chosen on purpose,
+        // does not snap back to a project.
+        app.project_selected = 0;
+        app.update(Msg::Reply(Box::new(Reply::Projects { projects })));
+        assert!(app.selected_project().is_none(), "« Tous » est respecté");
+    }
+
+    #[test]
+    fn tous_les_projets_asks_for_every_ticket() {
+        let mut app = app_with_projects(2);
+        assert_eq!(app.project_selected, 0);
+        let cmds = app.update(Msg::Key(Action::Select));
+        assert!(cmds.iter().any(
+            |c| matches!(c, Command::ListTickets { project_id: None, .. })
+        ));
     }
 
     #[test]
@@ -1839,8 +1931,18 @@ mod tests {
     }
 
     #[test]
+    fn d_on_tous_les_projets_forgets_nothing() {
+        let mut app = app_with_projects(2);
+        assert_eq!(app.project_selected, 0, "démarre sur « Tous les projets »");
+        app.update(Msg::Key(Action::Char('d')));
+        assert!(app.confirm.is_none());
+        assert!(app.status.contains("aucun projet"), "{}", app.status);
+    }
+
+    #[test]
     fn d_asks_before_forgetting_the_selected_project() {
         let mut app = app_with_projects(2);
+        app.project_selected = 1;
         let id = app.projects[0].id;
         let cmds = app.update(Msg::Key(Action::Char('d')));
         // Nothing is sent yet — a question is, and it names the project.
@@ -1966,7 +2068,7 @@ mod tests {
     #[test]
     fn selection_survives_a_refresh_that_reorders_projects() {
         let mut app = app_with_projects(3);
-        app.project_selected = 2;
+        app.project_selected = 3;
         let keep = app.projects[2].clone();
         let projects = vec![
             orchestra_core::model::Project {
