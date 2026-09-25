@@ -742,9 +742,36 @@ impl App {
     }
 
     fn on_board_char(&mut self, c: char) {
-        if c == 'n' {
-            self.open_new_ticket();
+        match c {
+            'n' => self.open_new_ticket(),
+            'd' if self.board_pane == BoardPane::Projects => self.forget_selected_project(),
+            _ => {}
         }
+    }
+
+    /// Ask to remove the highlighted project. The daemon refuses while it
+    /// still holds tickets, and that refusal comes back as an ordinary
+    /// status line rather than something checked here.
+    fn forget_selected_project(&mut self) {
+        let Some(p) = self.selected_project() else {
+            self.status = "aucun projet à oublier".into();
+            return;
+        };
+        self.ask(
+            format!("Oublier le projet « {} » ?", p.name),
+            Command::ForgetProject { project_id: p.id },
+        );
+    }
+
+    /// A project by id, or by a fragment of its name or path: what
+    /// `:project forget` takes, since a name is what someone types.
+    fn find_project(&self, spec: &str) -> Option<&ProjectRow> {
+        let needle = spec.to_lowercase();
+        self.projects.iter().find(|p| {
+            p.id.to_string() == spec
+                || p.name.to_lowercase().contains(&needle)
+                || p.path.to_lowercase().contains(&needle)
+        })
     }
 
     fn open_new_ticket(&mut self) {
@@ -1210,14 +1237,32 @@ impl App {
         match verb {
             "project" | "projet" => {
                 let (sub, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-                if sub == "add" && !arg.is_empty() {
-                    self.outbox.push(Command::AddProject {
-                        path: arg.into(),
-                        name: None,
-                    });
-                    self.status = format!("ajout du projet {arg}…");
-                } else {
-                    self.status = "usage : :project add <chemin>".into();
+                match sub {
+                    "add" if !arg.is_empty() => {
+                        self.outbox.push(Command::AddProject {
+                            path: arg.into(),
+                            name: None,
+                        });
+                        self.status = format!("ajout du projet {arg}…");
+                    }
+                    "forget" | "oublie" | "oublier" if !arg.is_empty() => {
+                        match self.find_project(arg) {
+                            Some(p) => {
+                                let (id, name) = (p.id, p.name.clone());
+                                self.ask(
+                                    format!("Oublier le projet « {name} » ?"),
+                                    Command::ForgetProject { project_id: id },
+                                );
+                            }
+                            None => {
+                                self.status = format!("aucun projet ne correspond à « {arg} »")
+                            }
+                        }
+                    }
+                    _ => {
+                        self.status =
+                            "usage : :project add <chemin> | :project forget <nom>".into()
+                    }
                 }
             }
             "usage" | "cout" | "coût" => self.go(Screen::Cost),
@@ -1465,7 +1510,9 @@ impl App {
         }
         // Anything that changes a board number triggers a targeted refresh.
         match &e.kind {
-            EventKind::ProjectAdded { .. } | EventKind::UnmanagedSessionSeen { .. } => {
+            EventKind::ProjectAdded { .. }
+            | EventKind::ProjectForgotten { .. }
+            | EventKind::UnmanagedSessionSeen { .. } => {
                 self.outbox.push(Command::ListProjects);
             }
             EventKind::TicketCreated { .. }
@@ -1602,6 +1649,7 @@ pub fn describe(e: &Event) -> Option<String> {
     let body = match &e.kind {
         EventKind::DaemonStarted { version } => format!("daemon {version} démarré"),
         EventKind::ProjectAdded { name, .. } => format!("projet « {name} » ajouté"),
+        EventKind::ProjectForgotten { name } => format!("projet « {name} » oublié"),
         EventKind::TicketCreated { number, title } => format!("ticket #{number} « {title} » créé"),
         EventKind::TicketStatusChanged { from, to } => {
             format!("ticket {} → {}", from.label_fr(), to.label_fr())
@@ -1788,6 +1836,69 @@ mod tests {
         }
         app.update(Msg::Key(Action::Submit));
         assert!(app.status.contains("inconnue"), "{}", app.status);
+    }
+
+    #[test]
+    fn d_asks_before_forgetting_the_selected_project() {
+        let mut app = app_with_projects(2);
+        let id = app.projects[0].id;
+        let cmds = app.update(Msg::Key(Action::Char('d')));
+        // Nothing is sent yet — a question is, and it names the project.
+        assert!(cmds.is_empty());
+        let confirm = app.confirm.as_ref().expect("a question was asked");
+        assert!(confirm.question.contains("p0"), "{}", confirm.question);
+        assert_eq!(confirm.command, Command::ForgetProject { project_id: id });
+
+        let cmds = app.update(Msg::Key(Action::Char('y')));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Command::ForgetProject { project_id }] if *project_id == id
+        ));
+        assert!(app.confirm.is_none());
+    }
+
+    #[test]
+    fn d_on_the_tickets_pane_does_not_touch_projects() {
+        let mut app = app_with_projects(1);
+        app.board_pane = BoardPane::Tickets;
+        app.update(Msg::Key(Action::Char('d')));
+        assert!(app.confirm.is_none());
+    }
+
+    #[test]
+    fn palette_project_forget_resolves_a_project_by_name() {
+        let mut app = app_with_projects(2);
+        let id = app.projects[1].id;
+        app.update(Msg::Key(Action::CommandPalette));
+        for c in "project forget p1".chars() {
+            app.update(Msg::Key(Action::Char(c)));
+        }
+        app.update(Msg::Key(Action::Submit));
+        let confirm = app.confirm.as_ref().expect("a question was asked");
+        assert_eq!(confirm.command, Command::ForgetProject { project_id: id });
+    }
+
+    #[test]
+    fn palette_project_forget_reports_no_match() {
+        let mut app = app_with_projects(1);
+        app.update(Msg::Key(Action::CommandPalette));
+        for c in "project forget nope".chars() {
+            app.update(Msg::Key(Action::Char(c)));
+        }
+        app.update(Msg::Key(Action::Submit));
+        assert!(app.confirm.is_none());
+        assert!(app.status.contains("nope"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_forgotten_project_refreshes_the_list() {
+        let mut app = App::new();
+        let e = Event::from_new(
+            1,
+            NewEvent::new(EventKind::ProjectForgotten { name: "p0".into() }),
+        );
+        let cmds = app.update(Msg::Event(Box::new(e)));
+        assert!(cmds.iter().any(|c| matches!(c, Command::ListProjects)));
     }
 
     #[test]

@@ -254,8 +254,14 @@ impl Daemon {
                     .await
                     .map_err(|e| ApiError::invalid(e.to_string()))?;
                 self.bus
-                    .warn(format!("projet « {} » oublié", project.name))
-                    .await;
+                    .publish(
+                        NewEvent::new(EventKind::ProjectForgotten {
+                            name: project.name,
+                        })
+                        .project(project_id),
+                    )
+                    .await
+                    .map_err(internal)?;
                 Ok(Reply::Ack)
             }
             Command::ListTickets { project_id, status } => {
@@ -1190,6 +1196,60 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_project_publishes_the_event_the_ui_refreshes_on() {
+        let store = crate::store::Store::open_memory().unwrap();
+        let project = Project {
+            id: Uuid::new_v4(),
+            name: "depot".into(),
+            path: std::path::PathBuf::from("/tmp/depot-oublie"),
+            default_branch: "main".into(),
+            zellij_tab: None,
+            kind: ProjectKind::Managed,
+            created_at: orchestra_core::now(),
+        };
+        let mut daemon = Daemon::new(Config::default(), store);
+        daemon.store.insert_project(project.clone()).await.unwrap();
+
+        daemon
+            .dispatch(Command::ForgetProject {
+                project_id: project.id,
+            })
+            .await
+            .unwrap();
+
+        assert!(daemon.store.project(project.id).await.unwrap().is_none());
+        let events = daemon
+            .store
+            .recent_events(EventFilter::default(), 10)
+            .await
+            .unwrap();
+        assert!(events.iter().any(|e| matches!(
+            &e.kind,
+            EventKind::ProjectForgotten { name } if name == "depot"
+        )));
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_project_with_tickets_is_refused() {
+        let (mut daemon, ticket) = daemon_with_ticket(TicketStatus::Draft).await;
+
+        let err = daemon
+            .dispatch(Command::ForgetProject {
+                project_id: ticket.project_id,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err.message.contains("ticket"), "{}", err.message);
+        assert!(daemon
+            .store
+            .project(ticket.project_id)
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]

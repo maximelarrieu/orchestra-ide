@@ -103,6 +103,7 @@ impl Event {
 #[serde(rename_all = "snake_case")]
 pub enum EventTag {
     ProjectAdded,
+    ProjectForgotten,
     TicketCreated,
     TicketStatusChanged,
     ProposalReady,
@@ -135,8 +136,9 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 30] = [
+    pub const ALL: [EventTag; 31] = [
         EventTag::ProjectAdded,
+        EventTag::ProjectForgotten,
         EventTag::TicketCreated,
         EventTag::TicketStatusChanged,
         EventTag::ProposalReady,
@@ -171,6 +173,7 @@ impl EventTag {
     pub fn as_str(self) -> &'static str {
         match self {
             EventTag::ProjectAdded => "project_added",
+            EventTag::ProjectForgotten => "project_forgotten",
             EventTag::TicketCreated => "ticket_created",
             EventTag::TicketStatusChanged => "ticket_status_changed",
             EventTag::ProposalReady => "proposal_ready",
@@ -225,6 +228,12 @@ pub enum EventKind {
     ProjectAdded {
         name: String,
         path: PathBuf,
+    },
+    /// A project was removed from Orchestra's list, managed or discovered.
+    /// Refused while it still has tickets; tokens already logged stay, now
+    /// attached to no project.
+    ProjectForgotten {
+        name: String,
     },
     TicketCreated {
         number: i64,
@@ -384,6 +393,7 @@ impl EventKind {
     pub fn tag(&self) -> EventTag {
         match self {
             EventKind::ProjectAdded { .. } => EventTag::ProjectAdded,
+            EventKind::ProjectForgotten { .. } => EventTag::ProjectForgotten,
             EventKind::TicketCreated { .. } => EventTag::TicketCreated,
             EventKind::TicketStatusChanged { .. } => EventTag::TicketStatusChanged,
             EventKind::ProposalReady { .. } => EventTag::ProposalReady,

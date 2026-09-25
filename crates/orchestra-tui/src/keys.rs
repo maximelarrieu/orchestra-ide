@@ -224,6 +224,7 @@ fn board_hints(app: &App) -> Vec<Hint> {
         BoardPane::Projects => vec![
             Hint::screen("Entrée", "voir ses tickets"),
             Hint::screen("j/k", "changer de projet"),
+            Hint::screen("d", "oublier"),
         ],
         BoardPane::Tickets => vec![
             Hint::screen("Entrée", "ouvrir le ticket"),
