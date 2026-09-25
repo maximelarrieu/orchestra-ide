@@ -16,8 +16,9 @@
 //! unexpected therefore allows the call.
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use nix::unistd::{access, AccessFlags};
 use orchestra_core::guard::{check, Boundary, GitPolicy, Verdict};
 
 /// Set by the daemon on every agent it spawns.
@@ -79,7 +80,7 @@ fn run() -> Verdict {
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
-    let mut boundary = Boundary::new(worktree);
+    let mut boundary = Boundary::new(worktree).with_reach(reachable);
     boundary.git = std::env::var(GIT_VAR)
         .map(|v| GitPolicy::parse(&v))
         .unwrap_or_default();
@@ -92,10 +93,73 @@ fn run() -> Verdict {
     check(&boundary, tool, &input)
 }
 
+/// Could this process write at `path`, whether or not it exists yet?
+///
+/// The rules in the core crate are pure; this is the one question only the
+/// filesystem can answer. A web route, a regex or a sed script written with a
+/// leading slash resolves to something under `/` that an ordinary user cannot
+/// touch, and that is what tells them apart from a real path into the user's
+/// files. Walk up to the first thing that exists: creating the target needs
+/// write access there; an existing target can also be replaced or removed
+/// through its parent.
+fn reachable(path: &Path) -> bool {
+    let writable = |p: &Path| access(p, AccessFlags::W_OK).is_ok();
+    let mut current = Some(path);
+    while let Some(p) = current {
+        if p.symlink_metadata().is_ok() {
+            if writable(p) {
+                return true;
+            }
+            return p == path && p.parent().is_some_and(writable);
+        }
+        current = p.parent();
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn the_filesystem_tells_a_route_from_a_path() {
+        // As a normal user, `/` is not writable, so a route is no escape.
+        if access(Path::new("/"), AccessFlags::W_OK).is_ok() {
+            eprintln!("lancé en root : rien à distinguer");
+            return;
+        }
+        assert!(!reachable(Path::new("/habitudes")));
+        assert!(!reachable(Path::new("/_next/static/chunks/[a-z]+.js")));
+        // A directory of the user's is, whether the file exists yet or not.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(reachable(dir.path()));
+        assert!(reachable(&dir.path().join("pas/encore/la.txt")));
+        // A read-only file in a writable directory can still be removed.
+        let file = dir.path().join("lecture-seule");
+        std::fs::write(&file, "x").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(reachable(&file));
+    }
+
+    #[test]
+    fn a_route_in_a_command_is_allowed_a_real_escape_is_not() {
+        if access(Path::new("/"), AccessFlags::W_OK).is_ok() {
+            return;
+        }
+        // Under the user's home, not in `/tmp`, which the rules treat as
+        // scratch space whatever the filesystem says.
+        let home = std::env::var("HOME").expect("HOME");
+        let dir = tempfile::tempdir_in(home).unwrap();
+        let worktree = dir.path().join("wt");
+        let elsewhere = dir.path().join("ailleurs");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let boundary = Boundary::new(&worktree).with_reach(reachable);
+        let bash = |c: &str| check(&boundary, "Bash", &json!({"command": c}));
+        assert_eq!(bash("shot /habitudes 1024"), Verdict::Allow);
+        assert!(bash(&format!("cp x {}", elsewhere.display())).is_denied());
+    }
 
     /// The decision as `run` makes it, without touching the process
     /// environment or standard input.

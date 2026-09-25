@@ -123,39 +123,17 @@ impl Supervisor {
             project.path.display()
         );
 
-        let plan = worktree::plan_for(
-            &project,
-            &ticket,
-            &self
-                .cfg
-                .daemon
-                .worktrees_dir
-                .clone()
-                .unwrap_or_else(orchestra_core::config::Paths::worktrees_dir),
-            &self.cfg.daemon.branch_prefix,
-        );
-        let _ = worktree::prune(&project);
-        let wt = worktree::ensure(&project, &plan)?;
-
         let mut ticket = ticket;
+        let (branch, worktree_path) = self.ensure_worktree(&mut ticket, &project).await?;
+
         let from = ticket.status;
         check_transition(from, TicketStatus::Running)?;
-        ticket.branch = Some(wt.branch.clone());
-        ticket.worktree_path = Some(wt.path.clone());
+        ticket.branch = Some(branch);
+        ticket.worktree_path = Some(worktree_path.clone());
         ticket.status = TicketStatus::Running;
         ticket.updated_at = orchestra_core::now();
         self.store.update_ticket(ticket.clone()).await?;
 
-        self.bus
-            .publish(
-                NewEvent::new(EventKind::WorktreeCreated {
-                    path: wt.path.clone(),
-                    branch: wt.branch.clone(),
-                })
-                .project(project.id)
-                .ticket(ticket.id),
-            )
-            .await?;
         self.bus
             .publish(
                 NewEvent::new(EventKind::TicketStatusChanged {
@@ -173,7 +151,9 @@ impl Supervisor {
             self.panes_wanted.lock().await.insert(ticket_id);
         }
         let handle = tokio::spawn(async move {
-            let outcome = me.run_team(ticket, project, team, catalog, wt.path).await;
+            let outcome = me
+                .run_team(ticket, project, team, catalog, worktree_path)
+                .await;
             if let Err(e) = outcome {
                 tracing::error!("exécution du ticket interrompue : {e:#}");
             }
@@ -205,6 +185,20 @@ impl Supervisor {
             "{} n'est pas un dépôt git",
             project.path.display()
         );
+        // A project created an hour ago has nothing in it. Saying so matters:
+        // this is the only commit Orchestra ever writes outside a worktree.
+        if worktree::ensure_root_commit(project)? {
+            self.warn_ticket(
+                ticket.id,
+                project.id,
+                format!(
+                    "{} n'avait aucun commit : un commit vide « init » a été créé pour que \
+                     « {} » existe",
+                    project.name, project.default_branch
+                ),
+            )
+            .await;
+        }
         let plan = worktree::plan_for(
             project,
             ticket,

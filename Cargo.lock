@@ -1098,8 +1098,10 @@ dependencies = [
 name = "orchestra-hook"
 version = "0.1.0"
 dependencies = [
+ "nix 0.31.3",
  "orchestra-core",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

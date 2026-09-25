@@ -68,6 +68,22 @@ impl GitPolicy {
     }
 }
 
+/// Could the agent actually write at this path?
+///
+/// The guard reads paths, not intentions, and a shell command is full of things
+/// that merely look like one: the route `/habitudes` a screenshot is taken of,
+/// the regex `/_next/static/[a-z]+\.js`, the sed script `/motif/d`. Each of
+/// them blocked real work. What separates them from `/home/u/projet/.env` is
+/// not their shape but the filesystem: nothing can be written under `/` by an
+/// ordinary user, so nothing there is an escape. The core crate does no I/O, so
+/// whoever builds the boundary supplies the answer; `Boundary::new` assumes
+/// everything is reachable, which is the strict reading.
+pub type Reach = fn(&Path) -> bool;
+
+fn everything_is_reachable(_: &Path) -> bool {
+    true
+}
+
 /// The box an agent is allowed to touch.
 #[derive(Debug, Clone)]
 pub struct Boundary {
@@ -77,6 +93,8 @@ pub struct Boundary {
     pub extra: Vec<PathBuf>,
     /// What this agent may do with git.
     pub git: GitPolicy,
+    /// Whether a path named in a shell command could be written at all.
+    pub reach: Reach,
 }
 
 impl Boundary {
@@ -85,7 +103,14 @@ impl Boundary {
             worktree: worktree.into(),
             extra: Vec::new(),
             git: GitPolicy::Confined,
+            reach: everything_is_reachable,
         }
+    }
+
+    /// The same box, told how to ask the filesystem what is writable.
+    pub fn with_reach(mut self, reach: Reach) -> Self {
+        self.reach = reach;
+        self
     }
 
     /// The same box, for the role whose job is git.
@@ -150,15 +175,30 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
     // not arguments. Without this, a CSS comment or a Python snippet written
     // through `<<'PY'` looked like an escape and blocked ordinary work.
     let scanned = command_part(trimmed);
+    let words = tokens(scanned);
 
-    for word in tokens(scanned) {
+    // Privilege escalation makes every path writable, so the filesystem's
+    // answer no longer means anything and the strict reading applies.
+    let escalated = words
+        .iter()
+        .any(|w| matches!(w.as_str(), "sudo" | "doas" | "pkexec" | "su"));
+
+    for word in &words {
         // A path written out in full is checked whatever the command is: it is
         // the one signal that does not depend on knowing every tool's flags.
-        if !looks_like_path(&word) {
+        if !looks_like_path(word) {
             continue;
         }
-        let path = expand(&word);
-        if !boundary.contains(&path) && !writable_system_path(&path) {
+        let path = expand(word);
+        if boundary.contains(&path) || scratch_path(&path) {
+            continue;
+        }
+        // A path the agent could not write anyway — a web route, a regex, a
+        // sed script — is a false alarm, not an escape.
+        if !escalated && !(boundary.reach)(&path) {
+            continue;
+        }
+        {
             return Verdict::Deny(format!(
                 "« {} » est hors du worktree du ticket ({}). \
                  Travaille uniquement dans ton répertoire de travail.",
@@ -168,7 +208,8 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
         }
     }
 
-    if let Some(sub) = git_subcommand(scanned) {
+    if let Some(invocation) = git_invocation(scanned) {
+        let sub = invocation[0].clone();
         // Whatever the policy, git is not a way out of the box: `-C`,
         // `--git-dir` and `--work-tree` name a directory, and a relative one is
         // not caught by the path scan above. Only git's own flags are read this
@@ -180,7 +221,7 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
             } else {
                 boundary.worktree.join(path)
             };
-            if !boundary.contains(&path) && !writable_system_path(&path) {
+            if !boundary.contains(&path) && !scratch_path(&path) {
                 return Verdict::Deny(format!(
                     "« git -C {dir} » sort du worktree du ticket ({}). \
                      Le dépôt principal n'appartient à aucun agent.",
@@ -189,7 +230,14 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
             }
         }
 
-        if boundary.git == GitPolicy::Confined && FORBIDDEN_GIT.contains(&sub.as_str()) {
+        // `git worktree list` only says where the agent is; that is how it
+        // orients itself, and it was refused along with `worktree add`.
+        let read_only =
+            sub == "worktree" && invocation.get(1).is_some_and(|w| w == "list");
+        if boundary.git == GitPolicy::Confined
+            && !read_only
+            && FORBIDDEN_GIT.contains(&sub.as_str())
+        {
             return Verdict::Deny(format!(
                 "« git {sub} » est interdit : ta branche est relue avant toute fusion, \
                  et changer de branche ferait perdre le travail en cours."
@@ -263,7 +311,7 @@ pub fn check_write_path(boundary: &Boundary, path: &str) -> Verdict {
     } else {
         boundary.worktree.join(expanded)
     };
-    if boundary.contains(&candidate) || writable_system_path(&candidate) {
+    if boundary.contains(&candidate) || scratch_path(&candidate) {
         Verdict::Allow
     } else {
         Verdict::Deny(format!(
@@ -296,8 +344,11 @@ fn catastrophic(command: &str) -> Option<String> {
     None
 }
 
-/// The subcommand of a `git …` invocation, if that is what this is.
-fn git_subcommand(command: &str) -> Option<String> {
+/// A `git …` invocation from its subcommand on, if that is what this is.
+///
+/// The first element is the subcommand; the rest are its arguments, as far as
+/// the tokeniser can tell.
+fn git_invocation(command: &str) -> Option<Vec<String>> {
     let mut words = tokens(command).into_iter().peekable();
     while let Some(word) = words.next() {
         if word != "git" {
@@ -313,7 +364,7 @@ fn git_subcommand(command: &str) -> Option<String> {
             if next.starts_with('-') {
                 continue;
             }
-            return Some(next);
+            return Some(std::iter::once(next).chain(rest).collect());
         }
     }
     None
@@ -360,7 +411,17 @@ fn normalise(path: &Path) -> PathBuf {
 /// configuration. Confining an agent to its worktree means protecting the
 /// user's code, not forbidding a log file — blocking the temporary directory
 /// stopped real work twice in a single run against a real project.
-fn writable_system_path(path: &Path) -> bool {
+///
+/// The user's cache directory is scratch space of the same kind: Playwright
+/// keeps its browsers there and an agent was refused for installing them.
+/// Nothing in a cache is the user's work, by definition.
+fn scratch_path(path: &Path) -> bool {
+    if let Some(home) = std::env::var_os("HOME") {
+        let cache = PathBuf::from(home).join(".cache");
+        if normalise(path).starts_with(normalise(&cache)) {
+            return true;
+        }
+    }
     const ALLOWED: [&str; 10] = [
         "/usr",
         "/bin",
@@ -384,8 +445,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A machine where the user can write under `/home` and nowhere else, as
+    /// the filesystem would answer it.
+    fn user_owns_home(path: &Path) -> bool {
+        path.starts_with("/home")
+    }
+
     fn boundary() -> Boundary {
-        Boundary::new("/home/u/worktrees/depot/1-cache")
+        Boundary::new("/home/u/worktrees/depot/1-cache").with_reach(user_owns_home)
     }
 
     fn bash(command: &str) -> Verdict {
@@ -464,6 +531,49 @@ mod tests {
     }
 
     #[test]
+    fn what_merely_looks_like_a_path_is_not_an_escape() {
+        // Every one of these refused real work: a web route given to a
+        // screenshot tool, a regex, a sed script. None of them can be written
+        // by the user, so none of them leaves the box.
+        for command in [
+            "shot /habitudes 1024",
+            "curl -s http://localhost:3000/trips | head",
+            "grep -oE '/_next/static/chunks/[a-z0-9_-]+\\.js' page.html",
+            "sed -i '/sp_on_accent/d' style.css",
+            "ls /nexistepas/vraiment",
+        ] {
+            assert_eq!(bash(command), Verdict::Allow, "refusé à tort : {command}");
+        }
+        // The same shapes under the user's home are real paths.
+        assert!(bash("shot /home/u/habitudes 1024").is_denied());
+        // Escalation makes everything writable: back to the strict reading.
+        assert!(bash("sudo cp x /srv/ailleurs").is_denied());
+        assert!(bash("sudo rm -rf /var/lib/quelque-chose").is_denied());
+    }
+
+    #[test]
+    fn without_a_filesystem_the_reading_is_strict() {
+        // A boundary that was not told what is writable assumes everything is,
+        // so the decision can only err on the side of refusing.
+        let strict = Boundary::new("/home/u/worktrees/depot/1-cache");
+        assert!(check(&strict, "Bash", &json!({"command": "shot /habitudes"})).is_denied());
+    }
+
+    #[test]
+    fn the_cache_directory_is_scratch_space_too() {
+        // Playwright installs its browsers there; an agent was refused for it.
+        assert_eq!(
+            bash("ls ~/.cache/ms-playwright && npx playwright install chromium"),
+            Verdict::Allow
+        );
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(write(&format!("{home}/.cache/orchestra/x.png")), Verdict::Allow);
+        // A neighbour of the cache is not the cache.
+        assert!(write(&format!("{home}/.cache-bis/x")).is_denied());
+        assert!(bash(&format!("cat {home}/.config/app/state.json")).is_denied());
+    }
+
+    #[test]
     fn the_temporary_directory_is_scratch_space_not_an_escape() {
         // An agent writes logs, screenshots and throwaway configuration there;
         // it holds nothing of the user's.
@@ -509,6 +619,12 @@ mod tests {
         // Committing and reading history stay allowed.
         assert_eq!(bash("git log --oneline -5"), Verdict::Allow);
         assert_eq!(bash("git commit -am wip"), Verdict::Allow);
+        // Listing worktrees only says where the agent is; adding one is
+        // still refused.
+        assert_eq!(bash("git worktree list"), Verdict::Allow);
+        assert_eq!(bash("git worktree list --porcelain"), Verdict::Allow);
+        assert!(bash("git worktree add ../autre").is_denied());
+        assert!(bash("git worktree remove x").is_denied());
     }
 
     #[test]

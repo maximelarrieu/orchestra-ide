@@ -1,3 +1,4 @@
 /target
 *.log
 .orchestra/cache/
+CLAUDE.md

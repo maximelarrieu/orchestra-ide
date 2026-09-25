@@ -47,6 +47,9 @@ toucher au disque ni au réseau.
 - `guard.rs` — les règles du garde-fou, dont `GitPolicy` : `Confined` pour tout le
   monde, `Full` pour le seul intégrateur. La politique ne lève que la liste des
   sous-commandes interdites ; le confinement des chemins vaut pour tous.
+  Les règles sont pures ; la seule question qu'elles ne peuvent pas trancher —
+  « ce chemin est-il écrivable ? » — est posée par `Boundary::reach`, fournie par
+  l'appelant. Sans réponse, tout est réputé écrivable (lecture stricte).
 - `review.rs` — la relecture : ajout du relecteur en fin de proposition, et lecture
   du verdict qu'il écrit (`VERDICT: prêt` / `VERDICT: corrections` suivi des points
   bloquants). Le silence n'y vaut jamais accord.
@@ -142,6 +145,17 @@ Il ne dépend que d'`orchestra-core`, pour les règles elles-mêmes : le daemon 
 ne peuvent pas être en désaccord sur ce qui est permis. Trois propriétés priment sur
 toute fonctionnalité : il démarre immédiatement, il ne bloque jamais, et un problème
 d'Orchestra ne fait jamais échouer l'agent — tout imprévu autorise l'appel.
+
+**Il demande au système de fichiers ce qui est écrivable.** Une commande shell est
+pleine de choses qui ressemblent à un chemin sans en être : la route `/habitudes`
+passée à un outil de capture, la regex `/_next/static/[a-z]+\.js`, le script sed
+`/motif/d`. Chacune a bloqué du vrai travail. Ce qui les distingue de
+`/home/u/projet/.env`, ce n'est pas leur forme mais `access(2)` : un utilisateur
+ordinaire ne peut rien écrire sous `/`, donc rien là n'est une sortie du worktree.
+Le hook remonte jusqu'au premier ancêtre existant et regarde s'il est écrivable ;
+sous `sudo`, la réponse ne veut plus rien dire et la lecture stricte reprend. Les
+outils `Write`/`Edit` et `git -C` gardent la lecture stricte : là, le chemin n'est
+pas ambigu. Le répertoire `~/.cache` est de l'espace de brouillon, comme `/tmp`.
 
 ## Décisions
 
@@ -334,6 +348,13 @@ ticket, donc le ticket. Chaque appel a trois secondes et son échec ne coûte
 qu'une ligne de journal. Et rien n'est tenté hors d'une session zellij, ce qui
 se lit dans l'environnement (`ZELLIJ`) plutôt qu'en essayant : sur une machine
 sans zellij, le module ne lance aucun processus.
+
+**Le premier commit d'un projet neuf est le nôtre.** `git init` laisse HEAD sur une
+branche qui n'existe pas encore : rien ne peut en partir, et le tout premier ticket
+d'un projet — celui qui l'initialise — mourait sur `fatal: invalid reference: main`.
+Le daemon crée donc un commit vide « init » quand le dépôt n'en a aucun, et le dit
+dans le flux. C'est le seul commit qu'Orchestra écrit hors d'un worktree ; tout le
+reste s'y passe.
 
 **Un worktree par ticket.** Un agent de la v1 a exécuté `mv *.md docs/` sur le dépôt
 lui-même. Les agents ne voient plus que leur worktree, et un garde `PreToolUse` refuse

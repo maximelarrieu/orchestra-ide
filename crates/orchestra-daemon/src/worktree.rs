@@ -62,6 +62,10 @@ pub fn ensure(project: &Project, plan: &Worktree) -> Result<Worktree> {
             .with_context(|| format!("création de {}", parent.display()))?;
     }
 
+    // A repository nobody has committed to yet has no default branch either,
+    // and `worktree add` fails on a reference that does not exist.
+    ensure_root_commit(project)?;
+
     // `git worktree add -b` fails when the branch exists, which is exactly what
     // a relaunch looks like, so an existing branch is checked out instead.
     let exists = branch_exists(&project.path, &plan.branch);
@@ -85,6 +89,53 @@ pub fn ensure(project: &Project, plan: &Worktree) -> Result<Worktree> {
         )
     })?;
     Ok(plan.clone())
+}
+
+/// Give an empty repository its first commit, so its default branch exists.
+///
+/// `git init` leaves HEAD pointing at a branch that is not there yet: nothing
+/// can be branched from it, and the very first ticket of a new project — the
+/// one that initialises it — died on `fatal: invalid reference: main`. An empty
+/// root commit is the smallest thing that makes the branch real. It is also the
+/// only commit Orchestra ever makes in the main repository; everything else
+/// happens in a worktree.
+///
+/// Returns true when it created one.
+pub fn ensure_root_commit(project: &Project) -> Result<bool> {
+    if git(
+        &project.path,
+        &["rev-parse".into(), "--verify".into(), "HEAD".into()],
+    )
+    .is_ok()
+    {
+        return Ok(false);
+    }
+    // HEAD may be unborn on another name than the one the project declares;
+    // pointing it at the default branch costs nothing while it holds no commit.
+    let _ = git(
+        &project.path,
+        &[
+            "symbolic-ref".into(),
+            "HEAD".into(),
+            format!("refs/heads/{}", project.default_branch),
+        ],
+    );
+    git(
+        &project.path,
+        &[
+            "commit".into(),
+            "--allow-empty".into(),
+            "--message".into(),
+            "init".into(),
+        ],
+    )
+    .with_context(|| {
+        format!(
+            "premier commit dans {} — vérifie que git a un user.name et un user.email",
+            project.path.display()
+        )
+    })?;
+    Ok(true)
 }
 
 /// Remove the worktree directory. The branch is always kept: it holds the work.
@@ -527,6 +578,67 @@ mod tests {
             format!("{err:#}").contains("fichier.txt"),
             "on nomme ce qui bloque : {err:#}"
         );
+    }
+
+    /// A repository as `git init` leaves it: a branch name, and nothing in it.
+    fn empty_fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("depot");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+        ] {
+            Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(&args)
+                .output()
+                .unwrap();
+        }
+        let project = Project {
+            id: Uuid::new_v4(),
+            name: "depot".into(),
+            path: repo,
+            default_branch: "main".into(),
+            zellij_tab: None,
+            kind: ProjectKind::Managed,
+            created_at: orchestra_core::now(),
+        };
+        let worktrees = dir.path().join("worktrees");
+        Fixture {
+            _dir: dir,
+            project,
+            worktrees,
+        }
+    }
+
+    #[test]
+    fn a_repository_without_a_commit_gets_its_first_one() {
+        // Le tout premier ticket d'un projet neuf mourait sur
+        // « fatal: invalid reference: main » : la branche par défaut n'existe
+        // pas tant que rien n'a été commité.
+        let f = empty_fixture();
+        assert!(current_branch(&f.project.path).is_none(), "branche non née");
+
+        let plan = plan_for(
+            &f.project,
+            &ticket(1, "initialisation"),
+            &f.worktrees,
+            "orch/",
+        );
+        let wt = ensure(&f.project, &plan).expect("le worktree doit pouvoir être créé");
+
+        assert!(is_repository(&wt.path));
+        assert_eq!(current_branch(&f.project.path).as_deref(), Some("main"));
+        assert_eq!(
+            commits_ahead(&f.project, &wt.branch).len(),
+            0,
+            "la branche part du commit initial, elle n'a rien en plus"
+        );
+        // Et un dépôt qui a déjà un commit n'en reçoit pas un deuxième.
+        assert!(!ensure_root_commit(&f.project).unwrap());
     }
 
     #[test]

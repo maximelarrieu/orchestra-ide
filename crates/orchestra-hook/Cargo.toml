@@ -9,8 +9,14 @@ description = "Guard invoked by Claude Code before every tool call of an Orchest
 name = "orchestra-hook"
 path = "src/main.rs"
 
-# Only the core crate, for the rules themselves. This binary runs on every tool
-# call of every agent, so it stays small and starts immediately.
+# The core crate for the rules themselves, and `nix` for the one question the
+# rules cannot answer alone — is this path writable at all (`access(2)`). This
+# binary runs on every tool call of every agent, so it stays small and starts
+# immediately.
 [dependencies]
 orchestra-core.workspace = true
 serde_json.workspace = true
+nix.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
