@@ -13,7 +13,7 @@ use orchestra_core::config::{Config, Paths, ResolvedPaths};
 use orchestra_core::events::{EventFilter, EventKind, NewEvent};
 use orchestra_core::model::{
     can_transition, AgentStatus, Project, ProjectId, ProjectKind, Team, TeamProposal, Ticket,
-    TicketId, TicketStatus,
+    TicketId, TicketStatus, Todo, TodoId, TodoStatus,
 };
 use orchestra_core::protocol::{
     AgentSummary, ApiError, Command, DaemonStatus, Reply, TicketDetail, TicketSummary, UsageQuery,
@@ -322,6 +322,30 @@ impl Daemon {
             )),
             Command::OpenPane { agent_id } => self.open_pane(agent_id).await,
             Command::TakeOver { agent_id } => self.take_over(agent_id).await,
+            Command::ListTodos => self.list_todos().await,
+            Command::CreateTodo {
+                title,
+                notes,
+                urgent,
+                due_at,
+            } => self.create_todo(title, notes, urgent, due_at).await,
+            Command::UpdateTodo {
+                todo_id,
+                title,
+                notes,
+                urgent,
+                due_at,
+            } => self.update_todo(todo_id, title, notes, urgent, due_at).await,
+            Command::SetTodoStatus { todo_id, status } => {
+                self.set_todo_status(todo_id, status).await
+            }
+            Command::DeleteTodo { todo_id } => self.delete_todo(todo_id).await,
+            Command::PromoteTodo {
+                todo_id,
+                project_id,
+                title,
+                brief,
+            } => self.promote_todo(todo_id, project_id, title, brief).await,
             // The guard decides on its own; nothing asks the daemon any more.
             Command::Hook { .. } => Ok(Reply::Hook {
                 allow: true,
@@ -571,6 +595,187 @@ impl Daemon {
         Ok(Reply::Tickets {
             tickets: vec![summary],
         })
+    }
+
+    // -- todos ----------------------------------------------------------------
+
+    async fn list_todos(&self) -> Result<Reply, ApiError> {
+        let todos = self.store.list_todos().await.map_err(internal)?;
+        Ok(Reply::Todos { todos })
+    }
+
+    async fn create_todo(
+        &self,
+        title: String,
+        notes: String,
+        urgent: bool,
+        due_at: Option<OffsetDateTime>,
+    ) -> Result<Reply, ApiError> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err(ApiError::invalid("le titre du todo est vide"));
+        }
+        let now = orchestra_core::now();
+        let todo = Todo {
+            id: Uuid::new_v4(),
+            title: title.clone(),
+            notes,
+            status: TodoStatus::Open,
+            urgent,
+            due_at,
+            promoted_ticket_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.store
+            .insert_todo(todo.clone())
+            .await
+            .map_err(internal)?;
+        self.bus
+            .publish(NewEvent::new(EventKind::TodoAdded { title }).todo(todo.id))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Todos { todos: vec![todo] })
+    }
+
+    async fn update_todo(
+        &self,
+        todo_id: TodoId,
+        title: String,
+        notes: String,
+        urgent: bool,
+        due_at: Option<OffsetDateTime>,
+    ) -> Result<Reply, ApiError> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err(ApiError::invalid("le titre du todo est vide"));
+        }
+        let mut todo = self
+            .store
+            .todo(todo_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("todo"))?;
+        todo.title = title.clone();
+        todo.notes = notes;
+        todo.urgent = urgent;
+        todo.due_at = due_at;
+        todo.updated_at = orchestra_core::now();
+        self.store
+            .update_todo(todo)
+            .await
+            .map_err(internal)?;
+        self.bus
+            .publish(NewEvent::new(EventKind::TodoUpdated { title }).todo(todo_id))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
+    async fn set_todo_status(
+        &self,
+        todo_id: TodoId,
+        status: TodoStatus,
+    ) -> Result<Reply, ApiError> {
+        let mut todo = self
+            .store
+            .todo(todo_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("todo"))?;
+        let from = todo.status;
+        todo.status = status;
+        todo.updated_at = orchestra_core::now();
+        let title = todo.title.clone();
+        self.store
+            .update_todo(todo)
+            .await
+            .map_err(internal)?;
+        self.bus
+            .publish(
+                NewEvent::new(EventKind::TodoStatusChanged {
+                    title,
+                    from,
+                    to: status,
+                })
+                .todo(todo_id),
+            )
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
+    async fn delete_todo(&self, todo_id: TodoId) -> Result<Reply, ApiError> {
+        let todo = self
+            .store
+            .todo(todo_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("todo"))?;
+        self.store
+            .delete_todo(todo_id)
+            .await
+            .map_err(|e| ApiError::invalid(e.to_string()))?;
+        self.bus
+            .publish(NewEvent::new(EventKind::TodoDeleted { title: todo.title }).todo(todo_id))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
+    /// Creates a Draft ticket from this todo, then marks the todo promoted.
+    /// The ticket's own creation is delegated to `create_ticket`, unchanged.
+    async fn promote_todo(
+        &self,
+        todo_id: TodoId,
+        project_id: ProjectId,
+        title: String,
+        brief: String,
+    ) -> Result<Reply, ApiError> {
+        let mut todo = self
+            .store
+            .todo(todo_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("todo"))?;
+        if todo.promoted_ticket_id.is_some() {
+            return Err(ApiError::conflict("ce todo est déjà promu en ticket"));
+        }
+        let project = self
+            .store
+            .project(project_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("projet"))?;
+        let reply = self.create_ticket(project_id, title, brief).await?;
+        let Reply::Tickets { tickets } = &reply else {
+            return Err(ApiError::internal("création de ticket inattendue"));
+        };
+        let created = tickets
+            .first()
+            .ok_or_else(|| ApiError::internal("aucun ticket créé"))?;
+        todo.status = TodoStatus::Done;
+        todo.promoted_ticket_id = Some(created.ticket.id);
+        todo.updated_at = orchestra_core::now();
+        let title = todo.title.clone();
+        let ticket_number = created.ticket.number;
+        self.store
+            .update_todo(todo)
+            .await
+            .map_err(internal)?;
+        self.bus
+            .publish(
+                NewEvent::new(EventKind::TodoPromoted {
+                    title,
+                    ticket_number,
+                    project_name: project.name,
+                })
+                .todo(todo_id)
+                .project(project_id),
+            )
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
     }
 
     /// Load the catalog a project sees: global roles plus its own overrides.

@@ -83,6 +83,13 @@ impl NewTicketForm {
         self.brief.clear();
         self.error = None;
     }
+
+    /// Pre-fill from a todo being promoted into a ticket.
+    pub fn seed(&mut self, title: &str, brief: &str) {
+        self.title = title.to_string();
+        self.brief = brief.to_string();
+        self.error = None;
+    }
 }
 
 /// What the team editor is currently changing.
@@ -349,6 +356,18 @@ mod tests {
         let (title, brief) = f.validated().unwrap();
         assert_eq!(title, "Ajouter un cache");
         assert!(brief.starts_with("Le rendu"));
+    }
+
+    #[test]
+    fn seeding_fills_the_form_for_a_promoted_todo() {
+        let mut f = NewTicketForm {
+            error: Some("boum".into()),
+            ..Default::default()
+        };
+        f.seed("Ajouter un cache", "Le rendu recalcule tout à chaque fois.");
+        assert_eq!(f.title, "Ajouter un cache");
+        assert!(f.brief.starts_with("Le rendu"));
+        assert!(f.error.is_none());
     }
 
     #[test]

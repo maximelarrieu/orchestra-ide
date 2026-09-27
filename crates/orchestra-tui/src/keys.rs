@@ -192,10 +192,18 @@ pub fn screen_hints(app: &App) -> Vec<Hint> {
         Screen::Agent => agent_hints(app),
         Screen::Cost => cost_hints(app),
         Screen::Proposal => proposal_hints(app),
-        Screen::NewTicket => vec![
-            Hint::screen("Ctrl-S", "créer le ticket"),
-            Hint::screen("Tab", "champ suivant"),
-        ],
+        Screen::Todo => todo_hints(app),
+        Screen::NewTicket => {
+            let verb = if app.promoting_todo.is_some() {
+                "promouvoir en ticket"
+            } else {
+                "créer le ticket"
+            };
+            vec![
+                Hint::screen("Ctrl-S", verb),
+                Hint::screen("Tab", "champ suivant"),
+            ]
+        }
     }
 }
 
@@ -312,6 +320,17 @@ fn cost_hints(app: &App) -> Vec<Hint> {
     ]
 }
 
+fn todo_hints(app: &App) -> Vec<Hint> {
+    if app.todos.is_empty() {
+        return Vec::new();
+    }
+    let mut hints = vec![Hint::screen("d", "supprimer")];
+    if app.selected_project().is_some() {
+        hints.push(Hint::screen("p", "promouvoir en ticket"));
+    }
+    hints
+}
+
 fn proposal_hints(app: &App) -> Vec<Hint> {
     if app.editor.is_empty() {
         return Vec::new();
@@ -330,7 +349,7 @@ fn proposal_hints(app: &App) -> Vec<Hint> {
 
 /// What moves the same way everywhere.
 pub const NAVIGATION: &[(&str, &str)] = &[
-    ("1…6", "aller à un écran"),
+    ("1…7", "aller à un écran"),
     ("Tab", "écran suivant"),
     ("⇧Tab", "écran précédent"),
     ("j k", "descendre / monter"),
@@ -352,7 +371,12 @@ pub const PARTOUT: &[(&str, &str)] = &[
 /// What the palette takes. Written as one types it, brackets left off: a
 /// command is not a key.
 pub const PALETTE: &[(&str, &str)] = &[
-    (":project add <chemin>", "ajouter"),
+    (":project add <chemin>", "ajouter un projet"),
+    (":project forget <nom>", "oublier un projet"),
+    (":todo add <titre>", "ajouter un todo"),
+    (":todo urgent <n>", "basculer l'urgence"),
+    (":todo due <n> <AAAA-MM-JJ>", "fixer l'échéance"),
+    (":todo open|doing|done|drop <n>", "changer le statut"),
     (":usage", "les coûts"),
     (":refresh", "tout relire"),
 ];

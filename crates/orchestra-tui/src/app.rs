@@ -3,7 +3,9 @@
 //! whole state machine is testable without a terminal.
 
 use orchestra_core::events::{Event, EventKind};
-use orchestra_core::model::{ProjectId, RoleDefinition, TicketId};
+use orchestra_core::model::{
+    ProjectId, RoleDefinition, TicketId, Todo, TodoDigest, TodoId, TodoStatus,
+};
 use orchestra_core::protocol::{
     Command, GroupBy, Reply, TicketDetail, TicketSummary, TimeRange, UsageQuery, UsageRow,
     UsageTotals,
@@ -21,16 +23,18 @@ pub enum Screen {
     Cost,
     NewTicket,
     Proposal,
+    Todo,
 }
 
 impl Screen {
-    pub const ALL: [Screen; 6] = [
+    pub const ALL: [Screen; 7] = [
         Screen::Board,
         Screen::Ticket,
         Screen::Agent,
         Screen::Cost,
         Screen::NewTicket,
         Screen::Proposal,
+        Screen::Todo,
     ];
 
     pub fn from_number(n: u8) -> Option<Self> {
@@ -45,6 +49,7 @@ impl Screen {
             Screen::Cost => "Coût",
             Screen::NewTicket => "Nouveau ticket",
             Screen::Proposal => "Équipe",
+            Screen::Todo => "TODO",
         }
     }
 
@@ -208,6 +213,17 @@ fn start_of_today() -> time::OffsetDateTime {
     now.replace_time(time::Time::MIDNIGHT)
 }
 
+/// `AAAA-MM-JJ`, what `:todo due` takes.
+fn parse_due_date(s: &str) -> Option<time::OffsetDateTime> {
+    let mut parts = s.trim().splitn(3, '-');
+    let year: i32 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day: u8 = parts.next()?.parse().ok()?;
+    let month = time::Month::try_from(month).ok()?;
+    let date = time::Date::from_calendar_date(year, month, day).ok()?;
+    Some(date.midnight().assume_utc())
+}
+
 #[derive(Debug, Clone)]
 pub struct CostView {
     pub rows: Vec<UsageRow>,
@@ -316,6 +332,11 @@ pub struct App {
     projects_loaded: bool,
     pub tickets: Vec<TicketSummary>,
     pub ticket_selected: usize,
+    pub todos: Vec<Todo>,
+    pub todo_selected: usize,
+    /// Set while `NewTicket` is filled from a todo rather than from scratch:
+    /// submitting promotes it instead of creating an unrelated ticket.
+    pub promoting_todo: Option<TodoId>,
     pub cost: CostView,
     /// Last few events, newest last: the "what is happening" strip.
     pub activity: Vec<String>,
@@ -365,6 +386,9 @@ impl Default for App {
             projects_loaded: false,
             tickets: Vec::new(),
             ticket_selected: 0,
+            todos: Vec::new(),
+            todo_selected: 0,
+            promoting_todo: None,
             cost: CostView::default(),
             activity: Vec::new(),
             status: "connexion au daemon…".into(),
@@ -479,6 +503,17 @@ impl App {
 
     pub fn selected_ticket_id(&self) -> Option<TicketId> {
         self.selected_ticket().map(|t| t.ticket.id)
+    }
+
+    pub fn selected_todo(&self) -> Option<&Todo> {
+        self.todos.get(self.todo_selected)
+    }
+
+    /// Overdue, due-today and urgent open todos — the morning digest, read
+    /// straight from what the board already keeps. The rule itself lives in
+    /// `orchestra-core` so the CLI's own notification shares it.
+    pub fn todo_digest(&self) -> TodoDigest {
+        orchestra_core::model::todo_digest(&self.todos, orchestra_core::now())
     }
 
     /// The agent the Agent screen is showing.
@@ -652,6 +687,7 @@ impl App {
             Action::Accept => self.submit_form(),
             Action::Cancel => {
                 self.form.clear();
+                self.promoting_todo = None;
                 self.screen = Screen::Board;
             }
             Action::Quit => self.should_quit = true,
@@ -666,14 +702,27 @@ impl App {
         };
         match self.form.validated() {
             Ok((title, brief)) => {
-                self.outbox.push(Command::CreateTicket {
-                    project_id: project,
-                    title,
-                    brief,
-                });
+                match self.promoting_todo.take() {
+                    Some(todo_id) => {
+                        self.outbox.push(Command::PromoteTodo {
+                            todo_id,
+                            project_id: project,
+                            title,
+                            brief,
+                        });
+                        self.status = "promotion en ticket…".into();
+                    }
+                    None => {
+                        self.outbox.push(Command::CreateTicket {
+                            project_id: project,
+                            title,
+                            brief,
+                        });
+                        self.status = "ticket créé".into();
+                    }
+                }
                 self.form.clear();
                 self.screen = Screen::Board;
-                self.status = "ticket créé".into();
             }
             Err(e) => self.form.error = Some(e),
         }
@@ -760,8 +809,46 @@ impl App {
             Screen::Ticket => self.on_ticket_char(c),
             Screen::Agent => self.on_agent_char(c),
             Screen::Proposal => self.on_proposal_char(c),
+            Screen::Todo => self.on_todo_char(c),
             _ => {}
         }
+    }
+
+    fn on_todo_char(&mut self, c: char) {
+        match c {
+            'd' => self.delete_selected_todo(),
+            'p' => self.promote_selected_todo(),
+            _ => {}
+        }
+    }
+
+    fn delete_selected_todo(&mut self) {
+        let Some(t) = self.selected_todo() else {
+            self.status = "aucun todo à supprimer".into();
+            return;
+        };
+        self.ask(
+            format!("Supprimer le todo « {} » ?", t.title),
+            Command::DeleteTodo { todo_id: t.id },
+        );
+    }
+
+    /// Seed the new-ticket form from the selected todo and remember it, so
+    /// submitting promotes it instead of creating an unrelated ticket.
+    fn promote_selected_todo(&mut self) {
+        if self.selected_project().is_none() {
+            self.status = "choisis d'abord un projet sur le tableau".into();
+            return;
+        }
+        let Some(t) = self.selected_todo() else {
+            self.status = "aucun todo à promouvoir".into();
+            return;
+        };
+        let (id, title, notes) = (t.id, t.title.clone(), t.notes.clone());
+        self.form.seed(&title, &notes);
+        self.form_field = TicketField::Title;
+        self.promoting_todo = Some(id);
+        self.screen = Screen::NewTicket;
     }
 
     fn on_board_char(&mut self, c: char) {
@@ -808,6 +895,7 @@ impl App {
         }
         self.form.clear();
         self.form_field = TicketField::Title;
+        self.promoting_todo = None;
         self.screen = Screen::NewTicket;
     }
 
@@ -1179,6 +1267,7 @@ impl App {
                 return;
             }
             (Screen::Cost, _) => (self.cost.rows.len(), &mut self.cost.selected),
+            (Screen::Todo, _) => (self.todos.len(), &mut self.todo_selected),
             (Screen::Proposal, _) => {
                 self.editor.move_selection(delta);
                 return;
@@ -1230,6 +1319,7 @@ impl App {
                 return;
             }
             (Screen::Cost, _) => (self.cost.rows.len(), &mut self.cost.selected),
+            (Screen::Todo, _) => (self.todos.len(), &mut self.todo_selected),
             _ => return,
         };
         *sel = index.min(len.saturating_sub(1));
@@ -1293,12 +1383,74 @@ impl App {
                     }
                 }
             }
+            "todo" => {
+                let (sub, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                match sub {
+                    "add" if !arg.is_empty() => {
+                        self.outbox.push(Command::CreateTodo {
+                            title: arg.into(),
+                            notes: String::new(),
+                            urgent: false,
+                            due_at: None,
+                        });
+                        self.status = "ajout du todo…".into();
+                    }
+                    "urgent" if !arg.is_empty() => match self.todo_at(arg) {
+                        Some(t) => self.outbox.push(Command::UpdateTodo {
+                            todo_id: t.id,
+                            title: t.title.clone(),
+                            notes: t.notes.clone(),
+                            urgent: !t.urgent,
+                            due_at: t.due_at,
+                        }),
+                        None => self.status = format!("aucun todo « {arg} »"),
+                    },
+                    "due" if !arg.is_empty() => {
+                        let (n, date) = arg.split_once(char::is_whitespace).unwrap_or((arg, ""));
+                        match (self.todo_at(n), parse_due_date(date)) {
+                            (Some(t), Some(due)) => self.outbox.push(Command::UpdateTodo {
+                                todo_id: t.id,
+                                title: t.title.clone(),
+                                notes: t.notes.clone(),
+                                urgent: t.urgent,
+                                due_at: Some(due),
+                            }),
+                            (None, _) => self.status = format!("aucun todo « {n} »"),
+                            (_, None) => self.status = "date invalide — AAAA-MM-JJ".into(),
+                        }
+                    }
+                    "open" | "doing" | "done" | "drop" if !arg.is_empty() => {
+                        let status = match sub {
+                            "open" => TodoStatus::Open,
+                            "doing" => TodoStatus::InProgress,
+                            "done" => TodoStatus::Done,
+                            _ => TodoStatus::Dropped,
+                        };
+                        match self.todo_at(arg) {
+                            Some(t) => self.outbox.push(Command::SetTodoStatus {
+                                todo_id: t.id,
+                                status,
+                            }),
+                            None => self.status = format!("aucun todo « {arg} »"),
+                        }
+                    }
+                    _ => {
+                        self.status = "usage : :todo add <titre> | urgent|due|open|doing|done|drop <n>".into()
+                    }
+                }
+            }
             "usage" | "cout" | "coût" => self.go(Screen::Cost),
             "refresh" => self.refresh(),
             "q" | "quit" => self.should_quit = true,
             "" => {}
             other => self.status = format!("commande inconnue : {other}"),
         }
+    }
+
+    /// The nth todo as shown on screen (1-based), what `:todo` commands take.
+    fn todo_at(&self, spec: &str) -> Option<&Todo> {
+        let n: usize = spec.trim().parse().ok()?;
+        n.checked_sub(1).and_then(|i| self.todos.get(i))
     }
 
     /// Take the commands queued by the last update.
@@ -1314,6 +1466,7 @@ impl App {
         });
         self.request_tickets();
         self.request_usage();
+        self.outbox.push(Command::ListTodos);
     }
 
     fn request_tickets(&mut self) {
@@ -1512,6 +1665,14 @@ impl App {
             Reply::Roles { roles } => {
                 self.roles = roles;
             }
+            Reply::Todos { todos } => {
+                let previous = self.selected_todo().map(|t| t.id);
+                self.todos = todos;
+                self.todo_selected = previous
+                    .and_then(|id| self.todos.iter().position(|t| t.id == id))
+                    .unwrap_or(0)
+                    .min(self.todos.len().saturating_sub(1));
+            }
             Reply::Agents { agents } => self.adopt_live_agent(agents),
             Reply::Status { status } => {
                 self.daemon_version = Some(status.version.clone());
@@ -1555,6 +1716,16 @@ impl App {
             | EventKind::ProjectForgotten { .. }
             | EventKind::UnmanagedSessionSeen { .. } => {
                 self.outbox.push(Command::ListProjects);
+            }
+            EventKind::TodoAdded { .. }
+            | EventKind::TodoUpdated { .. }
+            | EventKind::TodoStatusChanged { .. }
+            | EventKind::TodoDeleted { .. } => {
+                self.outbox.push(Command::ListTodos);
+            }
+            EventKind::TodoPromoted { .. } => {
+                self.outbox.push(Command::ListTodos);
+                self.request_tickets();
             }
             EventKind::TicketCreated { .. }
             | EventKind::TicketStatusChanged { .. }
@@ -1769,6 +1940,17 @@ pub fn describe(e: &Event) -> Option<String> {
             format!("session libre détectée dans {}", cwd.display())
         }
         EventKind::Warning { message } => format!("attention : {message}"),
+        EventKind::TodoAdded { title } => format!("todo « {title} » ajouté"),
+        EventKind::TodoUpdated { title } => format!("todo « {title} » modifié"),
+        EventKind::TodoStatusChanged { title, from, to } => {
+            format!("todo « {title} » : {} → {}", from.label_fr(), to.label_fr())
+        }
+        EventKind::TodoDeleted { title } => format!("todo « {title} » supprimé"),
+        EventKind::TodoPromoted {
+            title,
+            ticket_number,
+            project_name,
+        } => format!("todo « {title} » promu en ticket #{ticket_number} sur {project_name}"),
         // Too chatty or not user-facing.
         EventKind::AgentText { .. }
         | EventKind::AgentThinking { .. }
@@ -1804,11 +1986,12 @@ mod tests {
     #[test]
     fn screens_cycle_both_ways() {
         assert_eq!(Screen::Board.next(), Screen::Ticket);
-        assert_eq!(Screen::Board.prev(), Screen::Proposal);
+        assert_eq!(Screen::Board.prev(), Screen::Todo);
         assert_eq!(Screen::from_number(1), Some(Screen::Board));
         assert_eq!(Screen::from_number(6), Some(Screen::Proposal));
+        assert_eq!(Screen::from_number(7), Some(Screen::Todo));
         assert_eq!(Screen::from_number(0), None);
-        assert_eq!(Screen::from_number(7), None);
+        assert_eq!(Screen::from_number(8), None);
     }
 
     #[test]
@@ -2001,6 +2184,142 @@ mod tests {
         );
         let cmds = app.update(Msg::Event(Box::new(e)));
         assert!(cmds.iter().any(|c| matches!(c, Command::ListProjects)));
+    }
+
+    fn app_with_todos(n: usize) -> App {
+        let mut app = App::new();
+        let now = orchestra_core::now();
+        app.screen = Screen::Todo;
+        app.todos = (0..n)
+            .map(|i| Todo {
+                id: Uuid::new_v4(),
+                title: format!("t{i}"),
+                notes: String::new(),
+                status: TodoStatus::Open,
+                urgent: false,
+                due_at: None,
+                promoted_ticket_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn d_asks_before_deleting_the_selected_todo() {
+        let mut app = app_with_todos(2);
+        let id = app.todos[0].id;
+        let cmds = app.update(Msg::Key(Action::Char('d')));
+        assert!(cmds.is_empty());
+        let confirm = app.confirm.as_ref().expect("a question was asked");
+        assert!(confirm.question.contains("t0"), "{}", confirm.question);
+        assert_eq!(confirm.command, Command::DeleteTodo { todo_id: id });
+
+        let cmds = app.update(Msg::Key(Action::Char('y')));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Command::DeleteTodo { todo_id }] if *todo_id == id
+        ));
+    }
+
+    #[test]
+    fn palette_todo_add_creates_a_todo() {
+        let mut app = App::new();
+        app.update(Msg::Key(Action::CommandPalette));
+        for c in "todo add acheter du café".chars() {
+            app.update(Msg::Key(Action::Char(c)));
+        }
+        let cmds = app.update(Msg::Key(Action::Submit));
+        assert!(matches!(
+            cmds.first(),
+            Some(Command::CreateTodo { title, .. }) if title == "acheter du café"
+        ));
+    }
+
+    #[test]
+    fn palette_todo_status_resolves_by_position() {
+        let mut app = app_with_todos(2);
+        let id = app.todos[1].id;
+        app.update(Msg::Key(Action::CommandPalette));
+        for c in "todo done 2".chars() {
+            app.update(Msg::Key(Action::Char(c)));
+        }
+        let cmds = app.update(Msg::Key(Action::Submit));
+        assert!(matches!(
+            cmds.first(),
+            Some(Command::SetTodoStatus { todo_id, status })
+                if *todo_id == id && *status == TodoStatus::Done
+        ));
+    }
+
+    #[test]
+    fn promoting_a_todo_seeds_the_form_and_sends_promote_on_submit() {
+        let mut app = app_with_todos(1);
+        app.projects = vec![ProjectRow {
+            id: Uuid::new_v4(),
+            name: "p0".into(),
+            path: "/tmp/p0".into(),
+            discovered: false,
+        }];
+        app.project_selected = 1;
+        let todo_id = app.todos[0].id;
+        let project_id = app.projects[0].id;
+
+        app.update(Msg::Key(Action::Char('p')));
+        assert_eq!(app.screen, Screen::NewTicket);
+        assert_eq!(app.form.title, "t0");
+        assert_eq!(app.promoting_todo, Some(todo_id));
+
+        let cmds = app.update(Msg::Key(Action::NextField));
+        assert!(cmds.is_empty());
+        for c in "un brief assez long pour passer la validation".chars() {
+            app.update(Msg::Key(Action::Char(c)));
+        }
+        let cmds = app.update(Msg::Key(Action::Accept));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Command::PromoteTodo { todo_id: t, project_id: p, .. }]
+                if *t == todo_id && *p == project_id
+        ));
+        assert!(app.promoting_todo.is_none());
+    }
+
+    #[test]
+    fn a_promoted_todo_refreshes_todos_and_tickets() {
+        let mut app = App::new();
+        let e = Event::from_new(
+            1,
+            NewEvent::new(EventKind::TodoPromoted {
+                title: "t0".into(),
+                ticket_number: 1,
+                project_name: "p0".into(),
+            }),
+        );
+        let cmds = app.update(Msg::Event(Box::new(e)));
+        assert!(cmds.iter().any(|c| matches!(c, Command::ListTodos)));
+        assert!(cmds.iter().any(|c| matches!(c, Command::ListTickets { .. })));
+    }
+
+    #[test]
+    fn todo_digest_relays_to_the_shared_core_rule() {
+        // The counting rule itself is tested exhaustively in
+        // orchestra-core (shared with the CLI's own notification); this
+        // only checks the relay reads `self.todos`.
+        let mut app = App::new();
+        assert!(app.todo_digest().is_empty());
+        app.todos = vec![Todo {
+            id: Uuid::new_v4(),
+            title: "x".into(),
+            notes: String::new(),
+            status: TodoStatus::Open,
+            urgent: true,
+            due_at: None,
+            promoted_ticket_id: None,
+            created_at: orchestra_core::now(),
+            updated_at: orchestra_core::now(),
+        }];
+        assert_eq!(app.todo_digest().urgent, 1);
     }
 
     #[test]

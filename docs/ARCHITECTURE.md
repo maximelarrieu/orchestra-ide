@@ -362,8 +362,11 @@ ce qui en sort.
 
 ## Base de données
 
-Sept tables, décrites dans `crates/orchestra-daemon/src/store/migrations/0001_init.sql` :
+Huit tables. Sept viennent de `crates/orchestra-daemon/src/store/migrations/0001_init.sql` :
 `projects`, `tickets`, `agents`, `events`, `sessions`, `usage_samples`, `transcript_files`.
+`0002_todos.sql` ajoute `todos` — idées et tâches personnelles, rattachées à aucun
+projet tant qu'elles ne sont pas promues en ticket — et une colonne de portée
+`todo_id` sur `events`.
 
 `events` est append-only et sa clé primaire auto-incrémentée sert de curseur aux clients.
 `usage_samples` a pour clé primaire `message_id`, l'identifiant de la réponse API : le

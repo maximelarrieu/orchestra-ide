@@ -8,7 +8,7 @@
 //! Only the sixteen terminal colours are used, so the result follows whatever
 //! theme the terminal already has rather than fighting it.
 
-use orchestra_core::model::{AgentStatus, TicketStatus};
+use orchestra_core::model::{AgentStatus, TicketStatus, TodoStatus};
 use ratatui::style::{Color, Modifier, Style};
 
 /// How a status is drawn: a symbol, a colour, and whether it should stand out.
@@ -147,6 +147,47 @@ pub fn ticket(status: TicketStatus) -> Badge {
     }
 }
 
+/// What a todo's state looks like.
+pub fn todo(status: TodoStatus) -> Badge {
+    match status {
+        TodoStatus::Open => Badge {
+            symbol: "○",
+            color: Color::Blue,
+            bold: false,
+            dim: false,
+        },
+        TodoStatus::InProgress => Badge {
+            symbol: "◐",
+            color: Color::Cyan,
+            bold: true,
+            dim: false,
+        },
+        TodoStatus::Done => Badge {
+            symbol: "✓",
+            color: Color::Green,
+            bold: false,
+            dim: false,
+        },
+        TodoStatus::Dropped => Badge {
+            symbol: "⊘",
+            color: Color::Gray,
+            bold: false,
+            dim: true,
+        },
+    }
+}
+
+/// The marker for a todo flagged urgent: a glyph of its own, never a colour
+/// switch alone, and independent from the status badge next to it.
+pub fn urgent() -> Badge {
+    Badge {
+        symbol: "!",
+        color: Color::Yellow,
+        bold: true,
+        dim: false,
+    }
+}
+
 /// A key the current screen alone offers.
 ///
 /// Weight carries the distinction and colour only backs it up: on a monochrome
@@ -215,6 +256,15 @@ mod tests {
             tickets.len() >= 6,
             "trop de statuts de ticket partagent un symbole : {tickets:?}"
         );
+
+        let mut todos: Vec<&str> = TodoStatus::ALL.iter().map(|s| todo(*s).symbol).collect();
+        todos.sort_unstable();
+        todos.dedup();
+        assert_eq!(
+            todos.len(),
+            TodoStatus::ALL.len(),
+            "trop de statuts de todo partagent un symbole : {todos:?}"
+        );
     }
 
     #[test]
@@ -230,6 +280,17 @@ mod tests {
                 );
             }
         }
+        for status in TodoStatus::ALL {
+            let b = todo(status);
+            if b.color == Color::Red || b.color == Color::Green {
+                assert!(
+                    b.symbol == "✗" || b.symbol == "✓",
+                    "{status:?} s'appuie sur la couleur seule"
+                );
+            }
+        }
+        assert_ne!(urgent().color, Color::Red);
+        assert_ne!(urgent().color, Color::Green);
     }
 
     #[test]

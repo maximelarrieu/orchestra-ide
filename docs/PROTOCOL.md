@@ -53,7 +53,7 @@ Le daemon renvoie `{"reply":"subscribed","current_seq":N}` puis pousse des trame
 - Si un client prend trop de retard, le daemon rejoue depuis la base ce qu'il a manqué
   plutôt que de laisser un trou.
 
-Le filtre accepte `project_id`, `ticket_id`, `agent_id`, une liste de `tags`, et
+Le filtre accepte `project_id`, `ticket_id`, `agent_id`, `todo_id`, une liste de `tags`, et
 `exclude_verbose` qui écarte les événements bavards (texte d'agent, réflexion, outils).
 
 ## Événements
@@ -62,10 +62,11 @@ Un seul type, discriminé par `kind` : `daemon_started`, `project_added`,
 `ticket_created`, `ticket_status_changed`, `proposal_ready`, `worktree_created`,
 `agent_spawned`, `agent_status_changed`, `agent_text`, `agent_thinking`,
 `tool_started`, `tool_finished`, `usage`, `agent_steered`, `agent_result`,
-`hook_blocked`, `unmanaged_session_seen`, `warning`, et quelques autres.
+`hook_blocked`, `unmanaged_session_seen`, `warning`, `todo_added`, `todo_updated`,
+`todo_status_changed`, `todo_deleted`, `todo_promoted`, et quelques autres.
 
 Chaque événement porte un `seq` monotone attribué par la base, un horodatage RFC 3339,
-et la portée qui le concerne (`project_id`, `ticket_id`, `agent_id`).
+et la portée qui le concerne (`project_id`, `ticket_id`, `agent_id`, `todo_id`).
 
 ## Hooks
 

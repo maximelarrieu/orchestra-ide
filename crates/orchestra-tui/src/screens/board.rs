@@ -38,6 +38,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
         Screen::Agent => super::agent::render(app, frame, chunks[1]),
         Screen::NewTicket => super::new_ticket::render(app, frame, chunks[1]),
         Screen::Proposal => super::proposal::render(app, frame, chunks[1]),
+        Screen::Todo => super::todo::render(app, frame, chunks[1]),
     }
     render_activity(app, frame, chunks[2]);
     render_keys(app, frame, chunks[3]);
@@ -66,6 +67,15 @@ fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect) {
             Style::default().add_modifier(Modifier::DIM)
         };
         spans.push(Span::styled(label, style));
+    }
+    // What the morning should look at first, visible from every screen —
+    // opening Orchestra is the notification, not a separate service.
+    let digest = app.todo_digest();
+    if !digest.is_empty() {
+        let badge = theme::urgent();
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(badge.symbol, badge.style()));
+        spans.push(Span::styled(format!(" {}", digest.summary_fr()), badge.style()));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -269,7 +279,7 @@ fn render_lane(
 }
 
 /// Cut to `width` characters, with an ellipsis when something was cut.
-fn truncate(text: &str, width: usize) -> String {
+pub fn truncate(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }

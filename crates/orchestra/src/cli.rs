@@ -9,6 +9,8 @@ use orchestra_core::pricing::{fmt_tokens, fmt_usd};
 use orchestra_core::protocol::{Command as Cmd, GroupBy, Reply, TimeRange, UsageQuery};
 use orchestra_tui::Client;
 
+use crate::notify;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "orchestra",
@@ -46,6 +48,11 @@ enum Sub {
         #[command(subcommand)]
         action: ProjectAction,
     },
+    /// Idées et tâches personnelles, sans projet.
+    Todo {
+        #[command(subcommand)]
+        action: TodoAction,
+    },
     /// Installe le catalogue de rôles et la configuration.
     Init {
         /// Réécrit les rôles livrés, même modifiés. La configuration n'est
@@ -55,6 +62,10 @@ enum Sub {
         /// Installe aussi la disposition zellij (`zellij -l orchestra`).
         #[arg(long)]
         zellij: bool,
+        /// Écrit un minuteur systemd --user pour `orchestra todo notify` (à
+        /// activer soi-même : rien n'appelle `systemctl`).
+        #[arg(long)]
+        notify: bool,
     },
     /// Ouvre le pane zellij qui suit un agent, ou l'agent d'un ticket.
     Open {
@@ -200,6 +211,42 @@ enum ProjectAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum TodoAction {
+    /// Ajoute un todo.
+    Add {
+        title: String,
+        #[arg(long)]
+        urgent: bool,
+        /// Échéance, au format AAAA-MM-JJ.
+        #[arg(long)]
+        due: Option<String>,
+    },
+    /// Liste les todos, dans l'ordre du digest (échéance, urgence, création).
+    List,
+    /// Change le statut d'un todo : sa position dans `orchestra todo list`.
+    Status {
+        n: usize,
+        /// open, in_progress, done ou dropped.
+        status: String,
+    },
+    /// Supprime un todo.
+    Drop { n: usize },
+    /// Crée un ticket depuis un todo et le marque promu.
+    Promote {
+        n: usize,
+        /// Projet : identifiant ou fragment de son nom.
+        #[arg(long)]
+        project: String,
+        /// Brief envoyé à l'orchestrateur ; par défaut, le titre du todo.
+        #[arg(long)]
+        brief: Option<String>,
+    },
+    /// Vérifie les todos et notifie le bureau s'il y a quelque chose à
+    /// signaler. Pensé pour être lancé par un minuteur, pas au clavier.
+    Notify,
+}
+
 impl Cli {
     pub async fn run(self) -> Result<()> {
         let config = match &self.config {
@@ -314,7 +361,121 @@ impl Cli {
                     },
                 }
             }
-            Sub::Init { force, zellij } => {
+            Sub::Todo { action } => {
+                let mut client = Client::connect_or_spawn(&socket).await?;
+                match action {
+                    TodoAction::Add { title, urgent, due } => {
+                        let due_at = due.as_deref().map(parse_due_date).transpose()?;
+                        match client
+                            .call(Cmd::CreateTodo {
+                                title,
+                                notes: String::new(),
+                                urgent,
+                                due_at,
+                            })
+                            .await?
+                        {
+                            Reply::Todos { todos } => {
+                                if let Some(t) = todos.first() {
+                                    println!("todo « {} » ajouté", t.title);
+                                }
+                                Ok(())
+                            }
+                            other => bail!("réponse inattendue : {other:?}"),
+                        }
+                    }
+                    TodoAction::List => match client.call(Cmd::ListTodos).await? {
+                        Reply::Todos { todos } => {
+                            if todos.is_empty() {
+                                println!("aucun todo — `orchestra todo add <titre>`");
+                            }
+                            for (i, t) in todos.iter().enumerate() {
+                                let urgent = if t.urgent { " !" } else { "" };
+                                let due = t
+                                    .due_at
+                                    .map(|d| format!(" (échéance {})", fmt_date(d)))
+                                    .unwrap_or_default();
+                                println!(
+                                    "{:>3}  {:<11} {}{urgent}{due}",
+                                    i + 1,
+                                    t.status.label_fr(),
+                                    t.title
+                                );
+                            }
+                            Ok(())
+                        }
+                        other => bail!("réponse inattendue : {other:?}"),
+                    },
+                    TodoAction::Status { n, status } => {
+                        let status = orchestra_core::model::TodoStatus::parse(&status)
+                            .with_context(|| {
+                                format!("statut inconnu : {status} (open, in_progress, done, dropped)")
+                            })?;
+                        let t = resolve_todo(&mut client, n).await?;
+                        client
+                            .call(Cmd::SetTodoStatus {
+                                todo_id: t.id,
+                                status,
+                            })
+                            .await?;
+                        println!("todo « {} » → {}", t.title, status.label_fr());
+                        Ok(())
+                    }
+                    TodoAction::Drop { n } => {
+                        let t = resolve_todo(&mut client, n).await?;
+                        client.call(Cmd::DeleteTodo { todo_id: t.id }).await?;
+                        println!("todo « {} » supprimé", t.title);
+                        Ok(())
+                    }
+                    TodoAction::Promote { n, project, brief } => {
+                        let t = resolve_todo(&mut client, n).await?;
+                        let p = resolve_project(&mut client, &project).await?;
+                        let brief = brief.unwrap_or_else(|| t.title.clone());
+                        match client
+                            .call(Cmd::PromoteTodo {
+                                todo_id: t.id,
+                                project_id: p.id,
+                                title: t.title.clone(),
+                                brief,
+                            })
+                            .await?
+                        {
+                            Reply::Ack => {
+                                println!("todo « {} » promu sur le projet « {} »", t.title, p.name);
+                                Ok(())
+                            }
+                            other => bail!("réponse inattendue : {other:?}"),
+                        }
+                    }
+                    TodoAction::Notify => {
+                        let todos = match client.call(Cmd::ListTodos).await? {
+                            Reply::Todos { todos } => todos,
+                            other => bail!("réponse inattendue : {other:?}"),
+                        };
+                        let now = orchestra_core::now();
+                        let digest = orchestra_core::model::todo_digest(&todos, now);
+                        if digest.is_empty() {
+                            println!("rien à signaler");
+                            return Ok(());
+                        }
+                        let highlights = orchestra_core::model::todo_highlights(&todos, now, 3);
+                        let body = highlights
+                            .iter()
+                            .map(|t| format!("• {}", t.title))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let summary = digest.summary_fr();
+                        notify::send("Orchestra — TODO", &format!("{summary}\n{body}")).await;
+                        println!("{summary}");
+                        Ok(())
+                    }
+                }
+            }
+            Sub::Init {
+                force,
+                zellij,
+                notify,
+            } => {
                 let report = orchestra_daemon::init::init(force)?;
                 for path in &report.written {
                     println!("écrit   {}", path.display());
@@ -344,6 +505,23 @@ impl Cli {
                     } else {
                         println!("\nconservé {}", path.display());
                         println!("« orchestra init --zellij --force » la remplace.");
+                    }
+                }
+                if notify {
+                    let dir = orchestra_daemon::init::systemd_user_dir();
+                    let bin = std::env::current_exe().context("binaire orchestra introuvable")?;
+                    let (service, timer, written) =
+                        orchestra_daemon::init::init_notify(&dir, &bin, force)?;
+                    if written {
+                        println!("\nécrit   {}", service.display());
+                        println!("écrit   {}", timer.display());
+                        println!("\nActive le minuteur toi-même :");
+                        println!("  systemctl --user daemon-reload");
+                        println!("  systemctl --user enable --now orchestra-todo.timer");
+                    } else {
+                        println!("\nconservé {}", service.display());
+                        println!("conservé {}", timer.display());
+                        println!("« orchestra init --notify --force » les remplace.");
                     }
                 }
                 Ok(())
@@ -1081,6 +1259,45 @@ async fn resolve_project(
                 .join(", ")
         ),
     }
+}
+
+/// The todo at this 1-based position, in `orchestra todo list`'s own order.
+async fn resolve_todo(client: &mut Client, n: usize) -> Result<orchestra_core::model::Todo> {
+    let todos = match client.call(Cmd::ListTodos).await? {
+        Reply::Todos { todos } => todos,
+        other => bail!("réponse inattendue : {other:?}"),
+    };
+    n.checked_sub(1)
+        .and_then(move |i| todos.into_iter().nth(i))
+        .context("aucun todo à cette position — « orchestra todo list »")
+}
+
+/// `AAAA-MM-JJ`, what `--due` takes.
+fn parse_due_date(s: &str) -> Result<time::OffsetDateTime> {
+    let mut parts = s.trim().splitn(3, '-');
+    let year: i32 = parts
+        .next()
+        .context("date vide")?
+        .parse()
+        .context("année invalide")?;
+    let month: u8 = parts
+        .next()
+        .context("date incomplète — attendu AAAA-MM-JJ")?
+        .parse()
+        .context("mois invalide")?;
+    let day: u8 = parts
+        .next()
+        .context("date incomplète — attendu AAAA-MM-JJ")?
+        .parse()
+        .context("jour invalide")?;
+    let month = time::Month::try_from(month).context("mois invalide")?;
+    let date = time::Date::from_calendar_date(year, month, day).context("date invalide")?;
+    Ok(date.midnight().assume_utc())
+}
+
+fn fmt_date(d: time::OffsetDateTime) -> String {
+    let date = d.date();
+    format!("{:04}-{:02}-{:02}", date.year(), u8::from(date.month()), date.day())
 }
 
 fn read_brief(inline: Option<String>, file: Option<String>) -> Result<String> {

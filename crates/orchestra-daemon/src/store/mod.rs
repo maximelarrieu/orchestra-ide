@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use orchestra_core::events::{Event, EventFilter, EventKind, NewEvent};
 use orchestra_core::model::{
     Agent, AgentId, AgentStatus, Project, ProjectId, ProjectKind, Ticket, TicketId, TicketStatus,
-    Tokens, UsageSample,
+    Todo, TodoId, Tokens, UsageSample,
 };
 use orchestra_core::protocol::{GroupBy, UsageQuery};
 use rusqlite::{Connection, OpenFlags};
@@ -205,6 +205,28 @@ impl Store {
             Ok(n)
         })
         .await
+    }
+
+    // -- todos ----------------------------------------------------------------
+
+    pub async fn insert_todo(&self, t: Todo) -> Result<()> {
+        self.with(move |c| rows::insert_todo(c, &t)).await
+    }
+
+    pub async fn update_todo(&self, t: Todo) -> Result<()> {
+        self.with(move |c| rows::update_todo(c, &t)).await
+    }
+
+    pub async fn delete_todo(&self, id: TodoId) -> Result<()> {
+        self.with(move |c| rows::delete_todo(c, id)).await
+    }
+
+    pub async fn todo(&self, id: TodoId) -> Result<Option<Todo>> {
+        self.with(move |c| rows::select_todo(c, id)).await
+    }
+
+    pub async fn list_todos(&self) -> Result<Vec<Todo>> {
+        self.with(rows::select_todos).await
     }
 
     // -- agents -------------------------------------------------------------

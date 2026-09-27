@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::events::{Event, EventFilter};
 use crate::model::{
     Agent, AgentId, Project, ProjectId, RoleDefinition, Team, Ticket, TicketId, TicketStatus,
-    Tokens,
+    Todo, TodoId, TodoStatus, Tokens,
 };
 
 /// Bumped when a change would confuse an older client. The daemon refuses
@@ -143,6 +143,40 @@ pub enum Command {
     },
     /// Daemon version, uptime, running agents. Used by `orchestra doctor`.
     Status,
+    ListTodos,
+    CreateTodo {
+        title: String,
+        #[serde(default)]
+        notes: String,
+        #[serde(default)]
+        urgent: bool,
+        #[serde(default, with = "time::serde::rfc3339::option")]
+        due_at: Option<OffsetDateTime>,
+    },
+    UpdateTodo {
+        todo_id: TodoId,
+        title: String,
+        notes: String,
+        urgent: bool,
+        #[serde(default, with = "time::serde::rfc3339::option")]
+        due_at: Option<OffsetDateTime>,
+    },
+    SetTodoStatus {
+        todo_id: TodoId,
+        status: TodoStatus,
+    },
+    DeleteTodo {
+        todo_id: TodoId,
+    },
+    /// Creates a Draft ticket on `project_id` from this todo, then marks the
+    /// todo as promoted. Replies immediately; `TodoPromoted` and
+    /// `TicketCreated` follow as events.
+    PromoteTodo {
+        todo_id: TodoId,
+        project_id: ProjectId,
+        title: String,
+        brief: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,6 +193,9 @@ pub enum Reply {
     },
     Tickets {
         tickets: Vec<TicketSummary>,
+    },
+    Todos {
+        todos: Vec<Todo>,
     },
     Ticket {
         detail: Box<TicketDetail>,
@@ -583,6 +620,33 @@ mod tests {
             },
             Command::Status,
             Command::ListAgents { only_active: true },
+            Command::ListTodos,
+            Command::CreateTodo {
+                title: "acheter du café".into(),
+                notes: "pour le bureau".into(),
+                urgent: true,
+                due_at: Some(crate::now()),
+            },
+            Command::UpdateTodo {
+                todo_id: Uuid::new_v4(),
+                title: "t".into(),
+                notes: "n".into(),
+                urgent: false,
+                due_at: None,
+            },
+            Command::SetTodoStatus {
+                todo_id: Uuid::new_v4(),
+                status: TodoStatus::Done,
+            },
+            Command::DeleteTodo {
+                todo_id: Uuid::new_v4(),
+            },
+            Command::PromoteTodo {
+                todo_id: Uuid::new_v4(),
+                project_id: Uuid::new_v4(),
+                title: "t".into(),
+                brief: "brief assez long pour passer la validation".into(),
+            },
         ];
         for cmd in cmds {
             let req = Request { id: 7, cmd };
@@ -634,6 +698,7 @@ mod tests {
             Reply::Ack,
             Reply::Projects { projects: vec![] },
             Reply::Tickets { tickets: vec![] },
+            Reply::Todos { todos: vec![] },
             Reply::Roles { roles: vec![] },
             Reply::Agents { agents: vec![] },
             Reply::Usage {

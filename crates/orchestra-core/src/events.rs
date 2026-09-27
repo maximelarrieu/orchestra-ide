@@ -11,7 +11,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::model::{
-    AgentId, AgentStatus, ExitReason, ProjectId, TeamProposal, TicketId, TicketStatus, UsageSample,
+    AgentId, AgentStatus, ExitReason, ProjectId, TeamProposal, TicketId, TicketStatus, TodoId,
+    TodoStatus, UsageSample,
 };
 use crate::review::Verdict;
 
@@ -26,6 +27,8 @@ pub struct NewEvent {
     pub ticket_id: Option<TicketId>,
     #[serde(default)]
     pub agent_id: Option<AgentId>,
+    #[serde(default)]
+    pub todo_id: Option<TodoId>,
     pub kind: EventKind,
 }
 
@@ -36,6 +39,7 @@ impl NewEvent {
             project_id: None,
             ticket_id: None,
             agent_id: None,
+            todo_id: None,
             kind,
         }
     }
@@ -52,6 +56,11 @@ impl NewEvent {
 
     pub fn agent(mut self, id: AgentId) -> Self {
         self.agent_id = Some(id);
+        self
+    }
+
+    pub fn todo(mut self, id: TodoId) -> Self {
+        self.todo_id = Some(id);
         self
     }
 
@@ -81,6 +90,8 @@ pub struct Event {
     pub ticket_id: Option<TicketId>,
     #[serde(default)]
     pub agent_id: Option<AgentId>,
+    #[serde(default)]
+    pub todo_id: Option<TodoId>,
     pub kind: EventKind,
 }
 
@@ -92,6 +103,7 @@ impl Event {
             project_id: e.project_id,
             ticket_id: e.ticket_id,
             agent_id: e.agent_id,
+            todo_id: e.todo_id,
             kind: e.kind,
         }
     }
@@ -133,10 +145,15 @@ pub enum EventTag {
     UnmanagedSessionSeen,
     DaemonStarted,
     Warning,
+    TodoAdded,
+    TodoUpdated,
+    TodoStatusChanged,
+    TodoDeleted,
+    TodoPromoted,
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 31] = [
+    pub const ALL: [EventTag; 36] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::TicketCreated,
@@ -168,6 +185,11 @@ impl EventTag {
         EventTag::UnmanagedSessionSeen,
         EventTag::DaemonStarted,
         EventTag::Warning,
+        EventTag::TodoAdded,
+        EventTag::TodoUpdated,
+        EventTag::TodoStatusChanged,
+        EventTag::TodoDeleted,
+        EventTag::TodoPromoted,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -203,6 +225,11 @@ impl EventTag {
             EventTag::UnmanagedSessionSeen => "unmanaged_session_seen",
             EventTag::DaemonStarted => "daemon_started",
             EventTag::Warning => "warning",
+            EventTag::TodoAdded => "todo_added",
+            EventTag::TodoUpdated => "todo_updated",
+            EventTag::TodoStatusChanged => "todo_status_changed",
+            EventTag::TodoDeleted => "todo_deleted",
+            EventTag::TodoPromoted => "todo_promoted",
         }
     }
 
@@ -387,6 +414,27 @@ pub enum EventKind {
     Warning {
         message: String,
     },
+    TodoAdded {
+        title: String,
+    },
+    TodoUpdated {
+        title: String,
+    },
+    TodoStatusChanged {
+        title: String,
+        from: TodoStatus,
+        to: TodoStatus,
+    },
+    TodoDeleted {
+        title: String,
+    },
+    /// A todo became a ticket. The ticket's own `TicketCreated` event carries
+    /// the rest of the story.
+    TodoPromoted {
+        title: String,
+        ticket_number: i64,
+        project_name: String,
+    },
 }
 
 impl EventKind {
@@ -423,6 +471,11 @@ impl EventKind {
             EventKind::UnmanagedSessionSeen { .. } => EventTag::UnmanagedSessionSeen,
             EventKind::DaemonStarted { .. } => EventTag::DaemonStarted,
             EventKind::Warning { .. } => EventTag::Warning,
+            EventKind::TodoAdded { .. } => EventTag::TodoAdded,
+            EventKind::TodoUpdated { .. } => EventTag::TodoUpdated,
+            EventKind::TodoStatusChanged { .. } => EventTag::TodoStatusChanged,
+            EventKind::TodoDeleted { .. } => EventTag::TodoDeleted,
+            EventKind::TodoPromoted { .. } => EventTag::TodoPromoted,
         }
     }
 }
@@ -436,6 +489,8 @@ pub struct EventFilter {
     pub ticket_id: Option<TicketId>,
     #[serde(default)]
     pub agent_id: Option<AgentId>,
+    #[serde(default)]
+    pub todo_id: Option<TodoId>,
     /// Only these tags. Empty means every tag.
     #[serde(default)]
     pub tags: Vec<EventTag>,
@@ -484,6 +539,11 @@ impl EventFilter {
         }
         if let Some(a) = self.agent_id {
             if e.agent_id != Some(a) {
+                return false;
+            }
+        }
+        if let Some(t) = self.todo_id {
+            if e.todo_id != Some(t) {
                 return false;
             }
         }
@@ -537,6 +597,11 @@ mod tests {
             },
             EventKind::DaemonStarted {
                 version: "v".into(),
+            },
+            EventKind::TodoStatusChanged {
+                title: "t".into(),
+                from: crate::model::TodoStatus::Open,
+                to: crate::model::TodoStatus::Done,
             },
         ];
         for kind in kinds {
@@ -602,6 +667,27 @@ mod tests {
         e.ticket_id = Some(t);
         assert!(EventFilter::for_ticket(t).matches(&e));
         assert!(!EventFilter::for_ticket(Uuid::new_v4()).matches(&e));
+    }
+
+    #[test]
+    fn todo_filter_ignores_other_todos() {
+        let t = Uuid::new_v4();
+        let mut e = ev(EventKind::TodoStatusChanged {
+            title: "x".into(),
+            from: crate::model::TodoStatus::Open,
+            to: crate::model::TodoStatus::Done,
+        });
+        e.todo_id = Some(t);
+        let filter = EventFilter {
+            todo_id: Some(t),
+            ..Default::default()
+        };
+        assert!(filter.matches(&e));
+        let other = EventFilter {
+            todo_id: Some(Uuid::new_v4()),
+            ..Default::default()
+        };
+        assert!(!other.matches(&e));
     }
 
     #[test]

@@ -15,7 +15,7 @@ pub enum Action {
     Quit,
     Help,
     Refresh,
-    /// Screens 1..6.
+    /// Screens 1..7.
     Screen(u8),
     NextScreen,
     PrevScreen,
@@ -54,7 +54,7 @@ pub fn map(key: KeyEvent) -> Option<Action> {
         (KeyCode::Char('c'), true) => Action::Quit,
         (KeyCode::Char('?'), false) => Action::Help,
         (KeyCode::Char('R'), false) => Action::Refresh,
-        (KeyCode::Char(c @ '1'..='6'), false) => Action::Screen(c as u8 - b'0'),
+        (KeyCode::Char(c @ '1'..='7'), false) => Action::Screen(c as u8 - b'0'),
         (KeyCode::Tab, false) => Action::NextScreen,
         (KeyCode::BackTab, _) => Action::PrevScreen,
         (KeyCode::Char('j'), false) | (KeyCode::Down, false) => Action::Down,
@@ -151,8 +151,9 @@ mod tests {
     fn screens_are_numbered() {
         assert_eq!(map(key('1')), Some(Action::Screen(1)));
         assert_eq!(map(key('6')), Some(Action::Screen(6)));
-        // There is no seventh screen; the digit falls through to the screen.
-        assert_eq!(map(key('7')), Some(Action::Char('7')));
+        assert_eq!(map(key('7')), Some(Action::Screen(7)));
+        // There is no eighth screen; the digit falls through to the screen.
+        assert_eq!(map(key('8')), Some(Action::Char('8')));
     }
 
     #[test]

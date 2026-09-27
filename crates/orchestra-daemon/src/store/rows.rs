@@ -8,7 +8,7 @@ use orchestra_core::claude::merge_tokens;
 use orchestra_core::events::{Event, EventFilter, EventKind, NewEvent};
 use orchestra_core::model::{
     Agent, AgentId, AgentStatus, Effort, ExitReason, Project, ProjectId, ProjectKind, Team,
-    TeamProposal, Ticket, TicketId, TicketStatus, Tokens, UsageSample,
+    TeamProposal, Ticket, TicketId, TicketStatus, Todo, TodoId, TodoStatus, Tokens, UsageSample,
 };
 use orchestra_core::protocol::{GroupBy, UsageQuery};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
@@ -61,13 +61,14 @@ pub fn insert_event(conn: &mut Connection, e: NewEvent) -> Result<Event> {
     let payload = serde_json::to_string(&e.kind)?;
     let tag = e.kind.tag().as_str();
     conn.execute(
-        "INSERT INTO events (ts, project_id, ticket_id, agent_id, kind, payload)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO events (ts, project_id, ticket_id, agent_id, todo_id, kind, payload)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             ts(e.ts),
             e.project_id.map(|v| v.to_string()),
             e.ticket_id.map(|v| v.to_string()),
             e.agent_id.map(|v| v.to_string()),
+            e.todo_id.map(|v| v.to_string()),
             tag,
             payload,
         ],
@@ -84,6 +85,7 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<Event> {
         project_id: opt_uuid(row, "project_id")?,
         ticket_id: opt_uuid(row, "ticket_id")?,
         agent_id: opt_uuid(row, "agent_id")?,
+        todo_id: opt_uuid(row, "todo_id")?,
         kind,
     })
 }
@@ -103,6 +105,10 @@ fn filter_sql(f: &EventFilter) -> (String, Vec<String>) {
     if let Some(a) = f.agent_id {
         args.push(a.to_string());
         clauses.push(format!("agent_id = ?{}", args.len()));
+    }
+    if let Some(td) = f.todo_id {
+        args.push(td.to_string());
+        clauses.push(format!("todo_id = ?{}", args.len()));
     }
     if !f.tags.is_empty() {
         let mut placeholders = Vec::new();
@@ -399,6 +405,86 @@ pub fn select_tickets(
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args.iter()), ticket_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+// ---------------------------------------------------------------------------
+// Todos
+// ---------------------------------------------------------------------------
+
+pub fn insert_todo(conn: &mut Connection, t: &Todo) -> Result<()> {
+    conn.execute(
+        "INSERT INTO todos
+           (id, title, notes, status, urgent, due_at, promoted_ticket_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            t.id.to_string(),
+            t.title,
+            t.notes,
+            t.status.as_str(),
+            t.urgent,
+            t.due_at.map(ts),
+            t.promoted_ticket_id.map(|v| v.to_string()),
+            ts(t.created_at),
+            ts(t.updated_at),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_todo(conn: &mut Connection, t: &Todo) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE todos SET title = ?2, notes = ?3, status = ?4, urgent = ?5, due_at = ?6,
+             promoted_ticket_id = ?7, updated_at = ?8
+         WHERE id = ?1",
+        params![
+            t.id.to_string(),
+            t.title,
+            t.notes,
+            t.status.as_str(),
+            t.urgent,
+            t.due_at.map(ts),
+            t.promoted_ticket_id.map(|v| v.to_string()),
+            ts(t.updated_at),
+        ],
+    )?;
+    anyhow::ensure!(n == 1, "todo {} introuvable", t.id);
+    Ok(())
+}
+
+pub fn delete_todo(conn: &mut Connection, id: TodoId) -> Result<()> {
+    let n = conn.execute("DELETE FROM todos WHERE id = ?1", [id.to_string()])?;
+    anyhow::ensure!(n == 1, "todo introuvable");
+    Ok(())
+}
+
+fn todo_from_row(row: &Row<'_>) -> rusqlite::Result<Todo> {
+    let status: String = row.get("status")?;
+    Ok(Todo {
+        id: uuid_of(row, "id")?,
+        title: row.get("title")?,
+        notes: row.get("notes")?,
+        status: TodoStatus::parse(&status).map_err(conv_err)?,
+        urgent: row.get("urgent")?,
+        due_at: opt_time(row, "due_at")?,
+        promoted_ticket_id: opt_uuid(row, "promoted_ticket_id")?,
+        created_at: time_of(row, "created_at")?,
+        updated_at: time_of(row, "updated_at")?,
+    })
+}
+
+pub fn select_todo(conn: &mut Connection, id: TodoId) -> Result<Option<Todo>> {
+    let mut stmt = conn.prepare("SELECT * FROM todos WHERE id = ?1")?;
+    Ok(stmt.query_row([id.to_string()], todo_from_row).optional()?)
+}
+
+/// Soonest due first, undated last; urgent breaks ties, so the digest has
+/// nothing left to sort.
+pub fn select_todos(conn: &mut Connection) -> Result<Vec<Todo>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM todos ORDER BY due_at IS NULL, due_at ASC, urgent DESC, created_at ASC",
+    )?;
+    let rows = stmt.query_map([], todo_from_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 

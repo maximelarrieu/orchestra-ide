@@ -12,11 +12,18 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("migrations/0001_init.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "todos",
+        sql: include_str!("migrations/0002_todos.sql"),
+    },
+];
 
 /// Highest version this binary knows about.
 pub fn latest_version() -> i32 {
@@ -64,7 +71,7 @@ mod tests {
     fn migrating_twice_is_a_no_op() {
         let mut c = mem();
         let first = migrate(&mut c).unwrap();
-        assert_eq!(first, vec![1]);
+        assert_eq!(first, vec![1, 2]);
         assert_eq!(current_version(&c).unwrap(), latest_version());
         let second = migrate(&mut c).unwrap();
         assert!(second.is_empty());
@@ -90,6 +97,7 @@ mod tests {
                 "projects",
                 "sessions",
                 "tickets",
+                "todos",
                 "transcript_files",
                 "usage_samples",
             ]

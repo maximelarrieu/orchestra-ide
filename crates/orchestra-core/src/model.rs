@@ -13,6 +13,7 @@ use crate::error::{CoreError, Result};
 pub type ProjectId = Uuid;
 pub type TicketId = Uuid;
 pub type AgentId = Uuid;
+pub type TodoId = Uuid;
 
 // ---------------------------------------------------------------------------
 // Project
@@ -237,6 +238,160 @@ pub fn ticket_slug(number: i64, title: &str) -> String {
     } else {
         format!("{number}-{slug}")
     }
+}
+
+// ---------------------------------------------------------------------------
+// Todo
+// ---------------------------------------------------------------------------
+
+/// A personal note, unrelated to any project. Free-form until it is promoted
+/// into a real [`Ticket`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Open,
+    InProgress,
+    Done,
+    Dropped,
+}
+
+impl TodoStatus {
+    pub const ALL: [TodoStatus; 4] = [
+        TodoStatus::Open,
+        TodoStatus::InProgress,
+        TodoStatus::Done,
+        TodoStatus::Dropped,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TodoStatus::Open => "open",
+            TodoStatus::InProgress => "in_progress",
+            TodoStatus::Done => "done",
+            TodoStatus::Dropped => "dropped",
+        }
+    }
+
+    pub fn label_fr(self) -> &'static str {
+        match self {
+            TodoStatus::Open => "ouvert",
+            TodoStatus::InProgress => "en cours",
+            TodoStatus::Done => "fait",
+            TodoStatus::Dropped => "abandonné",
+        }
+    }
+
+    /// True once it no longer needs attention — excluded from the morning digest.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, TodoStatus::Done | TodoStatus::Dropped)
+    }
+
+    pub fn parse(s: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|v| v.as_str() == s)
+            .ok_or_else(|| CoreError::Parse(format!("statut de todo inconnu : {s}")))
+    }
+}
+
+impl fmt::Display for TodoStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A personal idea or task, kept outside of any project until it becomes
+/// worth a real ticket.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Todo {
+    pub id: TodoId,
+    pub title: String,
+    #[serde(default)]
+    pub notes: String,
+    pub status: TodoStatus,
+    #[serde(default)]
+    pub urgent: bool,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub due_at: Option<OffsetDateTime>,
+    /// Set once this todo became a ticket; the ticket itself is the record
+    /// of what happened next.
+    #[serde(default)]
+    pub promoted_ticket_id: Option<TicketId>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+/// What the morning should look at first: overdue, due today, and urgent
+/// open todos. Read straight from a todo list, no store of its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TodoDigest {
+    pub overdue: usize,
+    pub due_today: usize,
+    pub urgent: usize,
+}
+
+impl TodoDigest {
+    pub fn is_empty(self) -> bool {
+        self.overdue == 0 && self.due_today == 0 && self.urgent == 0
+    }
+
+    /// `2 en retard · 1 aujourd'hui · 3 urgents`, only the non-zero parts.
+    pub fn summary_fr(self) -> String {
+        let mut parts = Vec::new();
+        if self.overdue > 0 {
+            parts.push(format!("{} en retard", self.overdue));
+        }
+        if self.due_today > 0 {
+            parts.push(format!("{} aujourd'hui", self.due_today));
+        }
+        if self.urgent > 0 {
+            parts.push(format!("{} urgent(s)", self.urgent));
+        }
+        parts.join(" · ")
+    }
+}
+
+/// Overdue, due-today and urgent open todos, counted once each.
+pub fn todo_digest(todos: &[Todo], now: OffsetDateTime) -> TodoDigest {
+    let today = now.date();
+    let mut digest = TodoDigest::default();
+    for t in todos {
+        if t.status.is_terminal() {
+            continue;
+        }
+        if t.urgent {
+            digest.urgent += 1;
+        }
+        match t.due_at {
+            Some(due) if due.date() < today => digest.overdue += 1,
+            Some(due) if due.date() == today => digest.due_today += 1,
+            _ => {}
+        }
+    }
+    digest
+}
+
+/// The todos worth naming in a compact summary: overdue first (most
+/// overdue first), then due today, then merely urgent — capped at `limit`.
+pub fn todo_highlights(todos: &[Todo], now: OffsetDateTime, limit: usize) -> Vec<&Todo> {
+    let today = now.date();
+    let mut ranked: Vec<(u8, Option<OffsetDateTime>, &Todo)> = todos
+        .iter()
+        .filter(|t| !t.status.is_terminal())
+        .filter_map(|t| {
+            let rank = match t.due_at.map(|d| d.date()) {
+                Some(d) if d < today => 0,
+                Some(d) if d == today => 1,
+                _ if t.urgent => 2,
+                _ => return None,
+            };
+            Some((rank, t.due_at, t))
+        })
+        .collect();
+    ranked.sort_by_key(|(rank, due_at, _)| (*rank, *due_at));
+    ranked.into_iter().take(limit).map(|(_, _, t)| t).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -931,9 +1086,79 @@ mod tests {
         for s in AgentStatus::ALL {
             assert_eq!(AgentStatus::parse(s.as_str()).unwrap(), s);
         }
+        for s in TodoStatus::ALL {
+            assert_eq!(TodoStatus::parse(s.as_str()).unwrap(), s);
+        }
         assert_eq!(ProjectKind::parse("managed").unwrap(), ProjectKind::Managed);
         assert!(ProjectKind::parse("nope").is_err());
         assert_eq!(UsageSource::parse("stream").unwrap(), UsageSource::Stream);
+    }
+
+    #[test]
+    fn todo_terminal_statuses_stop_the_digest() {
+        assert!(!TodoStatus::Open.is_terminal());
+        assert!(!TodoStatus::InProgress.is_terminal());
+        assert!(TodoStatus::Done.is_terminal());
+        assert!(TodoStatus::Dropped.is_terminal());
+        assert!(TodoStatus::parse("nope").is_err());
+    }
+
+    fn todo(title: &str, status: TodoStatus, urgent: bool, due_at: Option<OffsetDateTime>) -> Todo {
+        let now = crate::now();
+        Todo {
+            id: Uuid::new_v4(),
+            title: title.into(),
+            notes: String::new(),
+            status,
+            urgent,
+            due_at,
+            promoted_ticket_id: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn the_digest_counts_overdue_due_today_and_urgent_open_todos() {
+        let now = crate::now();
+        let todos = vec![
+            todo("a", TodoStatus::Open, false, Some(now - time::Duration::days(2))),
+            todo("b", TodoStatus::Open, false, Some(now)),
+            todo("c", TodoStatus::Open, true, None),
+            // Terminal statuses never count, however urgent or overdue.
+            todo("d", TodoStatus::Done, true, Some(now - time::Duration::days(5))),
+            todo("e", TodoStatus::Dropped, true, Some(now)),
+        ];
+        let digest = todo_digest(&todos, now);
+        assert_eq!(digest.overdue, 1);
+        assert_eq!(digest.due_today, 1);
+        assert_eq!(digest.urgent, 1);
+        assert!(!digest.is_empty());
+        assert!(TodoDigest::default().is_empty());
+        assert_eq!(digest.summary_fr(), "1 en retard · 1 aujourd'hui · 1 urgent(s)");
+    }
+
+    #[test]
+    fn highlights_rank_overdue_before_due_today_before_merely_urgent() {
+        let now = crate::now();
+        let overdue = todo("en retard", TodoStatus::Open, false, Some(now - time::Duration::days(3)));
+        let today = todo("aujourd'hui", TodoStatus::Open, false, Some(now));
+        let urgent = todo("urgent", TodoStatus::Open, true, None);
+        let irrelevant = todo("plus tard", TodoStatus::Open, false, Some(now + time::Duration::days(5)));
+        let done_but_urgent = todo("fait", TodoStatus::Done, true, Some(now - time::Duration::days(9)));
+        let todos = vec![
+            today.clone(),
+            urgent.clone(),
+            irrelevant,
+            overdue.clone(),
+            done_but_urgent,
+        ];
+        let top = todo_highlights(&todos, now, 2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].title, overdue.title);
+        assert_eq!(top[1].title, today.title);
+        let top3 = todo_highlights(&todos, now, 3);
+        assert_eq!(top3[2].title, urgent.title);
     }
 
     #[test]

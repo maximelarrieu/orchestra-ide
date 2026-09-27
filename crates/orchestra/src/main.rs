@@ -1,6 +1,7 @@
 //! `orchestra`: one binary for the daemon, the dashboard and the CLI.
 
 mod cli;
+mod notify;
 
 use anyhow::Result;
 use clap::Parser;

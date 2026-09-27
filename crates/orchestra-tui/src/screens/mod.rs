@@ -8,5 +8,6 @@ pub mod cost;
 pub mod new_ticket;
 pub mod proposal;
 pub mod ticket;
+pub mod todo;
 
-pub use board::{pane_block, render};
+pub use board::{pane_block, render, truncate};

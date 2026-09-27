@@ -136,6 +136,59 @@ pub fn init_zellij(dir: &Path, name: &str, force: bool) -> Result<(PathBuf, bool
     Ok((path, true))
 }
 
+/// Where systemd looks for a user's own units: `$XDG_CONFIG_HOME/systemd/user`,
+/// falling back to `~/.config/systemd/user`.
+pub fn systemd_user_dir() -> PathBuf {
+    let env = |key: &str| {
+        std::env::var_os(key)
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+    };
+    env("XDG_CONFIG_HOME")
+        .unwrap_or_else(|| {
+            env("HOME")
+                .unwrap_or_else(|| PathBuf::from("/"))
+                .join(".config")
+        })
+        .join("systemd/user")
+}
+
+/// The unit and its timer, `bin` baked in as an absolute path: a systemd
+/// user service does not inherit the shell's `PATH`.
+fn notify_units(bin: &Path) -> (String, String) {
+    let service = format!(
+        "[Unit]\nDescription=Orchestra — vérification matinale des todos\n\n\
+         [Service]\nType=oneshot\nExecStart={} todo notify\n",
+        bin.display()
+    );
+    let timer = "[Unit]\nDescription=Orchestra — minuteur de la vérification matinale\n\n\
+         [Timer]\nOnCalendar=*-*-* 08:00:00\nPersistent=true\n\n\
+         [Install]\nWantedBy=timers.target\n"
+        .to_string();
+    (service, timer)
+}
+
+/// Install the `orchestra-todo` service and its timer, and say where they
+/// went. Never as part of `init`, and never enabled: someone who does not
+/// want a morning notification should not find one scheduled, and
+/// `systemctl` is never ours to run on someone's behalf. `force` overwrites
+/// units of the same name, which may well be ones the user has since
+/// edited — the timer's `OnCalendar` line included.
+pub fn init_notify(dir: &Path, bin: &Path, force: bool) -> Result<(PathBuf, PathBuf, bool)> {
+    std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
+    let service_path = dir.join("orchestra-todo.service");
+    let timer_path = dir.join("orchestra-todo.timer");
+    if service_path.exists() && timer_path.exists() && !force {
+        return Ok((service_path, timer_path, false));
+    }
+    let (service, timer) = notify_units(bin);
+    std::fs::write(&service_path, service)
+        .with_context(|| format!("écriture de {}", service_path.display()))?;
+    std::fs::write(&timer_path, timer)
+        .with_context(|| format!("écriture de {}", timer_path.display()))?;
+    Ok((service_path, timer_path, true))
+}
+
 /// Roles as they ship, for callers that want them without touching the disk.
 pub fn bundled_roles() -> impl Iterator<Item = (&'static str, &'static str)> {
     ROLES.iter().copied()
@@ -327,5 +380,38 @@ mod tests {
         let dir = zellij_layouts_dir();
         assert!(dir.ends_with("layouts"), "{}", dir.display());
         assert!(dir.parent().unwrap().ends_with("zellij") || dir.parent().is_some());
+    }
+
+    #[test]
+    fn the_notify_units_are_installed_and_never_silently_replaced() {
+        let home = Home::new();
+        let dir = home.0.join("systemd/user");
+        let bin = PathBuf::from("/opt/orchestra/bin/orchestra");
+        let (service, timer, written) = init_notify(&dir, &bin, false).unwrap();
+        assert!(written);
+        assert_eq!(service, dir.join("orchestra-todo.service"));
+        assert_eq!(timer, dir.join("orchestra-todo.timer"));
+        let service_body = std::fs::read_to_string(&service).unwrap();
+        assert!(service_body.contains("ExecStart=/opt/orchestra/bin/orchestra todo notify"));
+        assert!(service_body.contains("Type=oneshot"));
+        let timer_body = std::fs::read_to_string(&timer).unwrap();
+        assert!(timer_body.contains("OnCalendar="));
+        assert!(timer_body.contains("Persistent=true"));
+
+        // A timer the user retouched (a different hour, say) is not
+        // overwritten just because `init` ran again.
+        std::fs::write(&timer, "à moi").unwrap();
+        let (_, _, written) = init_notify(&dir, &bin, false).unwrap();
+        assert!(!written);
+        assert_eq!(std::fs::read_to_string(&timer).unwrap(), "à moi");
+
+        let (_, _, written) = init_notify(&dir, &bin, true).unwrap();
+        assert!(written, "« --force » les remplace");
+    }
+
+    #[test]
+    fn the_systemd_user_directory_follows_its_own_rules() {
+        let dir = systemd_user_dir();
+        assert!(dir.ends_with("systemd/user"), "{}", dir.display());
     }
 }
