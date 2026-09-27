@@ -1,12 +1,19 @@
-# La description de la pull request
-
+---
+title: Squelette de la pull request
+applies_to: [integrator]
+mode: pr
+checks:
+  - pr_sections: ["Ce que ça change", "Pourquoi", "Vérifications"]
+---
 Avant de finir, écris `PR.md` à la racine de ton worktree. **Ne le commite pas** :
 c'est la description de la requête, pas un fichier du projet. C'est ce texte qui
 sera lu par la personne qui décide de fusionner, souvent des jours après, souvent
 sans avoir suivi le ticket.
 
-Suis ce squelette, dans cet ordre, sans en ajouter. Une section qui n'a rien à
-dire se supprime — on n'écrit pas « néant ».
+Suis ce squelette, dans cet ordre, sans en ajouter. « Ce que ça change »,
+« Pourquoi » et « Vérifications » sont obligatoires : le daemon vérifie qu'elles
+y sont avant d'ouvrir la requête. Les autres, si elles n'ont rien à dire, se
+suppriment — on n'écrit pas « néant ».
 
 ```markdown
 ## Ce que ça change

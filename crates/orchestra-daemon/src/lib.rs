@@ -13,6 +13,7 @@ pub mod init;
 pub mod ledger;
 pub mod orchestrator;
 pub mod repo_summary;
+pub mod rules;
 pub mod server;
 pub mod store;
 pub mod supervisor;

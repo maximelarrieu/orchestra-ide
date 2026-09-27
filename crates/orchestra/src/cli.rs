@@ -53,6 +53,11 @@ enum Sub {
         #[command(subcommand)]
         action: TodoAction,
     },
+    /// Conventions de l'équipe et décisions d'architecture (ADR).
+    Rules {
+        #[command(subcommand)]
+        action: RulesAction,
+    },
     /// Installe le catalogue de rôles et la configuration.
     Init {
         /// Réécrit les rôles livrés, même modifiés. La configuration n'est
@@ -212,6 +217,28 @@ enum ProjectAction {
 }
 
 #[derive(Subcommand, Debug)]
+enum RulesAction {
+    /// Liste les règles : conventions globales, celles du projet, ses ADR.
+    List {
+        /// Projet : identifiant ou fragment de son nom.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Accepte une règle proposée : elle s'applique dès le prochain agent.
+    Accept {
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Rejette une règle : elle n'est plus donnée ni vérifiée.
+    Reject {
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum TodoAction {
     /// Ajoute un todo.
     Add {
@@ -360,6 +387,65 @@ impl Cli {
                         other => bail!("réponse inattendue : {other:?}"),
                     },
                 }
+            }
+            Sub::Rules { action } => {
+                let mut client = Client::connect_or_spawn(&socket).await?;
+                let (project, status_change) = match &action {
+                    RulesAction::List { project } => (project.clone(), None),
+                    RulesAction::Accept { name, project } => (
+                        project.clone(),
+                        Some((name.clone(), orchestra_core::conventions::RuleStatus::Accepted)),
+                    ),
+                    RulesAction::Reject { name, project } => (
+                        project.clone(),
+                        Some((name.clone(), orchestra_core::conventions::RuleStatus::Rejected)),
+                    ),
+                };
+                let project = match project {
+                    Some(spec) => Some(resolve_project(&mut client, &spec).await?),
+                    None => None,
+                };
+                let project_id = project.as_ref().map(|p| p.id);
+                let (rules, errors) = match client.call(Cmd::ListRules { project_id }).await? {
+                    Reply::Rules { rules, errors } => (rules, errors),
+                    other => bail!("réponse inattendue : {other:?}"),
+                };
+                let Some((name, status)) = status_change else {
+                    if rules.is_empty() {
+                        println!("aucune règle — « orchestra init » installe les conventions livrées");
+                    }
+                    for r in &rules {
+                        let checked = if r.checks.is_empty() { "" } else { " ⚙" };
+                        println!(
+                            "{:<11} {:<10} {:<28} {}{checked}  ({})",
+                            r.kind.label_fr(),
+                            r.status.label_fr(),
+                            r.name,
+                            r.title,
+                            r.audience_fr()
+                        );
+                    }
+                    for e in &errors {
+                        eprintln!("illisible : {e}");
+                    }
+                    return Ok(());
+                };
+                let found: Vec<_> = rules.iter().filter(|r| r.name == name).collect();
+                let rule = match found.as_slice() {
+                    [one] => *one,
+                    [] => bail!("aucune règle « {name} » — « orchestra rules list »"),
+                    _ => bail!("« {name} » est à la fois une convention et un ADR : renomme l'un des deux"),
+                };
+                client
+                    .call(Cmd::SetRuleStatus {
+                        project_id,
+                        rule_kind: rule.kind,
+                        name: name.clone(),
+                        status,
+                    })
+                    .await?;
+                println!("{} « {} » : {}", rule.kind.label_fr(), rule.title, status.label_fr());
+                Ok(())
             }
             Sub::Todo { action } => {
                 let mut client = Client::connect_or_spawn(&socket).await?;

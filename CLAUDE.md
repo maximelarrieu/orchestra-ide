@@ -38,6 +38,10 @@ Dashboard de dev pilotant une ferme d'agents **Claude Code**. Plan de référenc
     lieu d'échouer — et un pane absent ne coûte qu'une ligne de journal.
 15. **Le superviseur décide du statut d'un agent, pas le flux.** Une interruption y
     ressemble à un échec ; seul celui qui a envoyé le signal sait ce qui s'est passé.
+16. **Une règle proposée ne s'applique jamais avant d'être acceptée.** Conventions et
+    ADR vivent dans `orchestra-core/src/conventions.rs` (lecture, checks, propositions) ;
+    une proposition d'agent est écrite par le daemon, jamais par l'agent, et n'est ni
+    injectée ni vérifiée tant que l'humain ne l'a pas acceptée.
 
 ## Checklist avant de considérer une tâche terminée
 

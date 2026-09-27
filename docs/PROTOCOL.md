@@ -63,7 +63,17 @@ Un seul type, discriminé par `kind` : `daemon_started`, `project_added`,
 `agent_spawned`, `agent_status_changed`, `agent_text`, `agent_thinking`,
 `tool_started`, `tool_finished`, `usage`, `agent_steered`, `agent_result`,
 `hook_blocked`, `unmanaged_session_seen`, `warning`, `todo_added`, `todo_updated`,
-`todo_status_changed`, `todo_deleted`, `todo_promoted`, et quelques autres.
+`todo_status_changed`, `todo_deleted`, `todo_promoted`, `rule_proposed`,
+`rule_created`, `rule_status_changed`, `rule_deleted`, `rules_checked`, et quelques
+autres.
+
+Les règles (conventions et ADR) sont des fichiers, pas des lignes de la base :
+`list_rules` les relit à chaque appel (`{"reply":"rules","rules":[…],"errors":[…]}`),
+`create_rule` répond `{"reply":"rule_file","path":"…"}` pour qu'un client l'ouvre
+dans un éditeur, et `set_rule_status`, `delete_rule`, `promote_rule` modifient le
+fichier. Les événements, eux, sont persistés comme les autres. Dans ces commandes
+comme dans les événements, la sorte s'appelle `rule_kind`, `kind` étant déjà le
+discriminant des événements.
 
 Chaque événement porte un `seq` monotone attribué par la base, un horodatage RFC 3339,
 et la portée qui le concerne (`project_id`, `ticket_id`, `agent_id`, `todo_id`).

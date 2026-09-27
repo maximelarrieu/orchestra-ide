@@ -193,6 +193,7 @@ pub fn screen_hints(app: &App) -> Vec<Hint> {
         Screen::Cost => cost_hints(app),
         Screen::Proposal => proposal_hints(app),
         Screen::Todo => todo_hints(app),
+        Screen::Rules => rules_hints(app),
         Screen::NewTicket => {
             let verb = if app.promoting_todo.is_some() {
                 "promouvoir en ticket"
@@ -331,6 +332,32 @@ fn todo_hints(app: &App) -> Vec<Hint> {
     hints
 }
 
+fn rules_hints(app: &App) -> Vec<Hint> {
+    use orchestra_core::conventions::{RuleKind, RuleStatus};
+    let Some(r) = app.selected_rule() else {
+        return Vec::new();
+    };
+    let mut hints = Vec::new();
+    if r.status != RuleStatus::Accepted {
+        hints.push(Hint::screen("a", "accepter"));
+    }
+    if r.status != RuleStatus::Rejected {
+        hints.push(Hint::screen("r", "rejeter"));
+    }
+    if r.kind == RuleKind::Adr && r.status == RuleStatus::Accepted {
+        hints.push(Hint::screen("s", "remplacée"));
+    }
+    hints.push(Hint::screen("e", "éditer"));
+    if r.kind == RuleKind::Convention
+        && r.scope == orchestra_core::model::RoleScope::Project
+        && app.selected_project().is_some()
+    {
+        hints.push(Hint::screen("g", "rendre globale"));
+    }
+    hints.push(Hint::screen("d", "supprimer"));
+    hints
+}
+
 fn proposal_hints(app: &App) -> Vec<Hint> {
     if app.editor.is_empty() {
         return Vec::new();
@@ -349,7 +376,7 @@ fn proposal_hints(app: &App) -> Vec<Hint> {
 
 /// What moves the same way everywhere.
 pub const NAVIGATION: &[(&str, &str)] = &[
-    ("1…7", "aller à un écran"),
+    ("1…8", "aller à un écran"),
     ("Tab", "écran suivant"),
     ("⇧Tab", "écran précédent"),
     ("j k", "descendre / monter"),
@@ -377,6 +404,9 @@ pub const PALETTE: &[(&str, &str)] = &[
     (":todo urgent <n>", "basculer l'urgence"),
     (":todo due <n> <AAAA-MM-JJ>", "fixer l'échéance"),
     (":todo open|doing|done|drop <n>", "changer le statut"),
+    (":convention add <titre>", "écrire une convention"),
+    (":adr add <titre>", "écrire une décision du projet"),
+    (":regles", "les conventions et ADR"),
     (":usage", "les coûts"),
     (":refresh", "tout relire"),
 ];

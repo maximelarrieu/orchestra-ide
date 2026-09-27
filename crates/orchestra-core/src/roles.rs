@@ -48,7 +48,7 @@ struct Frontmatter {
 }
 
 /// Split a Markdown file into its frontmatter and body.
-fn split_frontmatter(src: &str) -> Result<(&str, &str)> {
+pub(crate) fn split_frontmatter(src: &str) -> Result<(&str, &str)> {
     let rest = src
         .strip_prefix("---\n")
         .or_else(|| src.strip_prefix("---\r\n"))

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::conventions::{Rule, RuleKind, RuleStatus};
 use crate::events::{Event, EventFilter};
 use crate::model::{
     Agent, AgentId, Project, ProjectId, RoleDefinition, Team, Ticket, TicketId, TicketStatus,
@@ -177,6 +178,40 @@ pub enum Command {
         title: String,
         brief: String,
     },
+    /// Conventions and decisions a project sees: the global conventions, its
+    /// own overriding them by name, and its ADRs. Without a project, the
+    /// global conventions alone.
+    ListRules {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+    },
+    /// Write a new rule file from a skeleton and say where, so a client can
+    /// open it in an editor. An ADR needs a project.
+    CreateRule {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+        rule_kind: RuleKind,
+        title: String,
+    },
+    /// Accept, reject or supersede a rule, by rewriting its `status:` line.
+    SetRuleStatus {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+        rule_kind: RuleKind,
+        name: String,
+        status: RuleStatus,
+    },
+    DeleteRule {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+        rule_kind: RuleKind,
+        name: String,
+    },
+    /// Move a project's convention to the global ones, for every project.
+    PromoteRule {
+        project_id: ProjectId,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -202,6 +237,16 @@ pub enum Reply {
     },
     Roles {
         roles: Vec<RoleDefinition>,
+    },
+    Rules {
+        rules: Vec<Rule>,
+        /// Files that could not be read, and why — a broken rule the user
+        /// believes is enforced must show somewhere.
+        #[serde(default)]
+        errors: Vec<String>,
+    },
+    RuleFile {
+        path: PathBuf,
     },
     Agents {
         agents: Vec<AgentSummary>,
@@ -647,6 +692,27 @@ mod tests {
                 title: "t".into(),
                 brief: "brief assez long pour passer la validation".into(),
             },
+            Command::ListRules { project_id: None },
+            Command::CreateRule {
+                project_id: Some(Uuid::new_v4()),
+                rule_kind: RuleKind::Adr,
+                title: "t".into(),
+            },
+            Command::SetRuleStatus {
+                project_id: None,
+                rule_kind: RuleKind::Convention,
+                name: "commits".into(),
+                status: RuleStatus::Rejected,
+            },
+            Command::DeleteRule {
+                project_id: None,
+                rule_kind: RuleKind::Convention,
+                name: "commits".into(),
+            },
+            Command::PromoteRule {
+                project_id: Uuid::new_v4(),
+                name: "commits".into(),
+            },
         ];
         for cmd in cmds {
             let req = Request { id: 7, cmd };
@@ -700,6 +766,13 @@ mod tests {
             Reply::Tickets { tickets: vec![] },
             Reply::Todos { todos: vec![] },
             Reply::Roles { roles: vec![] },
+            Reply::Rules {
+                rules: vec![],
+                errors: vec!["x".into()],
+            },
+            Reply::RuleFile {
+                path: PathBuf::from("/x.md"),
+            },
             Reply::Agents { agents: vec![] },
             Reply::Usage {
                 rows: vec![],

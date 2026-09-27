@@ -2,6 +2,7 @@
 //! into it, and rendering only reads it. No ratatui type appears here, so the
 //! whole state machine is testable without a terminal.
 
+use orchestra_core::conventions::{Rule, RuleKind, RuleStatus};
 use orchestra_core::events::{Event, EventKind};
 use orchestra_core::model::{
     ProjectId, RoleDefinition, TicketId, Todo, TodoDigest, TodoId, TodoStatus,
@@ -24,10 +25,11 @@ pub enum Screen {
     NewTicket,
     Proposal,
     Todo,
+    Rules,
 }
 
 impl Screen {
-    pub const ALL: [Screen; 7] = [
+    pub const ALL: [Screen; 8] = [
         Screen::Board,
         Screen::Ticket,
         Screen::Agent,
@@ -35,6 +37,7 @@ impl Screen {
         Screen::NewTicket,
         Screen::Proposal,
         Screen::Todo,
+        Screen::Rules,
     ];
 
     pub fn from_number(n: u8) -> Option<Self> {
@@ -50,6 +53,7 @@ impl Screen {
             Screen::NewTicket => "Nouveau ticket",
             Screen::Proposal => "Équipe",
             Screen::Todo => "TODO",
+            Screen::Rules => "Règles",
         }
     }
 
@@ -337,6 +341,16 @@ pub struct App {
     /// Set while `NewTicket` is filled from a todo rather than from scratch:
     /// submitting promotes it instead of creating an unrelated ticket.
     pub promoting_todo: Option<TodoId>,
+    /// Conventions and decisions of the selected project (the global
+    /// conventions alone under « Tous les projets »).
+    pub rules: Vec<Rule>,
+    /// Rule files the daemon could not read, shown on the Rules screen.
+    pub rule_errors: Vec<String>,
+    pub rule_selected: usize,
+    /// A file the run loop should open in `$EDITOR`, suspending the screen.
+    edit_request: Option<std::path::PathBuf>,
+    /// Set while a `CreateRule` is in flight: its file opens once written.
+    awaiting_rule_file: bool,
     pub cost: CostView,
     /// Last few events, newest last: the "what is happening" strip.
     pub activity: Vec<String>,
@@ -389,6 +403,11 @@ impl Default for App {
             todos: Vec::new(),
             todo_selected: 0,
             promoting_todo: None,
+            rules: Vec::new(),
+            rule_errors: Vec::new(),
+            rule_selected: 0,
+            edit_request: None,
+            awaiting_rule_file: false,
             cost: CostView::default(),
             activity: Vec::new(),
             status: "connexion au daemon…".into(),
@@ -505,6 +524,39 @@ impl App {
         self.selected_ticket().map(|t| t.ticket.id)
     }
 
+    pub fn selected_rule(&self) -> Option<&Rule> {
+        self.rules.get(self.rule_selected)
+    }
+
+    /// Rules an agent proposed, or the user drafted, that wait for a decision.
+    pub fn pending_rules(&self) -> usize {
+        self.rules
+            .iter()
+            .filter(|r| r.status == RuleStatus::Proposed)
+            .count()
+    }
+
+    /// The file to open in an editor, if a key or a reply asked for one.
+    pub fn take_edit_request(&mut self) -> Option<std::path::PathBuf> {
+        self.edit_request.take()
+    }
+
+    /// Back from the editor: read the rules again, the file has changed.
+    pub fn edited(&mut self, outcome: Result<(), String>) -> Vec<Command> {
+        match outcome {
+            Ok(()) => self.status = "règle enregistrée".into(),
+            Err(e) => self.status = format!("éditeur : {e}"),
+        }
+        self.request_rules();
+        std::mem::take(&mut self.outbox)
+    }
+
+    fn request_rules(&mut self) {
+        self.outbox.push(Command::ListRules {
+            project_id: self.selected_project().map(|p| p.id),
+        });
+    }
+
     pub fn selected_todo(&self) -> Option<&Todo> {
         self.todos.get(self.todo_selected)
     }
@@ -565,6 +617,8 @@ impl App {
             // while the agent is plainly working, and a ticket that changed
             // state is only discovered by leaving the screen and coming back.
             Screen::Ticket | Screen::Agent => self.refresh_open_ticket(None),
+            // Rule files are edited by hand too, outside of Orchestra.
+            Screen::Rules => self.request_rules(),
             _ => {}
         }
     }
@@ -810,6 +864,7 @@ impl App {
             Screen::Agent => self.on_agent_char(c),
             Screen::Proposal => self.on_proposal_char(c),
             Screen::Todo => self.on_todo_char(c),
+            Screen::Rules => self.on_rules_char(c),
             _ => {}
         }
     }
@@ -818,6 +873,67 @@ impl App {
         match c {
             'd' => self.delete_selected_todo(),
             'p' => self.promote_selected_todo(),
+            _ => {}
+        }
+    }
+
+    fn on_rules_char(&mut self, c: char) {
+        let Some(r) = self.selected_rule() else {
+            self.status = "aucune règle sélectionnée".into();
+            return;
+        };
+        let project_id = self.selected_project().map(|p| p.id);
+        let (kind, name, title) = (r.kind, r.name.clone(), r.title.clone());
+        match c {
+            'a' => self.outbox.push(Command::SetRuleStatus {
+                project_id,
+                rule_kind: kind,
+                name,
+                status: RuleStatus::Accepted,
+            }),
+            'r' => self.ask(
+                format!("Rejeter la {} « {title} » ?", kind.label_fr()),
+                Command::SetRuleStatus {
+                    project_id,
+                    rule_kind: kind,
+                    name,
+                    status: RuleStatus::Rejected,
+                },
+            ),
+            // Only a decision is superseded; a convention is simply rejected.
+            's' if kind == RuleKind::Adr => self.outbox.push(Command::SetRuleStatus {
+                project_id,
+                rule_kind: kind,
+                name,
+                status: RuleStatus::Superseded,
+            }),
+            'e' => {
+                if r.source.exists() {
+                    self.edit_request = Some(r.source.clone());
+                } else {
+                    self.status =
+                        "convention livrée, pas encore installée : lance « orchestra init »".into();
+                }
+            }
+            'g' => match (project_id, r.scope) {
+                (Some(project_id), orchestra_core::model::RoleScope::Project)
+                    if kind == RuleKind::Convention =>
+                {
+                    self.ask(
+                        format!("Rendre « {title} » globale, pour tous les projets ?"),
+                        Command::PromoteRule { project_id, name },
+                    )
+                }
+                _ => self.status = "seule une convention de projet peut devenir globale".into(),
+            },
+            'd' => self.ask(
+                format!("Supprimer la {} « {title} » ?", kind.label_fr()),
+                Command::DeleteRule {
+                    project_id,
+                    rule_kind: kind,
+                    name,
+                },
+            ),
             _ => {}
         }
     }
@@ -1229,6 +1345,10 @@ impl App {
 
     fn go(&mut self, screen: Screen) {
         let entering_agent = screen == Screen::Agent && self.screen != Screen::Agent;
+        if screen == Screen::Rules && self.screen != Screen::Rules {
+            // The project may have changed on the board since the last read.
+            self.request_rules();
+        }
         self.screen = screen;
         if entering_agent && self.watched_agent().is_none() {
             // Reached from the tab strip rather than from a ticket: find the
@@ -1268,6 +1388,7 @@ impl App {
             }
             (Screen::Cost, _) => (self.cost.rows.len(), &mut self.cost.selected),
             (Screen::Todo, _) => (self.todos.len(), &mut self.todo_selected),
+            (Screen::Rules, _) => (self.rules.len(), &mut self.rule_selected),
             (Screen::Proposal, _) => {
                 self.editor.move_selection(delta);
                 return;
@@ -1320,6 +1441,7 @@ impl App {
             }
             (Screen::Cost, _) => (self.cost.rows.len(), &mut self.cost.selected),
             (Screen::Todo, _) => (self.todos.len(), &mut self.todo_selected),
+            (Screen::Rules, _) => (self.rules.len(), &mut self.rule_selected),
             _ => return,
         };
         *sel = index.min(len.saturating_sub(1));
@@ -1439,6 +1561,33 @@ impl App {
                     }
                 }
             }
+            "convention" | "adr" => {
+                let kind = if verb == "adr" {
+                    RuleKind::Adr
+                } else {
+                    RuleKind::Convention
+                };
+                let (sub, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                let arg = arg.trim();
+                match sub {
+                    "add" if !arg.is_empty() => {
+                        let project_id = self.selected_project().map(|p| p.id);
+                        if kind == RuleKind::Adr && project_id.is_none() {
+                            self.status = "un ADR appartient à un projet : choisis-en un sur le tableau".into();
+                            return;
+                        }
+                        self.outbox.push(Command::CreateRule {
+                            project_id,
+                            rule_kind: kind,
+                            title: arg.into(),
+                        });
+                        self.awaiting_rule_file = true;
+                        self.status = format!("création de la {}…", kind.label_fr());
+                    }
+                    _ => self.status = format!("usage : :{verb} add <titre>"),
+                }
+            }
+            "regles" | "règles" | "rules" => self.go(Screen::Rules),
             "usage" | "cout" | "coût" => self.go(Screen::Cost),
             "refresh" => self.refresh(),
             "q" | "quit" => self.should_quit = true,
@@ -1467,6 +1616,7 @@ impl App {
         self.request_tickets();
         self.request_usage();
         self.outbox.push(Command::ListTodos);
+        self.request_rules();
     }
 
     fn request_tickets(&mut self) {
@@ -1665,6 +1815,25 @@ impl App {
             Reply::Roles { roles } => {
                 self.roles = roles;
             }
+            Reply::Rules { rules, errors } => {
+                let previous = self
+                    .selected_rule()
+                    .map(|r| (r.kind, r.name.clone()));
+                self.rules = rules;
+                self.rule_errors = errors;
+                self.rule_selected = previous
+                    .and_then(|(k, n)| self.rules.iter().position(|r| r.kind == k && r.name == n))
+                    .unwrap_or(self.rule_selected)
+                    .min(self.rules.len().saturating_sub(1));
+            }
+            Reply::RuleFile { path } => {
+                if std::mem::take(&mut self.awaiting_rule_file) {
+                    self.edit_request = Some(path);
+                } else {
+                    self.status = format!("écrit : {}", path.display());
+                }
+                self.request_rules();
+            }
             Reply::Todos { todos } => {
                 let previous = self.selected_todo().map(|t| t.id);
                 self.todos = todos;
@@ -1723,6 +1892,10 @@ impl App {
             | EventKind::TodoDeleted { .. } => {
                 self.outbox.push(Command::ListTodos);
             }
+            EventKind::RuleProposed { .. }
+            | EventKind::RuleCreated { .. }
+            | EventKind::RuleStatusChanged { .. }
+            | EventKind::RuleDeleted { .. } => self.request_rules(),
             EventKind::TodoPromoted { .. } => {
                 self.outbox.push(Command::ListTodos);
                 self.request_tickets();
@@ -1940,6 +2113,35 @@ pub fn describe(e: &Event) -> Option<String> {
             format!("session libre détectée dans {}", cwd.display())
         }
         EventKind::Warning { message } => format!("attention : {message}"),
+        EventKind::RuleProposed {
+            rule_kind,
+            title,
+            by,
+            ..
+        } => format!("{} proposée par {by} : « {title} » — à valider (8)", rule_kind.label_fr()),
+        EventKind::RuleCreated { rule_kind, title, .. } => {
+            format!("{} « {title} » créée", rule_kind.label_fr())
+        }
+        EventKind::RuleStatusChanged {
+            rule_kind,
+            title,
+            to,
+            ..
+        } => format!("{} « {title} » : {}", rule_kind.label_fr(), to.label_fr()),
+        EventKind::RuleDeleted { rule_kind, title, .. } => {
+            format!("{} « {title} » supprimée", rule_kind.label_fr())
+        }
+        EventKind::RulesChecked { round, violations } => {
+            if violations.is_empty() {
+                format!("conventions respectées (passe {round})")
+            } else {
+                format!(
+                    "conventions : {} écart(s), passe {round} — {}",
+                    violations.len(),
+                    violations[0].line()
+                )
+            }
+        }
         EventKind::TodoAdded { title } => format!("todo « {title} » ajouté"),
         EventKind::TodoUpdated { title } => format!("todo « {title} » modifié"),
         EventKind::TodoStatusChanged { title, from, to } => {
@@ -1986,12 +2188,13 @@ mod tests {
     #[test]
     fn screens_cycle_both_ways() {
         assert_eq!(Screen::Board.next(), Screen::Ticket);
-        assert_eq!(Screen::Board.prev(), Screen::Todo);
+        assert_eq!(Screen::Board.prev(), Screen::Rules);
         assert_eq!(Screen::from_number(1), Some(Screen::Board));
         assert_eq!(Screen::from_number(6), Some(Screen::Proposal));
         assert_eq!(Screen::from_number(7), Some(Screen::Todo));
+        assert_eq!(Screen::from_number(8), Some(Screen::Rules));
         assert_eq!(Screen::from_number(0), None);
-        assert_eq!(Screen::from_number(8), None);
+        assert_eq!(Screen::from_number(9), None);
     }
 
     #[test]
@@ -2221,6 +2424,111 @@ mod tests {
             cmds.as_slice(),
             [Command::DeleteTodo { todo_id }] if *todo_id == id
         ));
+    }
+
+    fn app_with_rules() -> App {
+        use orchestra_core::conventions::RuleMode;
+        let mut app = App::new();
+        app.screen = Screen::Rules;
+        app.rules = ["commits", "paginer"]
+            .iter()
+            .map(|n| Rule {
+                name: n.to_string(),
+                kind: RuleKind::Convention,
+                title: format!("titre {n}"),
+                status: if *n == "paginer" {
+                    RuleStatus::Proposed
+                } else {
+                    RuleStatus::Accepted
+                },
+                applies_to: vec![],
+                mode: RuleMode::Any,
+                checks: vec![],
+                supersedes: None,
+                proposed_by: None,
+                body: "corps".into(),
+                source: format!("/nulle-part/{n}.md").into(),
+                scope: orchestra_core::model::RoleScope::Global,
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn a_accepts_the_selected_rule_and_r_asks_first() {
+        let mut app = app_with_rules();
+        assert_eq!(app.pending_rules(), 1);
+        app.update(Msg::Key(Action::Down));
+        let cmds = app.update(Msg::Key(Action::Char('a')));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Command::SetRuleStatus { name, status: RuleStatus::Accepted, .. }] if name == "paginer"
+        ));
+
+        let cmds = app.update(Msg::Key(Action::Char('r')));
+        assert!(cmds.is_empty(), "rejeter se confirme");
+        assert!(app.confirm.as_ref().unwrap().question.contains("titre paginer"));
+        let cmds = app.update(Msg::Key(Action::Char('y')));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Command::SetRuleStatus { status: RuleStatus::Rejected, .. }]
+        ));
+    }
+
+    #[test]
+    fn a_rule_that_is_not_on_disk_is_not_sent_to_an_editor() {
+        let mut app = app_with_rules();
+        app.update(Msg::Key(Action::Char('e')));
+        assert!(app.take_edit_request().is_none());
+        assert!(app.status.contains("orchestra init"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_new_rule_opens_in_the_editor_once_written() {
+        let mut app = App::new();
+        app.update(Msg::Key(Action::CommandPalette));
+        for c in "convention add Toujours paginer".chars() {
+            app.update(Msg::Key(Action::Char(c)));
+        }
+        let cmds = app.update(Msg::Key(Action::Submit));
+        assert!(matches!(
+            cmds.first(),
+            Some(Command::CreateRule { rule_kind: RuleKind::Convention, title, project_id: None })
+                if title == "Toujours paginer"
+        ));
+        let cmds = app.update(Msg::Reply(Box::new(Reply::RuleFile {
+            path: "/x/toujours-paginer.md".into(),
+        })));
+        assert!(cmds.iter().any(|c| matches!(c, Command::ListRules { .. })));
+        assert_eq!(
+            app.take_edit_request().as_deref(),
+            Some(std::path::Path::new("/x/toujours-paginer.md"))
+        );
+        // A file written for another reason does not open anything.
+        app.update(Msg::Reply(Box::new(Reply::RuleFile { path: "/x/y.md".into() })));
+        assert!(app.take_edit_request().is_none());
+    }
+
+    #[test]
+    fn an_adr_needs_a_project() {
+        let mut app = App::new();
+        app.update(Msg::Key(Action::CommandPalette));
+        for c in "adr add SQLite".chars() {
+            app.update(Msg::Key(Action::Char(c)));
+        }
+        let cmds = app.update(Msg::Key(Action::Submit));
+        assert!(!cmds.iter().any(|c| matches!(c, Command::CreateRule { .. })));
+        assert!(app.status.contains("projet"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_reread_keeps_the_selected_rule() {
+        let mut app = app_with_rules();
+        app.update(Msg::Key(Action::Down));
+        let mut rules = app.rules.clone();
+        rules.reverse();
+        app.update(Msg::Reply(Box::new(Reply::Rules { rules, errors: vec![] })));
+        assert_eq!(app.selected_rule().unwrap().name, "paginer");
     }
 
     #[test]

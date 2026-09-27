@@ -44,6 +44,25 @@ const ROLES: &[(&str, &str)] = &[
     ),
 ];
 
+/// The conventions shipped with the binary. Installed by `init` like the roles,
+/// and read straight from here by the daemon as long as the directory does
+/// not exist, so an install that predates them loses nothing.
+pub const CONVENTIONS: &[(&str, &str)] = &[
+    (
+        "commits.md",
+        include_str!("../../../assets/conventions/commits.md"),
+    ),
+    (
+        "pr-template.md",
+        include_str!("../../../assets/conventions/pr-template.md"),
+    ),
+    ("tests.md", include_str!("../../../assets/conventions/tests.md")),
+    (
+        "adr-respect.md",
+        include_str!("../../../assets/conventions/adr-respect.md"),
+    ),
+];
+
 const EXAMPLE_CONFIG: &str = include_str!("../../../assets/config.example.toml");
 
 /// The zellij layout, installed only when asked: it lands in zellij's own
@@ -77,6 +96,25 @@ pub fn init(force: bool) -> Result<InitReport> {
         let path = roles_dir.join(name);
         if path.exists() && !force {
             report.kept.push(path);
+            continue;
+        }
+        std::fs::write(&path, body).with_context(|| format!("écriture de {}", path.display()))?;
+        report.written.push(path);
+    }
+
+    // A convention that was deliberately removed is not reinstalled: only a
+    // directory that does not exist yet receives the shipped set. `force`
+    // rewrites the shipped files, like the roles, and leaves the user's own.
+    let conventions_dir = Paths::conventions_dir();
+    let fresh = !conventions_dir.exists();
+    std::fs::create_dir_all(&conventions_dir)
+        .with_context(|| format!("création de {}", conventions_dir.display()))?;
+    for (name, body) in CONVENTIONS {
+        let path = conventions_dir.join(name);
+        if !fresh && !force {
+            if path.exists() {
+                report.kept.push(path);
+            }
             continue;
         }
         std::fs::write(&path, body).with_context(|| format!("écriture de {}", path.display()))?;
@@ -285,6 +323,24 @@ mod tests {
             assert!(std::fs::read_to_string(dir.join("config.toml"))
                 .unwrap()
                 .contains("max_attempts = 9"));
+        });
+    }
+
+    #[test]
+    fn the_shipped_conventions_parse_and_a_removed_one_stays_removed() {
+        with_temp_config(|dir| {
+            init(false).unwrap();
+            let conventions = dir.join("conventions");
+            let book = orchestra_core::conventions::RuleBook::load(&conventions, None);
+            assert!(book.errors.is_empty(), "{:?}", book.errors);
+            assert_eq!(book.rules.len(), CONVENTIONS.len());
+            assert!(!book.checks(true).is_empty(), "des conventions sont vérifiées");
+
+            std::fs::remove_file(conventions.join("tests.md")).unwrap();
+            init(false).unwrap();
+            assert!(!conventions.join("tests.md").exists(), "retirée, elle le reste");
+            init(true).unwrap();
+            assert!(conventions.join("tests.md").exists(), "« --force » la rétablit");
         });
     }
 

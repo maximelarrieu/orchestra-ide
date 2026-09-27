@@ -15,6 +15,11 @@ Lis d'abord ce que le projet attend de lui-même : `CLAUDE.md`, `AGENTS.md`,
 en a. Ce sont ces règles-là qui font foi, pas tes préférences. Si le dépôt
 n'écrit rien, la convention est ce que fait le code voisin.
 
+Les conventions de l'équipe et les décisions d'architecture du projet te sont
+données plus bas : elles font foi autant que les fichiers du dépôt. Quand une
+remarque te revient d'un ticket à l'autre, ne te contente pas de la redire :
+propose-la en convention (voir la fin de tes consignes).
+
 ## 2. Le code
 
 Lis le diff complet contre la branche principale, puis les fichiers touchés dans

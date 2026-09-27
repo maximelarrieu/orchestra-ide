@@ -8,6 +8,7 @@
 //! Only the sixteen terminal colours are used, so the result follows whatever
 //! theme the terminal already has rather than fighting it.
 
+use orchestra_core::conventions::RuleStatus;
 use orchestra_core::model::{AgentStatus, TicketStatus, TodoStatus};
 use ratatui::style::{Color, Modifier, Style};
 
@@ -177,6 +178,47 @@ pub fn todo(status: TodoStatus) -> Badge {
     }
 }
 
+/// What a rule's state looks like. A proposal stands out — it waits on the
+/// user — and what no longer applies fades.
+pub fn rule(status: RuleStatus) -> Badge {
+    match status {
+        RuleStatus::Proposed => Badge {
+            symbol: "◇",
+            color: Color::Yellow,
+            bold: true,
+            dim: false,
+        },
+        RuleStatus::Accepted => Badge {
+            symbol: "✓",
+            color: Color::Green,
+            bold: false,
+            dim: false,
+        },
+        RuleStatus::Superseded => Badge {
+            symbol: "↷",
+            color: Color::Gray,
+            bold: false,
+            dim: true,
+        },
+        RuleStatus::Rejected => Badge {
+            symbol: "⊘",
+            color: Color::Gray,
+            bold: false,
+            dim: true,
+        },
+    }
+}
+
+/// Marks a convention the daemon verifies on the branch itself.
+pub fn measured() -> Badge {
+    Badge {
+        symbol: "⚙",
+        color: Color::Cyan,
+        bold: false,
+        dim: false,
+    }
+}
+
 /// The marker for a todo flagged urgent: a glyph of its own, never a colour
 /// switch alone, and independent from the status badge next to it.
 pub fn urgent() -> Badge {
@@ -265,6 +307,15 @@ mod tests {
             TodoStatus::ALL.len(),
             "trop de statuts de todo partagent un symbole : {todos:?}"
         );
+
+        let mut rules: Vec<&str> = RuleStatus::ALL.iter().map(|s| rule(*s).symbol).collect();
+        rules.sort_unstable();
+        rules.dedup();
+        assert_eq!(
+            rules.len(),
+            RuleStatus::ALL.len(),
+            "trop de statuts de règle partagent un symbole : {rules:?}"
+        );
     }
 
     #[test]
@@ -282,6 +333,15 @@ mod tests {
         }
         for status in TodoStatus::ALL {
             let b = todo(status);
+            if b.color == Color::Red || b.color == Color::Green {
+                assert!(
+                    b.symbol == "✗" || b.symbol == "✓",
+                    "{status:?} s'appuie sur la couleur seule"
+                );
+            }
+        }
+        for status in RuleStatus::ALL {
+            let b = rule(status);
             if b.color == Color::Red || b.color == Color::Green {
                 assert!(
                     b.symbol == "✗" || b.symbol == "✓",

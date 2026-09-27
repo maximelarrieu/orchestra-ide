@@ -366,6 +366,11 @@ impl Paths {
         Self::config_dir().join("roles")
     }
 
+    /// Global conventions, which a project overrides by name.
+    pub fn conventions_dir() -> PathBuf {
+        Self::config_dir().join("conventions")
+    }
+
     pub fn data_dir() -> PathBuf {
         Self::env_path("ORCHESTRA_DATA_DIR")
             .or_else(|| Self::env_path("XDG_DATA_HOME").map(|p| p.join("orchestra")))
@@ -442,6 +447,7 @@ pub struct ResolvedPaths {
     pub lock_file: PathBuf,
     pub transcripts_dir: PathBuf,
     pub roles_dir: PathBuf,
+    pub conventions_dir: PathBuf,
 }
 
 impl ResolvedPaths {
@@ -465,6 +471,7 @@ impl ResolvedPaths {
                 .clone()
                 .unwrap_or_else(Paths::transcripts_dir),
             roles_dir: Paths::roles_dir(),
+            conventions_dir: Paths::conventions_dir(),
         }
     }
 }

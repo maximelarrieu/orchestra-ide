@@ -7,6 +7,7 @@ pub mod board;
 pub mod cost;
 pub mod new_ticket;
 pub mod proposal;
+pub mod rules;
 pub mod ticket;
 pub mod todo;
 

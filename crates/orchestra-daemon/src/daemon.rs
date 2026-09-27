@@ -11,6 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use orchestra_core::config::{Config, Paths, ResolvedPaths};
 use orchestra_core::events::{EventFilter, EventKind, NewEvent};
+use orchestra_core::conventions::{RuleKind, RuleStatus};
 use orchestra_core::model::{
     can_transition, AgentStatus, Project, ProjectId, ProjectKind, Team, TeamProposal, Ticket,
     TicketId, TicketStatus, Todo, TodoId, TodoStatus,
@@ -93,6 +94,7 @@ impl Daemon {
             ledger.clone(),
             Arc::clone(&cfg),
             paths.cache_dir.clone(),
+            paths.conventions_dir.clone(),
         );
         Daemon {
             supervisor,
@@ -323,6 +325,24 @@ impl Daemon {
             Command::OpenPane { agent_id } => self.open_pane(agent_id).await,
             Command::TakeOver { agent_id } => self.take_over(agent_id).await,
             Command::ListTodos => self.list_todos().await,
+            Command::ListRules { project_id } => self.list_rules(project_id).await,
+            Command::CreateRule {
+                project_id,
+                rule_kind,
+                title,
+            } => self.create_rule(project_id, rule_kind, title).await,
+            Command::SetRuleStatus {
+                project_id,
+                rule_kind,
+                name,
+                status,
+            } => self.set_rule_status(project_id, rule_kind, name, status).await,
+            Command::DeleteRule {
+                project_id,
+                rule_kind,
+                name,
+            } => self.delete_rule(project_id, rule_kind, name).await,
+            Command::PromoteRule { project_id, name } => self.promote_rule(project_id, name).await,
             Command::CreateTodo {
                 title,
                 notes,
@@ -776,6 +796,154 @@ impl Daemon {
             .await
             .map_err(internal)?;
         Ok(Reply::Ack)
+    }
+
+    // -- rules ----------------------------------------------------------------
+
+    async fn project_opt(&self, id: Option<ProjectId>) -> Result<Option<Project>, ApiError> {
+        match id {
+            Some(id) => Ok(Some(
+                self.store
+                    .project(id)
+                    .await
+                    .map_err(internal)?
+                    .ok_or_else(|| ApiError::not_found("projet"))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    fn rule_event(&self, project: Option<&Project>, kind: EventKind) -> NewEvent {
+        let e = NewEvent::new(kind);
+        match project {
+            Some(p) => e.project(p.id),
+            None => e,
+        }
+    }
+
+    async fn list_rules(&self, project_id: Option<ProjectId>) -> Result<Reply, ApiError> {
+        let project = self.project_opt(project_id).await?;
+        let book = crate::rules::book(&self.paths.conventions_dir, project.as_ref());
+        Ok(Reply::Rules {
+            rules: book.rules,
+            errors: book
+                .errors
+                .iter()
+                .map(|(path, e)| format!("{} : {e}", path.display()))
+                .collect(),
+        })
+    }
+
+    /// A hand-made rule starts as a skeleton, so it starts `proposed`: the
+    /// placeholder text must not reach an agent before it has been written.
+    async fn create_rule(
+        &self,
+        project_id: Option<ProjectId>,
+        kind: RuleKind,
+        title: String,
+    ) -> Result<Reply, ApiError> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err(ApiError::invalid("la règle n'a pas de titre"));
+        }
+        let project = self.project_opt(project_id).await?;
+        let draft = orchestra_core::conventions::RuleDraft {
+            kind,
+            title: &title,
+            status: RuleStatus::Proposed,
+            applies_to: &[],
+            proposed_by: None,
+            body: orchestra_core::conventions::skeleton_body(kind),
+        };
+        let (name, path) = crate::rules::create(&self.paths.conventions_dir, project.as_ref(), &draft)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        self.bus
+            .publish(self.rule_event(
+                project.as_ref(),
+                EventKind::RuleCreated {
+                    rule_kind: kind,
+                    name,
+                    title,
+                },
+            ))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::RuleFile { path })
+    }
+
+    async fn set_rule_status(
+        &self,
+        project_id: Option<ProjectId>,
+        kind: RuleKind,
+        name: String,
+        status: RuleStatus,
+    ) -> Result<Reply, ApiError> {
+        let project = self.project_opt(project_id).await?;
+        let book = crate::rules::book(&self.paths.conventions_dir, project.as_ref());
+        let (path, title, from) = crate::rules::source_of(&book, kind, &name)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        if from == status {
+            return Ok(Reply::Ack);
+        }
+        crate::rules::set_status(&path, status).map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        self.bus
+            .publish(self.rule_event(
+                project.as_ref(),
+                EventKind::RuleStatusChanged {
+                    rule_kind: kind,
+                    name,
+                    title,
+                    from,
+                    to: status,
+                },
+            ))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
+    async fn delete_rule(
+        &self,
+        project_id: Option<ProjectId>,
+        kind: RuleKind,
+        name: String,
+    ) -> Result<Reply, ApiError> {
+        let project = self.project_opt(project_id).await?;
+        let book = crate::rules::book(&self.paths.conventions_dir, project.as_ref());
+        let (path, title, _) = crate::rules::source_of(&book, kind, &name)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        std::fs::remove_file(&path)
+            .map_err(|e| ApiError::internal(format!("suppression de {} : {e}", path.display())))?;
+        self.bus
+            .publish(self.rule_event(
+                project.as_ref(),
+                EventKind::RuleDeleted {
+                    rule_kind: kind,
+                    name,
+                    title,
+                },
+            ))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
+    async fn promote_rule(&self, project_id: ProjectId, name: String) -> Result<Reply, ApiError> {
+        let project = self
+            .project_opt(Some(project_id))
+            .await?
+            .ok_or_else(|| ApiError::not_found("projet"))?;
+        let (path, title) = crate::rules::promote(&self.paths.conventions_dir, &project, &name)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        self.bus
+            .publish(NewEvent::new(EventKind::RuleCreated {
+                rule_kind: RuleKind::Convention,
+                name,
+                title,
+            }))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::RuleFile { path })
     }
 
     /// Load the catalog a project sees: global roles plus its own overrides.

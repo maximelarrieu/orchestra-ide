@@ -241,10 +241,11 @@ reprise. Le worktree, lui, est recréé depuis la branche : un worktree est une 
 travail, pas le travail, et le supprimer à la fermeture ne doit pas fermer la porte.
 Un ticket en cours ne se rouvre pas, et un ticket échoué se relance.
 
-**Une pull request a une forme, et c'est l'agent qui l'écrit.** Le squelette vit dans
-`assets/pr_template.md` et n'est ajouté au prompt de l'intégrateur que lorsqu'une
-requête est ce qui sortira du run : il ne coûte rien ailleurs. L'agent écrit `PR.md`
-dans son worktree — cinq sections, dans cet ordre, sans en ajouter — et le daemon y
+**Une pull request a une forme, et c'est l'agent qui l'écrit.** Le squelette est une
+convention livrée (`assets/conventions/pr-template.md`, `applies_to: [integrator]`,
+`mode: pr`) : il n'arrive qu'à l'intégrateur, et seulement quand une requête est ce
+qui sortira du run. L'agent écrit `PR.md` dans son worktree — cinq sections, dans
+cet ordre, sans en ajouter, dont trois que le daemon vérifie — et le daemon y
 accroche le pied de page qu'il est seul à connaître : ticket, branche, verdict de la
 relecture, tokens et coût. Ce partage n'est pas cosmétique : la substance vient de
 celui qui a lu la branche, les faits de celui qui les a mesurés, et personne n'a à
@@ -269,6 +270,40 @@ défaut une fois la fusion faite — sans quoi le travail s'arrêtait sur la mac
 branche principale en avance sur son remote sans que rien ne le dise. Un dépôt sans
 remote n'est pas une erreur, et un push raté ne défait pas la fusion : il est signalé,
 la branche par défaut est à jour en local.
+
+**Les agents ont des habitudes, écrites et vérifiées.** Un rôle dit à quoi sert un
+agent ; une *règle* dit comment on fait ici. Deux sortes, un seul format — Markdown
+à entête YAML, comme les rôles (`orchestra-core/src/conventions.rs`) :
+
+- une **convention** est une habitude attachée à des rôles (`applies_to`, vide pour
+  tous) : le squelette de PR, la forme d'un commit, « un défaut corrigé arrive avec
+  son test ». Les globales vivent dans `~/.config/orchestra/conventions`, un projet
+  les remplace par nom dans `.orchestra/conventions` — y compris pour en rejeter
+  une chez lui ;
+- un **ADR** est une décision d'architecture du projet (`.orchestra/adr/NNNN-*.md`),
+  donnée à tous ses agents et résumée à l'orchestrateur quand il compose l'équipe.
+
+Chaque agent reçoit, sous son rôle et le pied de page commun, les conventions
+acceptées qui le visent et tous les ADR acceptés. Le fichier est relu à chaque
+agent : une règle acceptée pendant un ticket vaut dès l'agent suivant. Tant que
+`~/.config/orchestra/conventions` n'existe pas, le daemon lit les conventions livrées
+dans le binaire — une installation antérieure ne perd pas le squelette de PR ; un
+dossier présent, même vide, est la volonté de l'utilisateur.
+
+Ce qui se mesure est vérifié : une convention peut porter des `checks`
+(`commit_message`, une expression régulière sur la première ligne de chaque commit
+de la branche, merges exclus ; `pr_sections`, les titres que `PR.md` doit avoir). Le
+daemon les évalue après l'intégrateur et avant la fusion ou la pull request
+(`RulesChecked`). Un écart renvoie l'intégrateur — seul rôle à qui git est ouvert,
+donc seul à pouvoir reformuler un historique — au plus `checks.max_rounds` fois ;
+au-delà, ni fusion ni requête.
+
+Les agents proposent, l'humain décide. Un bloc `PROPOSITION: convention|adr` à la
+fin d'un message est lu par la machine, comme le verdict, et écrit **par le daemon**
+dans `.orchestra/` avec `status: proposed` (`RuleProposed`). Une règle proposée n'est
+ni donnée ni vérifiée ; elle attend sur l'écran 8, où `a` l'accepte, `r` la rejette
+et `e` l'ouvre dans `$EDITOR`. Une règle écrite à la main commence elle aussi
+`proposed` : son squelette ne doit atteindre personne avant d'avoir été rédigé.
 
 **Un ticket interrompu se reprend, il ne se refait pas.** Les agents meurent avec le
 daemon qui les a lancés, et la tâche qui déroulait les étapes aussi. Au démarrage,

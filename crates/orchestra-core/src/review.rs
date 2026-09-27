@@ -165,7 +165,7 @@ pub fn append_reviewer(
 }
 
 /// Lowercase, without accents: `Prêt` and `pret` are the same word.
-fn normalize(s: &str) -> String {
+pub(crate) fn normalize(s: &str) -> String {
     s.trim()
         .chars()
         .flat_map(|c| c.to_lowercase())
@@ -182,7 +182,7 @@ fn normalize(s: &str) -> String {
 }
 
 /// Strip one bullet marker (`-`, `*`, `•`, `1.`) from the head of a line.
-fn strip_bullet(line: &str) -> Option<&str> {
+pub(crate) fn strip_bullet(line: &str) -> Option<&str> {
     let t = line.trim();
     for marker in ["- ", "* ", "• ", "– ", "— "] {
         if let Some(rest) = t.strip_prefix(marker) {

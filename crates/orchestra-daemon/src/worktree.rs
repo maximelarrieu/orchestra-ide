@@ -175,6 +175,27 @@ pub fn commits_ahead(project: &Project, branch: &str) -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// Full messages of the branch's own commits, oldest first, merges left out:
+/// what the conventions judge. A merge commit is git's wording, not the team's.
+pub fn commit_messages(project: &Project, branch: &str) -> Result<Vec<String>> {
+    let range = format!("{}..{branch}", project.default_branch);
+    let out = git(
+        &project.path,
+        &[
+            "log".into(),
+            "--no-merges".into(),
+            "--reverse".into(),
+            "--format=%B%x00".into(),
+            range,
+        ],
+    )?;
+    Ok(out
+        .split('\0')
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .collect())
+}
+
 /// Bring the local default branch up to what the remote now holds.
 ///
 /// Called after a pull request was merged over there: without it, this machine

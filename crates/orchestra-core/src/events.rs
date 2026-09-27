@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::conventions::{RuleKind, RuleStatus, Violation};
 use crate::model::{
     AgentId, AgentStatus, ExitReason, ProjectId, TeamProposal, TicketId, TicketStatus, TodoId,
     TodoStatus, UsageSample,
@@ -150,10 +151,15 @@ pub enum EventTag {
     TodoStatusChanged,
     TodoDeleted,
     TodoPromoted,
+    RuleProposed,
+    RuleCreated,
+    RuleStatusChanged,
+    RuleDeleted,
+    RulesChecked,
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 36] = [
+    pub const ALL: [EventTag; 41] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::TicketCreated,
@@ -190,6 +196,11 @@ impl EventTag {
         EventTag::TodoStatusChanged,
         EventTag::TodoDeleted,
         EventTag::TodoPromoted,
+        EventTag::RuleProposed,
+        EventTag::RuleCreated,
+        EventTag::RuleStatusChanged,
+        EventTag::RuleDeleted,
+        EventTag::RulesChecked,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -230,6 +241,11 @@ impl EventTag {
             EventTag::TodoStatusChanged => "todo_status_changed",
             EventTag::TodoDeleted => "todo_deleted",
             EventTag::TodoPromoted => "todo_promoted",
+            EventTag::RuleProposed => "rule_proposed",
+            EventTag::RuleCreated => "rule_created",
+            EventTag::RuleStatusChanged => "rule_status_changed",
+            EventTag::RuleDeleted => "rule_deleted",
+            EventTag::RulesChecked => "rules_checked",
         }
     }
 
@@ -435,6 +451,38 @@ pub enum EventKind {
         ticket_number: i64,
         project_name: String,
     },
+    /// An agent suggested a convention or a decision. Written with `status:
+    /// proposed`: nothing applies it until the user accepts.
+    RuleProposed {
+        rule_kind: RuleKind,
+        name: String,
+        title: String,
+        by: String,
+    },
+    RuleCreated {
+        rule_kind: RuleKind,
+        name: String,
+        title: String,
+    },
+    RuleStatusChanged {
+        rule_kind: RuleKind,
+        name: String,
+        title: String,
+        from: RuleStatus,
+        to: RuleStatus,
+    },
+    RuleDeleted {
+        rule_kind: RuleKind,
+        name: String,
+        title: String,
+    },
+    /// The measured conventions, evaluated on the branch before a fusion.
+    /// Empty `violations` means the branch passed.
+    RulesChecked {
+        round: u32,
+        #[serde(default)]
+        violations: Vec<Violation>,
+    },
 }
 
 impl EventKind {
@@ -476,6 +524,11 @@ impl EventKind {
             EventKind::TodoStatusChanged { .. } => EventTag::TodoStatusChanged,
             EventKind::TodoDeleted { .. } => EventTag::TodoDeleted,
             EventKind::TodoPromoted { .. } => EventTag::TodoPromoted,
+            EventKind::RuleProposed { .. } => EventTag::RuleProposed,
+            EventKind::RuleCreated { .. } => EventTag::RuleCreated,
+            EventKind::RuleStatusChanged { .. } => EventTag::RuleStatusChanged,
+            EventKind::RuleDeleted { .. } => EventTag::RuleDeleted,
+            EventKind::RulesChecked { .. } => EventTag::RulesChecked,
         }
     }
 }
@@ -602,6 +655,20 @@ mod tests {
                 title: "t".into(),
                 from: crate::model::TodoStatus::Open,
                 to: crate::model::TodoStatus::Done,
+            },
+            EventKind::RulesChecked {
+                round: 1,
+                violations: vec![Violation {
+                    rule: "commits".into(),
+                    detail: "wip".into(),
+                }],
+            },
+            EventKind::RuleStatusChanged {
+                rule_kind: RuleKind::Adr,
+                name: "0001-x".into(),
+                title: "x".into(),
+                from: RuleStatus::Proposed,
+                to: RuleStatus::Accepted,
             },
         ];
         for kind in kinds {

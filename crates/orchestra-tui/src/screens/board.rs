@@ -39,6 +39,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
         Screen::NewTicket => super::new_ticket::render(app, frame, chunks[1]),
         Screen::Proposal => super::proposal::render(app, frame, chunks[1]),
         Screen::Todo => super::todo::render(app, frame, chunks[1]),
+        Screen::Rules => super::rules::render(app, frame, chunks[1]),
     }
     render_activity(app, frame, chunks[2]);
     render_keys(app, frame, chunks[3]);
@@ -76,6 +77,18 @@ fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect) {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(badge.symbol, badge.style()));
         spans.push(Span::styled(format!(" {}", digest.summary_fr()), badge.style()));
+    }
+    // A proposal is a decision waiting on the user: nothing applies it until
+    // then, so it must not wait unseen.
+    let pending = app.pending_rules();
+    if pending > 0 {
+        let badge = theme::rule(orchestra_core::conventions::RuleStatus::Proposed);
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(badge.symbol, badge.style()));
+        spans.push(Span::styled(
+            format!(" {pending} règle(s) à valider"),
+            badge.style(),
+        ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

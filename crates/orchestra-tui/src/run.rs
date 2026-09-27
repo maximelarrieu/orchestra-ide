@@ -63,7 +63,9 @@ pub async fn run(socket: &Path) -> Result<()> {
     dispatch(&handle, &reply_tx, app.take_outbox());
 
     let mut guard = TerminalGuard::enter()?;
-    let mut keys = EventStream::new();
+    // An `Option` so it can be dropped while an editor owns the terminal:
+    // a live stream would steal the keystrokes typed into it.
+    let mut keys = Some(EventStream::new());
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     let mut dirty = true;
     let mut last_draw = std::time::Instant::now() - FRAME;
@@ -76,7 +78,7 @@ pub async fn run(socket: &Path) -> Result<()> {
         }
 
         tokio::select! {
-            key = keys.next() => {
+            key = async { keys.as_mut().expect("rétabli après l'éditeur").next().await } => {
                 match key {
                     Some(Ok(TermEvent::Key(k))) if k.kind == KeyEventKind::Press => {
                         let action = if app.is_typing() {
@@ -153,11 +155,53 @@ pub async fn run(socket: &Path) -> Result<()> {
             }
         }
 
+        if let Some(path) = app.take_edit_request() {
+            drop(keys.take());
+            let outcome = edit(&mut guard, &path).await;
+            keys = Some(EventStream::new());
+            let cmds = app.edited(outcome);
+            dispatch(&handle, &reply_tx, cmds);
+            dirty = true;
+        }
+
         if app.should_quit {
             break;
         }
     }
     Ok(())
+}
+
+/// Hand the terminal to `$VISUAL` / `$EDITOR` (then `vi`) on one file, and
+/// take it back whatever happens. The daemon keeps running meanwhile; its
+/// events are simply read once the screen is back.
+async fn edit(guard: &mut TerminalGuard, path: &Path) -> std::result::Result<(), String> {
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .or_else(|| std::env::var("EDITOR").ok())
+        .filter(|e| !e.trim().is_empty())
+        .unwrap_or_else(|| "vi".into());
+    // `code -w`, `emacsclient -t`: a program and its flags, no shell.
+    let mut words = editor.split_whitespace();
+    let program = words.next().unwrap_or("vi").to_string();
+    let args: Vec<String> = words.map(str::to_string).collect();
+
+    let _ = disable_raw_mode();
+    let _ = execute!(guard.terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = guard.terminal.show_cursor();
+    let status = tokio::process::Command::new(&program)
+        .args(&args)
+        .arg(path)
+        .status()
+        .await;
+    let _ = enable_raw_mode();
+    let _ = execute!(guard.terminal.backend_mut(), EnterAlternateScreen);
+    let _ = guard.terminal.clear();
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("{program} a rendu {s}")),
+        Err(e) => Err(format!("{program} introuvable : {e}")),
+    }
 }
 
 /// Reconnect to a daemon that came back, without starting one.

@@ -278,6 +278,16 @@ fn user_prompt(ticket: &Ticket, catalog: &Catalog, repo: &Path) -> String {
     out.push_str(&format!(
         "\n\nTu peux en choisir entre 1 et {MAX_TEAM}. Aucun autre rôle n'existe.\n"
     ));
+    let adrs = crate::rules::adr_summary(repo);
+    if !adrs.is_empty() {
+        out.push_str(
+            "\n## Décisions d'architecture du projet\n\n\
+             Déjà prises : l'équipe les respecte, et leur texte complet est donné à \
+             chaque agent.\n\n",
+        );
+        out.push_str(&adrs);
+        out.push('\n');
+    }
     if !summary.is_empty() {
         out.push_str("\n## Le dépôt\n\n");
         out.push_str(&summary.text);

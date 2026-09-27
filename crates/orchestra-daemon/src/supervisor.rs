@@ -39,7 +39,6 @@ const FOOTER: &str = include_str!("../../../assets/roles/_footer.md");
 
 /// The shape every pull request description follows. Handed to the integrator
 /// when, and only when, a request is what this run will produce.
-const PR_TEMPLATE: &str = include_str!("../../../assets/pr_template.md");
 
 /// How long an interrupted agent is given to finish its turn cleanly.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -68,6 +67,9 @@ pub struct Supervisor {
     ledger: UsageLedger,
     cfg: Arc<Config>,
     cache_dir: PathBuf,
+    /// Global conventions. Read afresh for every agent, so a rule accepted
+    /// while a ticket runs reaches the next agent of that ticket.
+    conventions_dir: PathBuf,
     running: Arc<Mutex<HashMap<AgentId, Running>>>,
     tickets: Arc<Mutex<HashMap<TicketId, tokio::task::JoinHandle<()>>>>,
     /// Tickets launched with `open_panes`, which get a pane per agent even
@@ -83,6 +85,7 @@ impl Supervisor {
         ledger: UsageLedger,
         cfg: Arc<Config>,
         cache_dir: PathBuf,
+        conventions_dir: PathBuf,
     ) -> Self {
         Supervisor {
             store,
@@ -90,6 +93,7 @@ impl Supervisor {
             ledger,
             cfg,
             cache_dir,
+            conventions_dir,
             running: Arc::new(Mutex::new(HashMap::new())),
             tickets: Arc::new(Mutex::new(HashMap::new())),
             panes_wanted: Arc::new(Mutex::new(HashSet::new())),
@@ -310,18 +314,15 @@ impl Supervisor {
             parallel_ok: false,
         };
 
-        // The template only costs tokens where a request is what comes out.
-        let appendix = if cfg.mode.is_pr() {
-            format!("\n\n{PR_TEMPLATE}")
-        } else {
-            String::new()
-        };
+        // The pull request template is a convention with `mode: pr`: it only
+        // reaches the integrator, and only where a request is what comes out.
+        let mut stage = stage;
         let step = self
             .run_member(Step {
                 ticket: &ticket,
                 project: &project,
                 catalog: &catalog,
-                member,
+                member: member.clone(),
                 stage,
                 worktree_path: &worktree_path,
                 handoffs: &mut handoffs,
@@ -329,7 +330,7 @@ impl Supervisor {
                 blocked_by: Blocked::Review,
                 // The one place this is not `Confined`.
                 git: GitPolicy::Full,
-                appendix: &appendix,
+                appendix: "",
             })
             .await;
         if !matches!(step, StepOutcome::Done) {
@@ -341,6 +342,25 @@ impl Supervisor {
                     .into(),
             )
             .await;
+            return Ok(());
+        }
+        stage += 1;
+
+        // What the conventions measure is measured, not asked: the branch
+        // leaves this machine only once its commits and its description hold.
+        if !self
+            .rules_gate(
+                &ticket,
+                &project,
+                &catalog,
+                &member,
+                &branch,
+                &worktree_path,
+                &mut handoffs,
+                &mut stage,
+            )
+            .await
+        {
             return Ok(());
         }
 
@@ -841,6 +861,8 @@ impl Supervisor {
 
         match outcome {
             Ok(AgentOutcome::Done { handoff }) => {
+                self.record_proposals(ticket, project, &member.role, &handoff)
+                    .await;
                 handoffs.push((member.role.clone(), handoff));
                 StepOutcome::Done
             }
@@ -863,6 +885,160 @@ impl Supervisor {
                     .await;
                 StepOutcome::Failed
             }
+        }
+    }
+
+    /// Write down the rules an agent proposed at the end of its message.
+    ///
+    /// Written by us, with `status: proposed`, in the project's `.orchestra`
+    /// directory: the agent never touches it, and nothing applies a proposal
+    /// before the user has accepted it. A proposal that cannot be written costs
+    /// a warning, never the ticket.
+    async fn record_proposals(&self, ticket: &Ticket, project: &Project, role: &str, handoff: &str) {
+        for proposal in orchestra_core::conventions::parse_proposals(handoff) {
+            let by = format!("{role}, ticket #{}", ticket.number);
+            let draft = orchestra_core::conventions::RuleDraft {
+                kind: proposal.kind,
+                title: &proposal.title,
+                status: orchestra_core::conventions::RuleStatus::Proposed,
+                applies_to: &proposal.applies_to,
+                proposed_by: Some(&by),
+                body: &proposal.body,
+            };
+            match crate::rules::create(&self.conventions_dir, Some(project), &draft) {
+                Ok((name, _)) => {
+                    self.publish_ticket(
+                        ticket,
+                        EventKind::RuleProposed {
+                            rule_kind: proposal.kind,
+                            name,
+                            title: proposal.title.clone(),
+                            by,
+                        },
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    self.warn_ticket(
+                        ticket.id,
+                        project.id,
+                        format!("proposition « {} » non enregistrée : {e:#}", proposal.title),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    /// The measured conventions, evaluated on the branch the integrator just
+    /// prepared. True when it may go on to the fusion or the pull request.
+    ///
+    /// A violation sends the integrator back — it is the only agent git is
+    /// open to, so the only one that can reword a commit — for at most
+    /// `checks.max_rounds` rounds. Past that the branch stays where it is:
+    /// an agent saying it is fine does not outweigh a message that does not
+    /// match.
+    #[allow(clippy::too_many_arguments)]
+    async fn rules_gate(
+        &self,
+        ticket: &Ticket,
+        project: &Project,
+        catalog: &Catalog,
+        member: &orchestra_core::model::TeamMember,
+        branch: &str,
+        worktree_path: &Path,
+        handoffs: &mut Vec<(String, String)>,
+        stage: &mut u32,
+    ) -> bool {
+        let is_pr = self.cfg.integration.mode.is_pr();
+        let mut round = 1;
+        loop {
+            let book = crate::rules::book(&self.conventions_dir, Some(project));
+            if round == 1 {
+                for (path, err) in &book.errors {
+                    self.warn_ticket(
+                        ticket.id,
+                        project.id,
+                        format!("règle illisible, donc non vérifiée : {} — {err}", path.display()),
+                    )
+                    .await;
+                }
+            }
+            if book.checks(is_pr).is_empty() {
+                return true;
+            }
+            let facts = orchestra_core::conventions::BranchFacts {
+                commits: match worktree::commit_messages(project, branch) {
+                    Ok(commits) => commits,
+                    Err(e) => {
+                        self.warn_ticket(
+                            ticket.id,
+                            project.id,
+                            format!("historique illisible, conventions non vérifiées : {e:#}"),
+                        )
+                        .await;
+                        return false;
+                    }
+                },
+                pr_body: written_pr_body(worktree_path),
+            };
+            let violations = orchestra_core::conventions::evaluate_all(&book, is_pr, &facts);
+            self.publish_ticket(
+                ticket,
+                EventKind::RulesChecked {
+                    round,
+                    violations: violations.clone(),
+                },
+            )
+            .await;
+            if violations.is_empty() {
+                return true;
+            }
+            if round > self.cfg.checks.max_rounds {
+                self.warn_ticket(
+                    ticket.id,
+                    project.id,
+                    format!(
+                        "la branche ne respecte toujours pas les conventions après {} tour(s) \
+                         ({}) : ni fusion ni pull request, le ticket reste à relire",
+                        round - 1,
+                        violations[0].line()
+                    ),
+                )
+                .await;
+                return false;
+            }
+            let items: Vec<String> = violations.iter().map(|v| v.line()).collect();
+            let mut again = member.clone();
+            again.objective = correction_objective(&member.objective, &items, Blocked::Rules);
+            let step = self
+                .run_member(Step {
+                    ticket,
+                    project,
+                    catalog,
+                    member: again,
+                    stage: *stage,
+                    worktree_path,
+                    handoffs,
+                    blocking: &items,
+                    blocked_by: Blocked::Rules,
+                    git: GitPolicy::Full,
+                    appendix: "",
+                })
+                .await;
+            if !matches!(step, StepOutcome::Done) {
+                self.warn_ticket(
+                    ticket.id,
+                    project.id,
+                    "l'intégrateur s'est arrêté pendant la mise en conformité : le ticket \
+                     reste à relire"
+                        .into(),
+                )
+                .await;
+                return false;
+            }
+            *stage += 1;
+            round += 1;
         }
     }
 
@@ -1410,10 +1586,12 @@ impl Supervisor {
             blocking,
             blocked_by,
         );
+        let rules = crate::rules::book(&self.conventions_dir, Some(project))
+            .prompt_section(&role.name, self.cfg.integration.mode.is_pr());
         let prompt_file = write_prompt_file(
             &self.cache_dir,
             &role.name,
-            &format!("{}\n\n{FOOTER}{appendix}", role.system_prompt),
+            &format!("{}\n\n{FOOTER}{rules}{appendix}", role.system_prompt),
         )?;
 
         loop {
@@ -1963,6 +2141,7 @@ impl Supervisor {
 pub enum Blocked {
     Review,
     Checks,
+    Rules,
 }
 
 impl Blocked {
@@ -1970,6 +2149,7 @@ impl Blocked {
         match self {
             Blocked::Review => "Ce que la relecture bloque",
             Blocked::Checks => "Ce que les vérifications du dépôt refusent",
+            Blocked::Rules => "Ce que les conventions de l'équipe refusent",
         }
     }
 
@@ -1977,6 +2157,10 @@ impl Blocked {
         match self {
             Blocked::Review => "Corrige exactement ces points.",
             Blocked::Checks => "Fais repasser cette commande au vert.",
+            Blocked::Rules => {
+                "Mets la branche en conformité : reformule les commits concernés \
+                 (`git rebase`, sans rien changer d'autre), complète PR.md s'il le faut."
+            }
         }
     }
 }
@@ -2134,6 +2318,9 @@ fn correction_objective(original: &str, blocking: &[String], blocked_by: Blocked
     let head = match blocked_by {
         Blocked::Review => "Lever ce que la relecture a bloqué, et rien d'autre :",
         Blocked::Checks => "Réparer ce que la vérification du dépôt refuse, et rien d'autre :",
+        Blocked::Rules => {
+            "Mettre la branche en conformité avec les conventions de l'équipe, et rien d'autre :"
+        }
     };
     format!("{head}\n{list}\n\n         (ton objectif initial était : {original})")
 }
@@ -2554,7 +2741,7 @@ mod tests {
         let cfg = Arc::new(Config::default());
         let ledger = UsageLedger::new(store.clone(), &cfg);
         let dir = tempfile::tempdir().unwrap();
-        let sup = Supervisor::new(store, bus, ledger, cfg, dir.path().to_path_buf());
+        let sup = Supervisor::new(store, bus, ledger, cfg, dir.path().to_path_buf(), dir.path().join("conventions"));
 
         let project = Project {
             id: Uuid::new_v4(),
@@ -2601,7 +2788,7 @@ mod tests {
         t.project_id = project.id;
         store.insert_project(project.clone()).await.unwrap();
         store.insert_ticket(t.clone()).await.unwrap();
-        let sup = Supervisor::new(store, bus, ledger, cfg, dir.path().to_path_buf());
+        let sup = Supervisor::new(store, bus, ledger, cfg, dir.path().to_path_buf(), dir.path().join("conventions"));
         (sup, t, project, dir)
     }
 
@@ -2752,6 +2939,154 @@ mod tests {
         assert_eq!(last_worker(&[], &workers).as_deref(), Some("backend"));
     }
 
+    /// A repository at `dir` whose branch `t` carries one commit per message.
+    fn repo_with_branch(dir: &Path, messages: &[&str]) {
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} : {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "départ"]);
+        git(&["checkout", "-q", "-b", "t"]);
+        for m in messages {
+            git(&["commit", "-q", "--allow-empty", "-m", m]);
+        }
+    }
+
+    async fn rules_checked(sup: &Supervisor, t: &Ticket) -> Vec<Vec<orchestra_core::conventions::Violation>> {
+        let filter = orchestra_core::events::EventFilter {
+            ticket_id: Some(t.id),
+            tags: vec![orchestra_core::events::EventTag::RulesChecked],
+            ..Default::default()
+        };
+        sup.store
+            .recent_events(filter, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e.kind {
+                EventKind::RulesChecked { violations, .. } => Some(violations),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_branch_that_breaks_a_measured_convention_is_not_fused() {
+        // `max_rounds = 0` : pas de tour de mise en conformité, donc aucun
+        // agent n'est lancé — ce qui est testé, c'est la décision.
+        let (sup, t, project, dir) = gated(vec![], 0).await;
+        repo_with_branch(dir.path(), &["[backend] ajoute le cache", "wip"]);
+        let catalog = Catalog::load(dir.path(), None);
+        let mut handoffs = Vec::new();
+        let mut stage = 3;
+        let ok = sup
+            .rules_gate(
+                &t,
+                &project,
+                &catalog,
+                &member("integrator"),
+                "t",
+                dir.path(),
+                &mut handoffs,
+                &mut stage,
+            )
+            .await;
+        assert!(!ok, "un commit « wip » bloque la fusion");
+        let passes = rules_checked(&sup, &t).await;
+        assert_eq!(passes.len(), 1);
+        assert_eq!(passes[0].len(), 1, "{:?}", passes[0]);
+        assert_eq!(passes[0][0].rule, "commits");
+        assert!(passes[0][0].detail.contains("« wip »"));
+    }
+
+    #[tokio::test]
+    async fn a_conforming_branch_goes_on_and_merges_are_not_judged() {
+        let (sup, t, project, dir) = gated(vec![], 0).await;
+        repo_with_branch(dir.path(), &["[backend] ajoute le cache", "[tests] couvre le cas vide"]);
+        // A merge of the default branch into the ticket's: git's wording.
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").arg("-C").arg(dir.path()).args(args).output().unwrap()
+        };
+        git(&["checkout", "-q", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "ailleurs"]);
+        git(&["checkout", "-q", "t"]);
+        assert!(git(&["merge", "-q", "--no-edit", "main"]).status.success());
+
+        let catalog = Catalog::load(dir.path(), None);
+        let mut handoffs = Vec::new();
+        let mut stage = 3;
+        let ok = sup
+            .rules_gate(
+                &t,
+                &project,
+                &catalog,
+                &member("integrator"),
+                "t",
+                dir.path(),
+                &mut handoffs,
+                &mut stage,
+            )
+            .await;
+        assert!(ok);
+        assert_eq!(rules_checked(&sup, &t).await, vec![vec![]]);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_convention_no_longer_gates_anything() {
+        let (sup, t, project, dir) = gated(vec![], 0).await;
+        repo_with_branch(dir.path(), &["wip"]);
+        // The project switches the shipped convention off by overriding it.
+        let own = dir.path().join(".orchestra/conventions");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(
+            own.join("commits.md"),
+            "---\ntitle: Commits libres\nstatus: rejected\n---\nPas de format imposé.\n",
+        )
+        .unwrap();
+        let catalog = Catalog::load(dir.path(), None);
+        let mut handoffs = Vec::new();
+        let mut stage = 3;
+        assert!(
+            sup.rules_gate(&t, &project, &catalog, &member("integrator"), "t", dir.path(), &mut handoffs, &mut stage)
+                .await
+        );
+        assert!(rules_checked(&sup, &t).await.is_empty(), "rien à vérifier, rien de publié");
+    }
+
+    #[tokio::test]
+    async fn an_agent_proposal_is_written_pending_and_announced() {
+        let (sup, t, project, dir) = gated(vec![], 0).await;
+        let handoff = "Fait.\n\nPROPOSITION: convention\ntitre: Paginer les listes\nrôles: backend\n\
+                       Toute liste prend limit et offset.\nFIN PROPOSITION\n";
+        sup.record_proposals(&t, &project, "reviewer", handoff).await;
+
+        let path = dir.path().join(".orchestra/conventions/paginer-les-listes.md");
+        let src = std::fs::read_to_string(&path).expect("la proposition est écrite");
+        assert!(src.contains("status: proposed"), "{src}");
+        assert!(src.contains("reviewer, ticket #7"), "{src}");
+
+        // Written, but never handed to an agent before it is accepted.
+        let book = crate::rules::book(&dir.path().join("conventions"), Some(&project));
+        assert_eq!(book.pending(), 1);
+        assert!(!book.prompt_section("backend", false).contains("Paginer"));
+
+        let filter = orchestra_core::events::EventFilter {
+            ticket_id: Some(t.id),
+            tags: vec![orchestra_core::events::EventTag::RuleProposed],
+            ..Default::default()
+        };
+        let events = sup.store.recent_events(filter, 5).await.unwrap();
+        assert_eq!(events.len(), 1);
+    }
+
     #[tokio::test]
     async fn steering_an_agent_that_is_not_running_says_so() {
         let store = Store::open_memory().unwrap();
@@ -2759,7 +3094,7 @@ mod tests {
         let cfg = Arc::new(Config::default());
         let ledger = UsageLedger::new(store.clone(), &cfg);
         let dir = tempfile::tempdir().unwrap();
-        let sup = Supervisor::new(store, bus, ledger, cfg, dir.path().to_path_buf());
+        let sup = Supervisor::new(store, bus, ledger, cfg, dir.path().to_path_buf(), dir.path().join("conventions"));
 
         let err = sup
             .steer(Uuid::new_v4(), "vas-y".into(), false)
