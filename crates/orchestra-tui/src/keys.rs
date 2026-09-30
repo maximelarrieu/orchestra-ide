@@ -334,6 +334,20 @@ fn todo_hints(app: &App) -> Vec<Hint> {
 
 fn rules_hints(app: &App) -> Vec<Hint> {
     use orchestra_core::conventions::{RuleKind, RuleStatus};
+    if let Some(role) = app.selected_role() {
+        let mut hints = vec![Hint::screen("e", "éditer")];
+        hints.push(match role.git.unwrap_or_default() {
+            orchestra_core::guard::GitPolicy::Full => Hint::screen("p", "confiner git"),
+            orchestra_core::guard::GitPolicy::Confined => Hint::screen("p", "ouvrir git"),
+        });
+        if role.scope == orchestra_core::model::RoleScope::Project
+            && app.selected_project().is_some()
+        {
+            hints.push(Hint::screen("g", "rendre global"));
+        }
+        hints.push(Hint::screen("d", "supprimer"));
+        return hints;
+    }
     let Some(r) = app.selected_rule() else {
         return Vec::new();
     };
@@ -406,7 +420,8 @@ pub const PALETTE: &[(&str, &str)] = &[
     (":todo open|doing|done|drop <n>", "changer le statut"),
     (":convention add <titre>", "écrire une convention"),
     (":adr add <titre>", "écrire une décision du projet"),
-    (":regles", "les conventions et ADR"),
+    (":role add <nom>", "créer un rôle (projet sélectionné, sinon global)"),
+    (":regles", "les rôles, conventions et ADR"),
     (":usage", "les coûts"),
     (":refresh", "tout relire"),
 ];

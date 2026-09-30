@@ -44,8 +44,9 @@ toucher au disque ni au réseau.
   `UsageRow`…). Une trame tient sur une ligne.
 - `pricing.rs` — tokens vers dollars indicatifs, par plus long préfixe de modèle.
 - `config.rs` — `config.toml` et tous les chemins XDG.
-- `guard.rs` — les règles du garde-fou, dont `GitPolicy` : `Confined` pour tout le
-  monde, `Full` pour le seul intégrateur. La politique ne lève que la liste des
+- `guard.rs` — les règles du garde-fou, dont `GitPolicy` : `Confined` par défaut,
+  `Full` pour un rôle dont l'entête dit `git: full` — et, faute de mot, pour
+  l'intégrateur seul (`GitPolicy::for_role`). La politique ne lève que la liste des
   sous-commandes interdites ; le confinement des chemins vaut pour tous.
   Les règles sont pures ; la seule question qu'elles ne peuvent pas trancher —
   « ce chemin est-il écrivable ? » — est posée par `Boundary::reach`, fournie par
@@ -294,8 +295,8 @@ Ce qui se mesure est vérifié : une convention peut porter des `checks`
 (`commit_message`, une expression régulière sur la première ligne de chaque commit
 de la branche, merges exclus ; `pr_sections`, les titres que `PR.md` doit avoir). Le
 daemon les évalue après l'intégrateur et avant la fusion ou la pull request
-(`RulesChecked`). Un écart renvoie l'intégrateur — seul rôle à qui git est ouvert,
-donc seul à pouvoir reformuler un historique — au plus `checks.max_rounds` fois ;
+(`RulesChecked`). Un écart renvoie l'intégrateur — le rôle dont c'est le métier de
+reformuler un historique — au plus `checks.max_rounds` fois ;
 au-delà, ni fusion ni requête.
 
 Les agents proposent, l'humain décide. Un bloc `PROPOSITION: convention|adr` à la
@@ -331,7 +332,7 @@ verbeux compris, et montre ce que l'orchestrateur lit, cherche et pèse, avec le
 réflexion est finie — il l'effaçait une seconde après la touche — mais l'agent
 orchestrateur lui-même : actif, il pense ; terminé après notre demande, c'est fini.
 
-**Un seul rôle fait du git, et jamais dans le dépôt principal.** L'intégrateur est
+**Git suit le rôle, et jamais dans le dépôt principal.** L'intégrateur est
 lancé à la main depuis l'écran Ticket, et seulement si la relecture n'a rien bloqué.
 Son garde-fou ouvre les sous-commandes git (`GitPolicy::Full`) mais **pas** les
 chemins : `git -C <dépôt principal>` reste refusé comme n'importe quelle sortie de
@@ -340,6 +341,36 @@ lui, règle les conflits, rejoue les vérifications — et c'est le daemon qui f
 ensuite la fusion, en `--ff-only`, dans un dépôt principal qu'il exige propre et sur
 sa branche par défaut. Une intégration ratée laisse l'historique principal intact.
 La règle 5 tient donc sans exception : aucun agent n'a jamais de shell dans le dépôt.
+La politique suit le rôle, pas l'étape : elle est lue dans l'entête du rôle (`git:
+confined | full`) à chaque agent lancé (`Supervisor::git_for`). Un intégrateur que
+l'orchestrateur a placé dans une équipe garde donc `Full` — confiné, il se voyait
+refuser le push que son objectif lui demandait —, et l'utilisateur peut ouvrir git à
+un autre rôle, ou le fermer à l'intégrateur. Sans `git:` écrit, seul le rôle nommé
+par `config.integration.role` l'a : un catalogue installé avant ce champ garde son
+comportement.
+
+**Rôles et règles, un seul écran.** Les rôles sont des fichiers comme les
+conventions, et répondent à la même question : comment l'équipe travaille ici.
+L'écran 8 les liste en tête, avant conventions et ADR, avec leurs droits git en
+toutes lettres (et `⎇` pour un rôle ouvert). `e` ouvre le fichier dans `$EDITOR` —
+nom, description, modèle, outils, consignes —, `p` ouvre ou referme git (demandé
+avant d'ouvrir : un push sort de la machine), `g` rend global un rôle de projet,
+`d` le supprime, et `:role add <nom>` en crée un depuis un squelette confiné. Un rôle
+n'a pas d'état « proposé » : seul l'humain en écrit. Le daemon refuse de supprimer
+le dernier fichier d'un rôle dont il a besoin (relecture, intégration), et chaque
+écriture publie `RoleCreated`, `RoleUpdated` ou `RoleDeleted` pour que les autres
+clients relisent le catalogue.
+
+**Une fusion refusée attend l'utilisateur, et le dit.** Quand la branche est prête
+mais que le daemon ne peut pas la fusionner (dépôt principal modifié, autre branche
+sortie, branche par défaut qui a bougé), il publie `MergeBlocked` avec la raison et
+le commit prêt — pas un simple avertissement perdu dans le flux. Tant qu'aucun
+événement plus récent ne fait avancer le ticket, sa carte porte « ⏸ fusion en
+attente » et l'écran Ticket en donne la raison (`daemon/src/integration.rs`).
+Réessayer (`f`) ne relance pas d'intégrateur si la branche pointe toujours sur ce
+commit et que l'avance rapide reste possible : seule la porte est rejouée. Si la
+branche par défaut a bougé, il faut quelqu'un pour la ramener, et l'intégrateur
+repart.
 
 **Le superviseur tranche, pas le flux.** Une interruption produit une ligne `result`
 en erreur, exactement comme un vrai échec. Le flux ne peut donc pas dire si un agent

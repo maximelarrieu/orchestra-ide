@@ -1,12 +1,15 @@
-//! The Rules screen: the team's conventions and the project's decisions.
+//! The Rules screen: the roles, the team's conventions and the project's
+//! decisions.
 //!
-//! What every agent is handed on top of its role, and what the daemon checks
-//! on a branch before it leaves. A list on the left, the selected rule's text
-//! on the right. Proposals from agents land here first, and apply only once
+//! Who the agents are, what every agent is handed on top of its role, and what
+//! the daemon checks on a branch before it leaves — one screen, since all of it
+//! is « how the team works here ». A list on the left, the selection's text on
+//! the right. Proposals from agents land here first, and apply only once
 //! accepted.
 
 use orchestra_core::conventions::{Rule, RuleKind};
-use orchestra_core::model::RoleScope;
+use orchestra_core::guard::GitPolicy;
+use orchestra_core::model::{RoleDefinition, RoleScope};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -20,14 +23,15 @@ use super::{pane_block, truncate};
 
 pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let scope = match app.selected_project() {
-        Some(p) => format!("Règles — {}", p.name),
-        None => "Règles — globales".to_string(),
+        Some(p) => format!("Rôles & règles — {}", p.name),
+        None => "Rôles & règles — globaux".to_string(),
     };
-    if app.rules.is_empty() && app.rule_errors.is_empty() {
+    if app.book_len() == 0 && app.rule_errors.is_empty() && app.role_errors.is_empty() {
         frame.render_widget(
             Paragraph::new(
-                "Aucune règle. « : » puis `convention add <titre>` en crée une ; \
-                 `adr add <titre>` écrit une décision pour le projet sélectionné.",
+                "Aucun rôle ni règle. « : » puis `role add <nom>` crée un rôle, \
+                 `convention add <titre>` une convention ; `adr add <titre>` écrit une \
+                 décision pour le projet sélectionné. `orchestra init` installe les rôles livrés.",
             )
             .style(Style::default().add_modifier(Modifier::DIM))
             .block(pane_block(&scope, true))
@@ -49,7 +53,10 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
 
     render_list(app, frame, chunks[0], &scope);
     if wide {
-        render_body(app.selected_rule(), frame, chunks[1]);
+        match app.selected_role() {
+            Some(role) => render_role(role, frame, chunks[1]),
+            None => render_body(app.selected_rule(), frame, chunks[1]),
+        }
     }
 }
 
@@ -60,13 +67,69 @@ fn section(label: &str) -> Line<'static> {
     ))
 }
 
+fn scope_fr(scope: RoleScope, feminine: bool) -> &'static str {
+    match (scope, feminine) {
+        (RoleScope::Global, true) => "globale",
+        (RoleScope::Global, false) => "global",
+        (RoleScope::Project, _) => "projet",
+    }
+}
+
 fn render_list(app: &App, frame: &mut Frame<'_>, area: Rect, title: &str) {
     let width = area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
+    if !app.roles.is_empty() {
+        lines.push(section("Rôles"));
+    }
+    for (i, r) in app.roles.iter().enumerate() {
+        let selected = i == app.rule_selected;
+        let git = r.git.unwrap_or_default();
+        let mut head = Vec::new();
+        if git == GitPolicy::Full {
+            let badge = theme::git_open();
+            head.push(Span::styled(badge.symbol, badge.style()));
+        } else {
+            head.push(Span::raw(" "));
+        }
+        head.push(Span::raw(" "));
+        let mut style = Style::default();
+        if selected {
+            style = style.add_modifier(Modifier::BOLD | Modifier::REVERSED);
+        }
+        head.push(Span::styled(truncate(&r.name, width.saturating_sub(4)), style));
+        lines.push(Line::from(head));
+
+        let mut foot = vec![
+            match git {
+                GitPolicy::Full => "git complet".to_string(),
+                GitPolicy::Confined => "git confiné".to_string(),
+            },
+            scope_fr(r.scope, false).to_string(),
+        ];
+        if let Some(model) = &r.model {
+            foot.push(model.clone());
+        }
+        lines.push(Line::from(Span::styled(
+            truncate(&format!("  {}", foot.join(" · ")), width),
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
+    if !app.role_errors.is_empty() {
+        let warn = theme::urgent();
+        for e in &app.role_errors {
+            lines.push(Line::from(vec![
+                Span::styled(warn.symbol, warn.style()),
+                Span::raw(" "),
+                Span::raw(truncate(e, width.saturating_sub(2))),
+            ]));
+        }
+    }
+    let offset = app.roles.len();
     let mut last_kind = None;
     for (i, r) in app.rules.iter().enumerate() {
+        let i = i + offset;
         if last_kind != Some(r.kind) {
-            if last_kind.is_some() {
+            if last_kind.is_some() || !lines.is_empty() {
                 lines.push(Line::raw(""));
             }
             lines.push(section(match r.kind {
@@ -97,10 +160,7 @@ fn render_list(app: &App, frame: &mut Frame<'_>, area: Rect, title: &str) {
         let mut foot = vec![r.status.label_fr().to_string()];
         if r.kind == RuleKind::Convention {
             foot.push(r.audience_fr());
-            foot.push(match r.scope {
-                RoleScope::Global => "globale".into(),
-                RoleScope::Project => "projet".into(),
-            });
+            foot.push(scope_fr(r.scope, true).into());
         }
         if let Some(by) = &r.proposed_by {
             foot.push(format!("par {by}"));
@@ -126,7 +186,7 @@ fn render_list(app: &App, frame: &mut Frame<'_>, area: Rect, title: &str) {
     let inner = area.height.saturating_sub(2) as usize;
     let cursor = selected_line(app);
     let scroll = cursor.saturating_sub(inner.saturating_sub(2)) as u16;
-    let title = format!("{title} ({})", app.rules.len());
+    let title = format!("{title} ({})", app.book_len());
     frame.render_widget(
         Paragraph::new(lines)
             .scroll((scroll, 0))
@@ -135,21 +195,83 @@ fn render_list(app: &App, frame: &mut Frame<'_>, area: Rect, title: &str) {
     );
 }
 
-/// The line the selected rule starts on, headings included.
+/// The line the selection starts on, headings included.
 fn selected_line(app: &App) -> usize {
     let mut line = 0;
+    if !app.roles.is_empty() {
+        line += 1;
+        if app.rule_selected < app.roles.len() {
+            return line + 2 * app.rule_selected;
+        }
+        line += 2 * app.roles.len() + app.role_errors.len();
+    }
     let mut last_kind = None;
     for (i, r) in app.rules.iter().enumerate() {
         if last_kind != Some(r.kind) {
-            line += if last_kind.is_some() { 2 } else { 1 };
+            line += if line > 0 { 2 } else { 1 };
             last_kind = Some(r.kind);
         }
-        if i == app.rule_selected {
+        if i + app.roles.len() == app.rule_selected {
             return line;
         }
         line += 2;
     }
     line
+}
+
+/// What a role is and what it may do, then the instructions it is given.
+fn render_role(r: &RoleDefinition, frame: &mut Frame<'_>, area: Rect) {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut lines = Vec::new();
+    if !r.description.is_empty() {
+        lines.push(Line::from(Span::styled(
+            r.description.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+    }
+    let git = r.git.unwrap_or_default();
+    let mut rights = Vec::new();
+    if git == GitPolicy::Full {
+        let badge = theme::git_open();
+        rights.push(Span::styled(format!("{} ", badge.symbol), badge.style()));
+    }
+    rights.push(Span::raw(git.label_fr()));
+    rights.push(Span::styled("   « p » pour changer", dim));
+    lines.push(Line::from(rights));
+    let mut facts = Vec::new();
+    if let Some(m) = &r.model {
+        facts.push(format!("modèle {m}"));
+    }
+    if let Some(e) = r.effort {
+        facts.push(format!("effort {}", e.as_str()));
+    }
+    if let Some(b) = r.max_budget_usd {
+        facts.push(format!("budget {b} $"));
+    }
+    if !facts.is_empty() {
+        lines.push(Line::from(Span::styled(facts.join(" · "), dim)));
+    }
+    if !r.allowed_tools.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("outils : {}", r.allowed_tools.join(", ")),
+            dim,
+        )));
+    }
+    if !r.disallowed_tools.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("interdits : {}", r.disallowed_tools.join(", ")),
+            dim,
+        )));
+    }
+    lines.push(Line::from(Span::styled(r.source.display().to_string(), dim)));
+    lines.push(Line::raw(""));
+    lines.extend(r.system_prompt.lines().map(|l| Line::raw(l.to_string())));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(pane_block(&r.name, false)),
+        area,
+    );
 }
 
 fn render_body(rule: Option<&Rule>, frame: &mut Frame<'_>, area: Rect) {
@@ -225,7 +347,7 @@ mod tests {
     #[test]
     fn an_empty_book_explains_how_to_start() {
         let out = draw(&App::new(), 80, 10);
-        assert!(out.contains("Aucune règle"));
+        assert!(out.contains("Aucun rôle ni règle"), "{out}");
     }
 
     #[test]
@@ -246,6 +368,80 @@ mod tests {
         assert!(out.contains("Le corps de la règle."));
         assert!(out.contains("vérifié"), "le check de la sélection est dit");
         assert!(out.contains("casse.md"));
+    }
+
+    fn role(name: &str, git: GitPolicy, scope: RoleScope) -> RoleDefinition {
+        RoleDefinition {
+            name: name.into(),
+            description: format!("le rôle {name}"),
+            model: Some("sonnet".into()),
+            effort: None,
+            allowed_tools: vec!["Bash".into()],
+            disallowed_tools: vec![],
+            max_budget_usd: None,
+            subagents: None,
+            tags: vec![],
+            git: Some(git),
+            system_prompt: format!("Tu es {name}."),
+            source: format!("/roles/{name}.md").into(),
+            scope,
+        }
+    }
+
+    fn book() -> App {
+        let mut app = App::new();
+        app.roles = vec![
+            role("backend", GitPolicy::Confined, RoleScope::Global),
+            role("integrator", GitPolicy::Full, RoleScope::Project),
+        ];
+        app.rules = vec![rule("commits", RuleKind::Convention, RuleStatus::Accepted, true)];
+        app
+    }
+
+    #[test]
+    fn roles_come_first_with_their_git_said_in_words() {
+        let mut app = book();
+        let out = draw(&app, 130, 24);
+        assert!(out.contains("Rôles"), "{out}");
+        assert!(out.contains("⎇ integrator"), "le symbole accompagne le rôle ouvert : {out}");
+        assert!(out.contains("git complet · projet · sonnet"), "{out}");
+        assert!(out.contains("git confiné · global"), "{out}");
+        assert!(out.contains("Conventions"));
+        assert!(out.contains("Tu es backend."), "le corps de la sélection : {out}");
+        assert!(out.contains("(3)"), "rôles et règles comptés ensemble : {out}");
+
+        // The cursor walks from the roles into the rules.
+        app.rule_selected = 2;
+        assert!(app.selected_role().is_none());
+        assert_eq!(app.selected_rule().map(|r| r.name.as_str()), Some("commits"));
+        let out = draw(&app, 130, 24);
+        assert!(out.contains("Le corps de la règle."), "{out}");
+    }
+
+    #[test]
+    fn opening_git_is_asked_and_closing_it_is_not() {
+        use crate::app::Msg;
+        use crate::keymap::Action;
+        use orchestra_core::protocol::Command;
+
+        let mut app = book();
+        app.screen = crate::app::Screen::Rules;
+        app.rule_selected = 0;
+        let cmds = app.update(Msg::Key(Action::Char('p')));
+        assert!(cmds.is_empty(), "rien n'est envoyé avant la réponse");
+        let question = app.confirm.as_ref().map(|c| c.question.clone()).unwrap();
+        assert!(question.contains("git complet"), "{question}");
+
+        app.confirm = None;
+        app.rule_selected = 1;
+        let cmds = app.update(Msg::Key(Action::Char('p')));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [Command::SetRoleGit { git: GitPolicy::Confined, name, .. }] if name == "integrator"
+            ),
+            "{cmds:?}"
+        );
     }
 
     #[test]

@@ -73,12 +73,15 @@ name: backend
 description: Implémente la logique serveur et les migrations.
 model: sonnet
 effort: high
+git: confined   # « full » ouvre push, merge et rebase, dans son worktree
 ---
 Tu es l'ingénieur backend de l'équipe…
 ```
 
 Édite-les : ce sont les consignes que suivront tes agents. Un projet peut redéfinir
-n'importe quel rôle dans `<projet>/.orchestra/roles/`.
+n'importe quel rôle dans `<projet>/.orchestra/roles/`. L'écran 8 du tableau,
+« Rôles & règles », les liste avec leurs droits : `e` pour éditer, `p` pour ouvrir
+ou fermer git, `d` pour supprimer, `:role add <nom>` pour en créer un.
 
 ## Principes
 

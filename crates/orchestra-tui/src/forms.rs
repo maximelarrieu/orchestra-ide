@@ -307,6 +307,7 @@ mod tests {
             max_budget_usd: None,
             subagents: None,
             tags: vec![],
+            git: None,
             system_prompt: "consigne".into(),
             source: PathBuf::from("/tmp"),
             scope: orchestra_core::model::RoleScope::Global,

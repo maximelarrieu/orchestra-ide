@@ -619,7 +619,7 @@ impl Cli {
                     None => None,
                 };
                 match client.call(Cmd::ListRoles { project_id }).await? {
-                    Reply::Roles { roles } => {
+                    Reply::Roles { roles, errors } => {
                         if roles.is_empty() {
                             println!("aucun rôle — lance « orchestra init »");
                         }
@@ -628,12 +628,20 @@ impl Cli {
                                 orchestra_core::model::RoleScope::Project => " (projet)",
                                 orchestra_core::model::RoleScope::Global => "",
                             };
+                            let git = match r.git.unwrap_or_default() {
+                                orchestra_core::guard::GitPolicy::Full => "git:full",
+                                orchestra_core::guard::GitPolicy::Confined => "",
+                            };
                             println!(
-                                "{:<12} {:<9} {}{scope}",
+                                "{:<12} {:<9} {:<8} {}{scope}",
                                 r.name,
                                 r.model.as_deref().unwrap_or("défaut"),
+                                git,
                                 r.description
                             );
+                        }
+                        for e in errors {
+                            eprintln!("! {e}");
                         }
                         Ok(())
                     }

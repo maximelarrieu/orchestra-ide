@@ -906,6 +906,10 @@ pub struct RoleDefinition {
     pub subagents: Option<serde_json::Value>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// What git the role gets, when its file says. Unsaid, see
+    /// [`crate::guard::GitPolicy::for_role`].
+    #[serde(default)]
+    pub git: Option<crate::guard::GitPolicy>,
     /// Markdown body, appended to the system prompt.
     pub system_prompt: String,
     pub source: PathBuf,

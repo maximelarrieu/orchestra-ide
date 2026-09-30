@@ -271,12 +271,30 @@ impl Supervisor {
         let mut ticket = ticket;
         let (branch, worktree_path) = self.ensure_worktree(&mut ticket, &project).await?;
 
+        // A branch the integrator already prepared, refused only at the door:
+        // if nothing has moved since, the door is all there is to retry.
+        // Spending an agent to find the branch exactly as it left it would buy
+        // nothing. The default branch moving is the one case that needs it
+        // again — someone has to bring it in.
+        let ready = match crate::integration::blocked_merge(&self.store, ticket.id).await {
+            Some(blocked) => {
+                blocked.branch == branch
+                    && worktree::branch_head(&project.path, &branch).as_deref()
+                        == Some(blocked.head.as_str())
+                    && worktree::fast_forwardable(&project, &branch)
+            }
+            None => false,
+        };
+
         let me = self.clone();
         let ticket_id = ticket.id;
         let handle = tokio::spawn(async move {
-            let outcome = me
-                .run_integration(ticket, project, catalog, worktree_path, branch)
-                .await;
+            let outcome = if ready {
+                me.deliver(ticket, project, worktree_path, branch).await
+            } else {
+                me.run_integration(ticket, project, catalog, worktree_path, branch)
+                    .await
+            };
             if let Err(e) = outcome {
                 tracing::error!("intégration interrompue : {e:#}");
             }
@@ -328,8 +346,7 @@ impl Supervisor {
                 handoffs: &mut handoffs,
                 blocking: &[],
                 blocked_by: Blocked::Review,
-                // The one place this is not `Confined`.
-                git: GitPolicy::Full,
+                git: self.git_for(&catalog, &member.role),
                 appendix: "",
             })
             .await;
@@ -364,6 +381,29 @@ impl Supervisor {
             return Ok(());
         }
 
+        self.deliver(ticket, project, worktree_path, branch).await
+    }
+
+    /// Send a prepared branch out: a pull request, or the fusion and its push.
+    ///
+    /// Everything after the integrator, so that a branch refused only at the
+    /// fusion can come back here without one.
+    async fn deliver(
+        &self,
+        ticket: Ticket,
+        project: Project,
+        worktree_path: PathBuf,
+        branch: String,
+    ) -> Result<()> {
+        let cfg = self.cfg.integration.clone();
+        let handoffs: Vec<(String, String)> = self
+            .store
+            .agents_of_ticket(ticket.id)
+            .await?
+            .into_iter()
+            .filter_map(|a| a.handoff.map(|h| (a.role, h)))
+            .collect();
+
         // A pull request replaces the fusion: the branch goes up, GitHub holds
         // it, and the merge is the user's click. Falling back to the local
         // fusion when there is nowhere to open one is better than stopping.
@@ -390,12 +430,23 @@ impl Supervisor {
         let commits = match worktree::merge_fast_forward(&project, &branch) {
             Ok(commits) => commits,
             Err(e) => {
-                self.warn_ticket(
-                    ticket.id,
-                    project.id,
-                    format!("la fusion n'a pas eu lieu : {e:#}"),
-                )
-                .await;
+                // Not a warning: the branch is ready and the ticket now waits
+                // on the user, which the board has to be able to say.
+                let reason = format!("{e:#}");
+                tracing::warn!("fusion de {branch} refusée : {reason}");
+                let head = worktree::branch_head(&project.path, &branch).unwrap_or_default();
+                let _ = self
+                    .bus
+                    .publish(
+                        NewEvent::new(EventKind::MergeBlocked {
+                            branch: branch.clone(),
+                            head,
+                            reason,
+                        })
+                        .project(project.id)
+                        .ticket(ticket.id),
+                    )
+                    .await;
                 return Ok(());
             }
         };
@@ -739,7 +790,7 @@ impl Supervisor {
                     handoffs: &mut handoffs,
                     blocking: &[],
                     blocked_by: Blocked::Review,
-                    git: GitPolicy::Confined,
+                    git: self.git_for(&catalog, &member.role),
                     appendix: &appendix,
                 })
                 .await;
@@ -1022,7 +1073,7 @@ impl Supervisor {
                     handoffs,
                     blocking: &items,
                     blocked_by: Blocked::Rules,
-                    git: GitPolicy::Full,
+                    git: self.git_for(catalog, &member.role),
                     appendix: "",
                 })
                 .await;
@@ -1167,7 +1218,7 @@ impl Supervisor {
                     handoffs,
                     blocking: &items,
                     blocked_by: Blocked::Checks,
-                    git: GitPolicy::Confined,
+                    git: self.git_for(catalog, &role),
                     appendix: "",
                 })
                 .await;
@@ -1397,7 +1448,7 @@ impl Supervisor {
                         handoffs,
                         blocking: &items,
                         blocked_by: Blocked::Review,
-                        git: GitPolicy::Confined,
+                        git: self.git_for(catalog, role),
                         appendix: "",
                     })
                     .await;
@@ -1449,7 +1500,7 @@ impl Supervisor {
                     handoffs,
                     blocking: &[],
                     blocked_by: Blocked::Review,
-                    git: GitPolicy::Confined,
+                    git: self.git_for(catalog, &reviewer.role),
                     appendix: &appendix,
                 })
                 .await;
@@ -1910,6 +1961,19 @@ impl Supervisor {
 
     /// A warning that belongs to a ticket, so it shows on that ticket rather
     /// than only in the global log.
+    /// What git a role gets: what its file declares (`git:`), and without a
+    /// word there, the open policy for the configured integrator alone
+    /// ([`GitPolicy::for_role`]). Read from the catalog at every step, so an
+    /// integrator an orchestrator put in a team keeps its git, and a right the
+    /// user just gave a role applies to the next agent launched.
+    fn git_for(&self, catalog: &Catalog, role: &str) -> GitPolicy {
+        GitPolicy::for_role(
+            catalog.get(role).and_then(|r| r.git),
+            role,
+            &self.cfg.integration.role,
+        )
+    }
+
     async fn warn_ticket(&self, ticket_id: TicketId, project_id: Uuid, message: String) {
         tracing::warn!("{message}");
         let _ = self
@@ -3104,5 +3168,142 @@ mod tests {
         assert!(sup.cancel_agent(Uuid::new_v4()).await.is_err());
         // Cancelling an unknown ticket is harmless.
         assert!(sup.cancel_ticket(Uuid::new_v4()).await.is_ok());
+    }
+
+    #[test]
+    fn the_integrator_keeps_its_git_wherever_it_runs() {
+        let store = Store::open_memory().unwrap();
+        let bus = EventBus::new(store.clone());
+        let cfg = Arc::new(Config::default());
+        let ledger = UsageLedger::new(store.clone(), &cfg);
+        let dir = tempfile::tempdir().unwrap();
+        let sup = Supervisor::new(store, bus, ledger, cfg.clone(), dir.path().to_path_buf(), dir.path().join("conventions"));
+        // An installed catalog written before the field existed: the
+        // integrator keeps its git by name, the others stay confined.
+        let empty = Catalog::load(dir.path(), None);
+        assert_eq!(sup.git_for(&empty, &cfg.integration.role), GitPolicy::Full);
+        for role in ["frontend", "backend", "reviewer"] {
+            assert_eq!(sup.git_for(&empty, role), GitPolicy::Confined, "{role}");
+        }
+
+        // Declared in the file, the right is the user's: given to one role,
+        // taken from the integrator.
+        let roles = dir.path().join("roles");
+        std::fs::create_dir_all(&roles).unwrap();
+        let with = |name: &str, git: GitPolicy| {
+            let src = orchestra_core::roles::with_git(&orchestra_core::roles::skeleton(name), git)
+                .unwrap();
+            std::fs::write(roles.join(format!("{name}.md")), src).unwrap();
+        };
+        with("backend", GitPolicy::Full);
+        with(&cfg.integration.role, GitPolicy::Confined);
+        let declared = Catalog::load(&roles, None);
+        assert_eq!(sup.git_for(&declared, "backend"), GitPolicy::Full);
+        assert_eq!(
+            sup.git_for(&declared, &cfg.integration.role),
+            GitPolicy::Confined
+        );
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} : {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// The fusion refused on a dirty main repository, then retried once it is
+    /// clean: the second time needs no integrator, the branch is as it was.
+    #[tokio::test]
+    async fn a_merge_refused_at_the_door_is_retried_without_an_agent() {
+        let store = Store::open_memory().unwrap();
+        let bus = EventBus::new(store.clone());
+        let mut cfg = Config::default();
+        // Nothing here may start a real agent: if the fast path were missed,
+        // this binary fails the integrator instead of calling a model.
+        cfg.daemon.claude_bin = "false".into();
+        let dir = tempfile::tempdir().unwrap();
+        cfg.daemon.worktrees_dir = Some(dir.path().join("worktrees"));
+        let cfg = Arc::new(cfg);
+        let ledger = UsageLedger::new(store.clone(), &cfg);
+
+        let repo = dir.path().join("depot");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_in(&repo, &["init", "-q", "-b", "main"]);
+        git_in(&repo, &["config", "user.email", "t@t"]);
+        git_in(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("compose.yml"), "port: 5433").unwrap();
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-q", "-m", "départ"]);
+
+        let project = Project {
+            id: Uuid::new_v4(),
+            name: "depot".into(),
+            path: repo.clone(),
+            default_branch: "main".into(),
+            zellij_tab: None,
+            kind: ProjectKind::Managed,
+            created_at: orchestra_core::now(),
+        };
+        let mut t = ticket();
+        t.project_id = project.id;
+        t.status = TicketStatus::Review;
+        store.insert_project(project.clone()).await.unwrap();
+        store.insert_ticket(t.clone()).await.unwrap();
+        let sup = Supervisor::new(store.clone(), bus, ledger, cfg, dir.path().to_path_buf(), dir.path().join("conventions"));
+
+        let (branch, wt) = sup.ensure_worktree(&mut t, &project).await.unwrap();
+        store.update_ticket(t.clone()).await.unwrap();
+        std::fs::write(wt.join("favicon.svg"), "<svg/>").unwrap();
+        git_in(&wt, &["add", "-A"]);
+        git_in(&wt, &["commit", "-q", "-m", "[frontend] favicon"]);
+
+        // The user is in the middle of something in the main repository.
+        std::fs::write(repo.join("compose.yml"), "port: 5434").unwrap();
+        sup.deliver(t.clone(), project.clone(), wt.clone(), branch.clone())
+            .await
+            .unwrap();
+        let blocked = crate::integration::blocked_merge(&store, t.id)
+            .await
+            .expect("la fusion attend l'utilisateur");
+        assert!(blocked.reason.contains("compose.yml"), "{}", blocked.reason);
+        assert_eq!(
+            Some(blocked.head.clone()),
+            worktree::branch_head(&repo, &branch)
+        );
+        assert!(!repo.join("favicon.svg").exists(), "rien n'est fusionné");
+
+        // Put away, and asked again.
+        git_in(&repo, &["checkout", "--", "compose.yml"]);
+        let catalog = Catalog::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/roles"),
+            None,
+        );
+        sup.integrate(t.clone(), project.clone(), catalog).await.unwrap();
+        for _ in 0..200 {
+            if !sup.is_running(t.id).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(repo.join("favicon.svg").exists(), "la branche est dans main");
+        let all = store
+            .recent_events(
+                orchestra_core::events::EventFilter::for_ticket(t.id),
+                100,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !all.iter().any(|e| matches!(e.kind, EventKind::AgentSpawned { .. })),
+            "aucun agent pour réessayer une porte"
+        );
+        assert!(all.iter().any(|e| matches!(e.kind, EventKind::TicketMerged { .. })));
+        assert!(crate::integration::blocked_merge(&store, t.id).await.is_none());
+        let back = store.ticket(t.id).await.unwrap().unwrap();
+        assert_eq!(back.status, TicketStatus::Done);
     }
 }

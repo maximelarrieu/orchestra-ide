@@ -29,12 +29,14 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let agents = app.ticket.as_ref().map(|d| d.agents.len()).unwrap_or(0);
     let agents_height = (agents as u16 + 3).clamp(3, 9);
     // Two lines, plus one for each thing that is waiting on a human: an open
-    // pull request, and a verification the branch did not pass.
+    // pull request, a merge refused at the door, and a verification the
+    // branch did not pass.
     let header_height = 2 + app
         .ticket
         .as_ref()
         .map(|d| {
             u16::from(d.pull_request.is_some())
+                + u16::from(d.merge_blocked.is_some())
                 + u16::from(d.checks.as_ref().is_some_and(|c| c.failed().is_some()))
         })
         .unwrap_or(0);
@@ -149,6 +151,19 @@ fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect) {
             Span::raw(url.clone()),
             Span::styled(
                 "  — fusionne-la et le ticket se fermera tout seul",
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+        ]));
+    }
+    // The branch is ready and only the fusion failed: what stopped it is what
+    // the user has to fix, so it is said here and not only in the activity.
+    if let Some(reason) = &detail.merge_blocked {
+        let badge = theme::merge_waiting();
+        lines.push(Line::from(vec![
+            Span::styled(badge.label("fusion en attente "), badge.style()),
+            Span::raw(reason.clone()),
+            Span::styled(
+                "  — « f » pour réessayer",
                 Style::default().add_modifier(Modifier::DIM),
             ),
         ]));

@@ -9,6 +9,7 @@
 //! description: Implémente la logique serveur et les migrations.
 //! model: sonnet
 //! effort: high
+//! git: confined        # ou full : push, merge, rebase dans son worktree
 //! ---
 //! Tu es l'ingénieur backend de l'équipe…
 //! ```
@@ -22,6 +23,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{CoreError, Result};
+use crate::guard::GitPolicy;
 use crate::model::{Effort, RoleDefinition, RoleScope};
 
 /// Fields accepted in the frontmatter.
@@ -45,6 +47,8 @@ struct Frontmatter {
     subagents: Option<serde_json::Value>,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    git: Option<String>,
 }
 
 /// Split a Markdown file into its frontmatter and body.
@@ -67,10 +71,8 @@ pub(crate) fn split_frontmatter(src: &str) -> Result<(&str, &str)> {
     Ok((header, body))
 }
 
-pub fn parse_role(path: &Path, src: &str, scope: RoleScope) -> Result<RoleDefinition> {
-    let (header, body) = split_frontmatter(src)?;
-    let fm: Frontmatter = serde_yaml_ng::from_str(header)?;
-    let name = fm.name.trim().to_string();
+/// A role name that survives a file path and a command line.
+pub fn check_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(CoreError::Parse("le rôle n'a pas de nom".into()));
     }
@@ -82,6 +84,24 @@ pub fn parse_role(path: &Path, src: &str, scope: RoleScope) -> Result<RoleDefini
             "nom de rôle invalide « {name} » : lettres, chiffres, tiret et souligné seulement"
         )));
     }
+    Ok(())
+}
+
+pub fn parse_role(path: &Path, src: &str, scope: RoleScope) -> Result<RoleDefinition> {
+    let (header, body) = split_frontmatter(src)?;
+    let fm: Frontmatter = serde_yaml_ng::from_str(header)?;
+    let name = fm.name.trim().to_string();
+    check_name(&name)?;
+    // What an agent may do with git is not a field to misspell into
+    // something else: a value we do not know is refused, not guessed.
+    let git = match fm.git.as_deref() {
+        None => None,
+        Some(v) => Some(GitPolicy::parse_declared(v).ok_or_else(|| {
+            CoreError::Parse(format!(
+                "git: « {v} » inconnu pour le rôle « {name} » : confined ou full"
+            ))
+        })?),
+    };
     let body = body.trim();
     if body.is_empty() {
         return Err(CoreError::Parse(format!(
@@ -100,10 +120,59 @@ pub fn parse_role(path: &Path, src: &str, scope: RoleScope) -> Result<RoleDefini
         max_budget_usd: fm.max_budget_usd,
         subagents: fm.subagents,
         tags: fm.tags,
+        git,
         system_prompt: body.to_string(),
         source: path.to_path_buf(),
         scope,
     })
+}
+
+/// Set one top-level field of a Markdown file's frontmatter, adding it when
+/// absent. Only that line changes: the rest of the file is the user's.
+pub(crate) fn set_header_field(src: &str, key: &str, value: &str) -> Result<String> {
+    let (header, _) = split_frontmatter(src)?;
+    let start = src
+        .find(header)
+        .ok_or_else(|| CoreError::Parse("entête introuvable".into()))?;
+    let end = start + header.len();
+    let prefix = format!("{key}:");
+    let mut replaced = false;
+    let lines: Vec<String> = header
+        .lines()
+        .map(|l| {
+            if !replaced && l.starts_with(&prefix) {
+                replaced = true;
+                format!("{key}: {value}")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    let mut new_header = lines.join("\n");
+    if !replaced {
+        new_header.push_str(&format!("\n{key}: {value}"));
+    }
+    Ok(format!("{}{}{}", &src[..start], new_header, &src[end..]))
+}
+
+/// A role file with its git policy set to `git`.
+pub fn with_git(src: &str, git: GitPolicy) -> Result<String> {
+    set_header_field(src, "git", git.as_str())
+}
+
+/// The file a new role starts from. Confined until the user says otherwise:
+/// opening git is a decision, never a default.
+pub fn skeleton(name: &str) -> String {
+    format!(
+        "---\n\
+         name: {name}\n\
+         description: \"À écrire : ce que fait ce rôle, en une phrase — c'est ce que lit \
+         l'orchestrateur pour composer une équipe.\"\n\
+         git: confined\n\
+         ---\n\
+         Tu es … de l'équipe. Décris ici ta mission : ce que tu fais, ce que tu ne fais \
+         pas, et ce que tu rends au rôle suivant.\n"
+    )
 }
 
 /// Roles found in one directory, sorted by name. A file that fails to parse is
@@ -255,6 +324,31 @@ Tu écris du code testé.
         // A name that would not survive a file path or a command line.
         assert!(parse("---\nname: \"back end\"\n---\ncorps\n").is_err());
         assert!(parse("---\nname: \"../evil\"\n---\ncorps\n").is_err());
+    }
+
+    #[test]
+    fn git_is_declared_strictly_and_rewritten_in_place() {
+        let r = parse("---\nname: x\ngit: full\n---\ncorps\n").unwrap();
+        assert_eq!(r.git, Some(GitPolicy::Full));
+        assert_eq!(parse(BACKEND).unwrap().git, None, "non dit, pas deviné ici");
+        let err = parse("---\nname: x\ngit: oui\n---\ncorps\n").unwrap_err();
+        assert!(err.to_string().contains("confined ou full"), "{err}");
+
+        let opened = with_git(BACKEND, GitPolicy::Full).unwrap();
+        assert_eq!(parse(&opened).unwrap().git, Some(GitPolicy::Full));
+        let closed = with_git(&opened, GitPolicy::Confined).unwrap();
+        assert_eq!(parse(&closed).unwrap().git, Some(GitPolicy::Confined));
+        assert_eq!(closed.matches("git:").count(), 1, "remplacé, pas ajouté");
+        assert!(closed.ends_with("Tu écris du code testé.\n"), "le corps est intact");
+    }
+
+    #[test]
+    fn a_new_role_parses_and_starts_confined() {
+        let r = parse(&skeleton("data")).unwrap();
+        assert_eq!(r.name, "data");
+        assert_eq!(r.git, Some(GitPolicy::Confined));
+        assert!(check_name("data eng").is_err());
+        assert!(check_name("../x").is_err());
     }
 
     #[test]

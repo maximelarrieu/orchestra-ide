@@ -212,6 +212,31 @@ pub enum Command {
         project_id: ProjectId,
         name: String,
     },
+    /// Write a new role file from a skeleton — in the project's catalog when
+    /// there is a project, the global one otherwise — and say where, so a
+    /// client can open it in an editor.
+    CreateRole {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+        name: String,
+    },
+    /// Open or close git to a role, by rewriting its `git:` line.
+    SetRoleGit {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+        name: String,
+        git: crate::guard::GitPolicy,
+    },
+    DeleteRole {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+        name: String,
+    },
+    /// Move a project's role to the global catalog, for every project.
+    PromoteRole {
+        project_id: ProjectId,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -236,7 +261,17 @@ pub enum Reply {
         detail: Box<TicketDetail>,
     },
     Roles {
+        /// `git` is always resolved in this reply: what an agent of the role
+        /// will get, declared or not.
         roles: Vec<RoleDefinition>,
+        /// Role files that could not be read, and why: a role the user edited
+        /// into something broken must not simply vanish from the list.
+        #[serde(default)]
+        errors: Vec<String>,
+    },
+    /// A role file just written, for a client to open.
+    RoleFile {
+        path: PathBuf,
     },
     Rules {
         rules: Vec<Rule>,
@@ -403,6 +438,10 @@ pub struct TicketSummary {
     /// and « PR à valider » are two different places to look.
     #[serde(default)]
     pub pull_request: Option<String>,
+    /// Why a ready branch has not been merged yet, when it is waiting on the
+    /// user: the card must say so, not only the activity strip.
+    #[serde(default)]
+    pub merge_blocked: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -428,6 +467,9 @@ pub struct TicketDetail {
     /// The pull request opened for this ticket, while it is open.
     #[serde(default)]
     pub pull_request: Option<String>,
+    /// Why the ready branch is still waiting to be merged, when it is.
+    #[serde(default)]
+    pub merge_blocked: Option<String>,
     /// How this project integrates, so the screen names the key for what it
     /// really does.
     #[serde(default)]
@@ -709,6 +751,23 @@ mod tests {
                 rule_kind: RuleKind::Convention,
                 name: "commits".into(),
             },
+            Command::CreateRole {
+                project_id: None,
+                name: "data".into(),
+            },
+            Command::SetRoleGit {
+                project_id: Some(Uuid::new_v4()),
+                name: "backend".into(),
+                git: crate::guard::GitPolicy::Full,
+            },
+            Command::DeleteRole {
+                project_id: None,
+                name: "data".into(),
+            },
+            Command::PromoteRole {
+                project_id: Uuid::new_v4(),
+                name: "data".into(),
+            },
             Command::PromoteRule {
                 project_id: Uuid::new_v4(),
                 name: "commits".into(),
@@ -765,7 +824,13 @@ mod tests {
             Reply::Projects { projects: vec![] },
             Reply::Tickets { tickets: vec![] },
             Reply::Todos { todos: vec![] },
-            Reply::Roles { roles: vec![] },
+            Reply::Roles {
+                roles: vec![],
+                errors: vec!["casse.md : pas d'entête".into()],
+            },
+            Reply::RoleFile {
+                path: PathBuf::from("/roles/data.md"),
+            },
             Reply::Rules {
                 rules: vec![],
                 errors: vec!["x".into()],

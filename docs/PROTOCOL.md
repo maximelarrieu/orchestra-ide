@@ -64,8 +64,18 @@ Un seul type, discriminé par `kind` : `daemon_started`, `project_added`,
 `tool_started`, `tool_finished`, `usage`, `agent_steered`, `agent_result`,
 `hook_blocked`, `unmanaged_session_seen`, `warning`, `todo_added`, `todo_updated`,
 `todo_status_changed`, `todo_deleted`, `todo_promoted`, `rule_proposed`,
-`rule_created`, `rule_status_changed`, `rule_deleted`, `rules_checked`, et quelques
-autres.
+`rule_created`, `rule_status_changed`, `rule_deleted`, `rules_checked`,
+`merge_blocked`, et quelques autres.
+
+Les rôles se lisent avec `list_roles` (`{"reply":"roles","roles":[…],"errors":[…]}`,
+où `git` est toujours résolu : ce qu'un agent du rôle recevra). `create_role` répond
+`{"reply":"role_file","path":"…"}`, `set_role_git` (`git`: `confined` ou `full`),
+`delete_role` et `promote_role` réécrivent le fichier ; chacun publie `role_created`,
+`role_updated` ou `role_deleted`.
+
+`merge_blocked` (`branch`, `head`, `reason`) dit qu'une branche prête n'a pas pu
+être fusionnée. Tant qu'il reste le dernier mot du ticket, `list_tickets` et
+`get_ticket` renvoient sa raison dans `merge_blocked`, à côté de `pull_request`.
 
 Les règles (conventions et ADR) sont des fichiers, pas des lignes de la base :
 `list_rules` les relit à chaque appel (`{"reply":"rules","rules":[…],"errors":[…]}`),

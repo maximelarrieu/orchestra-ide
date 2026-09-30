@@ -274,10 +274,24 @@ fn render_lane(
         if let Some(cost) = t.cost_usd {
             foot.push(fmt_usd(cost));
         }
-        lines.push(Line::from(Span::styled(
-            truncate(&format!("  {}", foot.join(" · ")), width),
+        // A ready branch refused at the fusion waits on the user, not on an
+        // agent: that goes first on the line, and it is not dimmed.
+        let mut spans = vec![Span::raw("  ")];
+        let mut used = 2;
+        if t.merge_blocked.is_some() {
+            let badge = theme::merge_waiting();
+            let mark = badge.label("fusion en attente");
+            used += mark.chars().count() + 3;
+            spans.push(Span::styled(truncate(&mark, width.saturating_sub(2)), badge.style()));
+            if !foot.is_empty() {
+                spans.push(Span::raw(" · "));
+            }
+        }
+        spans.push(Span::styled(
+            truncate(&foot.join(" · "), width.saturating_sub(used)),
             Style::default().add_modifier(Modifier::DIM),
-        )));
+        ));
+        lines.push(Line::from(spans));
         lines.push(Line::from(""));
     }
     if start + visible < held.len() {
@@ -711,11 +725,53 @@ mod tests {
             tokens: orchestra_core::model::Tokens::default(),
             cost_usd: None,
             pull_request: None,
+            merge_blocked: None,
         }];
         // Still on "Tous les projets": the card must say whose ticket it is.
         assert!(app.selected_project().is_none());
         let out = draw(&app, 80, 24);
         assert!(out.contains("alpha"), "{out}");
+    }
+
+    #[test]
+    fn a_refused_merge_is_marked_on_its_card() {
+        let mut app = App::new();
+        app.connected = true;
+        app.board_pane = BoardPane::Tickets;
+        let project_id = Uuid::new_v4();
+        app.projects = vec![ProjectRow {
+            id: project_id,
+            name: "alpha".into(),
+            path: "/tmp/alpha".into(),
+            discovered: false,
+        }];
+        let ticket = orchestra_core::model::Ticket {
+            id: Uuid::new_v4(),
+            project_id,
+            number: 2,
+            title: "cockpit".into(),
+            brief: "b".into(),
+            status: orchestra_core::model::TicketStatus::Review,
+            branch: Some("orch/2-cockpit".into()),
+            worktree_path: None,
+            proposal: None,
+            team: None,
+            created_at: orchestra_core::now(),
+            updated_at: orchestra_core::now(),
+        };
+        app.tickets = vec![orchestra_core::protocol::TicketSummary {
+            ticket,
+            agents_total: 3,
+            agents_active: 0,
+            agents_done: 3,
+            tokens: orchestra_core::model::Tokens::default(),
+            cost_usd: None,
+            pull_request: None,
+            merge_blocked: Some("le dépôt principal a 1 fichier(s) modifié(s)".into()),
+        }];
+        let out = draw(&app, 120, 30);
+        assert!(out.contains("⏸ fusion en attente"), "{out}");
+        assert_eq!(Lane::of(&app.tickets[0]), Lane::Review);
     }
 
     #[test]

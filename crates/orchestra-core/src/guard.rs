@@ -43,7 +43,8 @@ impl Verdict {
 /// git — fusionner, pousser, régler un conflit. It lifts the subcommand list,
 /// nothing else: the path rules still hold, so even an integrator cannot reach
 /// the main repository. That is what keeps the worktree rule true.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GitPolicy {
     #[default]
     Confined,
@@ -64,6 +65,37 @@ impl GitPolicy {
         match s.trim() {
             "full" => GitPolicy::Full,
             _ => GitPolicy::Confined,
+        }
+    }
+
+    /// The strict reading, for a file a human wrote: a typo there is said, not
+    /// quietly read as one policy or the other.
+    pub fn parse_declared(s: &str) -> Option<Self> {
+        match s.trim() {
+            "full" => Some(GitPolicy::Full),
+            "confined" => Some(GitPolicy::Confined),
+            _ => None,
+        }
+    }
+
+    /// What git a role gets: what its file declares, and without a word there,
+    /// the open policy for the configured integrator alone.
+    ///
+    /// The fallback keeps a role file written before the field existed doing
+    /// what it always did. Declared, the file wins either way: the user can
+    /// open git to another role, or close it to the integrator.
+    pub fn for_role(declared: Option<GitPolicy>, role: &str, integrator: &str) -> Self {
+        declared.unwrap_or(if role == integrator {
+            GitPolicy::Full
+        } else {
+            GitPolicy::Confined
+        })
+    }
+
+    pub fn label_fr(self) -> &'static str {
+        match self {
+            GitPolicy::Confined => "git confiné",
+            GitPolicy::Full => "git complet (push, merge, rebase)",
         }
     }
 }
@@ -658,6 +690,20 @@ mod tests {
 
     #[test]
     fn an_unknown_policy_confines_rather_than_opens() {
+        assert_eq!(GitPolicy::parse_declared("full"), Some(GitPolicy::Full));
+        assert_eq!(GitPolicy::parse_declared(" confined "), Some(GitPolicy::Confined));
+        assert_eq!(GitPolicy::parse_declared("oui"), None);
+        assert_eq!(GitPolicy::for_role(None, "integrator", "integrator"), GitPolicy::Full);
+        assert_eq!(GitPolicy::for_role(None, "backend", "integrator"), GitPolicy::Confined);
+        assert_eq!(
+            GitPolicy::for_role(Some(GitPolicy::Full), "backend", "integrator"),
+            GitPolicy::Full,
+            "le fichier du rôle l'emporte"
+        );
+        assert_eq!(
+            GitPolicy::for_role(Some(GitPolicy::Confined), "integrator", "integrator"),
+            GitPolicy::Confined
+        );
         assert_eq!(GitPolicy::parse("full"), GitPolicy::Full);
         for s in ["", "Full", "oui", "confined", "n'importe quoi"] {
             assert_eq!(GitPolicy::parse(s), GitPolicy::Confined, "{s}");

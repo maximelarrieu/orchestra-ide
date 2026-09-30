@@ -12,7 +12,8 @@ use uuid::Uuid;
 
 use crate::conventions::{RuleKind, RuleStatus, Violation};
 use crate::model::{
-    AgentId, AgentStatus, ExitReason, ProjectId, TeamProposal, TicketId, TicketStatus, TodoId,
+    AgentId, AgentStatus, ExitReason, ProjectId, RoleScope, TeamProposal, TicketId, TicketStatus,
+    TodoId,
     TodoStatus, UsageSample,
 };
 use crate::review::Verdict;
@@ -138,6 +139,7 @@ pub enum EventTag {
     CheckStarted,
     CheckFinished,
     TicketMerged,
+    MergeBlocked,
     PullRequestOpened,
     PullRequestClosed,
     HookBlocked,
@@ -156,10 +158,13 @@ pub enum EventTag {
     RuleStatusChanged,
     RuleDeleted,
     RulesChecked,
+    RoleCreated,
+    RoleUpdated,
+    RoleDeleted,
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 41] = [
+    pub const ALL: [EventTag; 45] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::TicketCreated,
@@ -183,6 +188,7 @@ impl EventTag {
         EventTag::CheckStarted,
         EventTag::CheckFinished,
         EventTag::TicketMerged,
+        EventTag::MergeBlocked,
         EventTag::PullRequestOpened,
         EventTag::PullRequestClosed,
         EventTag::HookBlocked,
@@ -201,6 +207,9 @@ impl EventTag {
         EventTag::RuleStatusChanged,
         EventTag::RuleDeleted,
         EventTag::RulesChecked,
+        EventTag::RoleCreated,
+        EventTag::RoleUpdated,
+        EventTag::RoleDeleted,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -228,6 +237,7 @@ impl EventTag {
             EventTag::CheckStarted => "check_started",
             EventTag::CheckFinished => "check_finished",
             EventTag::TicketMerged => "ticket_merged",
+            EventTag::MergeBlocked => "merge_blocked",
             EventTag::PullRequestOpened => "pull_request_opened",
             EventTag::PullRequestClosed => "pull_request_closed",
             EventTag::HookBlocked => "hook_blocked",
@@ -246,6 +256,9 @@ impl EventTag {
             EventTag::RuleStatusChanged => "rule_status_changed",
             EventTag::RuleDeleted => "rule_deleted",
             EventTag::RulesChecked => "rules_checked",
+            EventTag::RoleCreated => "role_created",
+            EventTag::RoleUpdated => "role_updated",
+            EventTag::RoleDeleted => "role_deleted",
         }
     }
 
@@ -396,6 +409,18 @@ pub enum EventKind {
         #[serde(default)]
         pushed_to: Option<String>,
     },
+    /// The branch is ready — relecture, checks and conventions all passed —
+    /// but the daemon could not bring it into the default branch: a dirty main
+    /// repository, another branch checked out, a default branch that moved.
+    /// The ticket stays « à relire » and waits for the user, so this is an
+    /// event of its own rather than a warning lost in the activity strip.
+    MergeBlocked {
+        branch: String,
+        /// The commit that was ready. As long as the branch still points at it
+        /// and a fast-forward is still possible, retrying needs no agent.
+        head: String,
+        reason: String,
+    },
     /// A pull request was opened for the ticket's branch.
     PullRequestOpened {
         url: String,
@@ -476,6 +501,23 @@ pub enum EventKind {
         name: String,
         title: String,
     },
+    /// A role file written from the TUI or the CLI. Roles are files, like
+    /// rules: these say to every client that the catalog is worth reading
+    /// again, and leave in the history who changed what.
+    RoleCreated {
+        name: String,
+        #[serde(default)]
+        scope: Option<RoleScope>,
+    },
+    /// A role changed without being rewritten by hand: its git opened or
+    /// closed, or the file moved to the global catalog.
+    RoleUpdated {
+        name: String,
+        change: String,
+    },
+    RoleDeleted {
+        name: String,
+    },
     /// The measured conventions, evaluated on the branch before a fusion.
     /// Empty `violations` means the branch passed.
     RulesChecked {
@@ -511,6 +553,7 @@ impl EventKind {
             EventKind::CheckStarted { .. } => EventTag::CheckStarted,
             EventKind::CheckFinished { .. } => EventTag::CheckFinished,
             EventKind::TicketMerged { .. } => EventTag::TicketMerged,
+            EventKind::MergeBlocked { .. } => EventTag::MergeBlocked,
             EventKind::PullRequestOpened { .. } => EventTag::PullRequestOpened,
             EventKind::PullRequestClosed { .. } => EventTag::PullRequestClosed,
             EventKind::HookBlocked { .. } => EventTag::HookBlocked,
@@ -529,6 +572,9 @@ impl EventKind {
             EventKind::RuleStatusChanged { .. } => EventTag::RuleStatusChanged,
             EventKind::RuleDeleted { .. } => EventTag::RuleDeleted,
             EventKind::RulesChecked { .. } => EventTag::RulesChecked,
+            EventKind::RoleCreated { .. } => EventTag::RoleCreated,
+            EventKind::RoleUpdated { .. } => EventTag::RoleUpdated,
+            EventKind::RoleDeleted { .. } => EventTag::RoleDeleted,
         }
     }
 }

@@ -4,6 +4,7 @@
 
 use orchestra_core::conventions::{Rule, RuleKind, RuleStatus};
 use orchestra_core::events::{Event, EventKind};
+use orchestra_core::guard::GitPolicy;
 use orchestra_core::model::{
     ProjectId, RoleDefinition, TicketId, Todo, TodoDigest, TodoId, TodoStatus,
 };
@@ -53,7 +54,7 @@ impl Screen {
             Screen::NewTicket => "Nouveau ticket",
             Screen::Proposal => "Équipe",
             Screen::Todo => "TODO",
-            Screen::Rules => "Règles",
+            Screen::Rules => "Rôles & règles",
         }
     }
 
@@ -346,6 +347,10 @@ pub struct App {
     pub rules: Vec<Rule>,
     /// Rule files the daemon could not read, shown on the Rules screen.
     pub rule_errors: Vec<String>,
+    /// Role files the daemon could not read, shown on the same screen.
+    pub role_errors: Vec<String>,
+    /// The selection on the Rules screen, across its roles first and then its
+    /// rules: one list, see [`App::selected_role`] and [`App::selected_rule`].
     pub rule_selected: usize,
     /// A file the run loop should open in `$EDITOR`, suspending the screen.
     edit_request: Option<std::path::PathBuf>,
@@ -405,6 +410,7 @@ impl Default for App {
             promoting_todo: None,
             rules: Vec::new(),
             rule_errors: Vec::new(),
+            role_errors: Vec::new(),
             rule_selected: 0,
             edit_request: None,
             awaiting_rule_file: false,
@@ -524,8 +530,22 @@ impl App {
         self.selected_ticket().map(|t| t.ticket.id)
     }
 
+    /// The rule under the cursor of the Rules screen, when it is on one.
     pub fn selected_rule(&self) -> Option<&Rule> {
-        self.rules.get(self.rule_selected)
+        self.rule_selected
+            .checked_sub(self.roles.len())
+            .and_then(|i| self.rules.get(i))
+    }
+
+    /// The role under the cursor of the Rules screen, when it is on one: the
+    /// roles come first on that screen.
+    pub fn selected_role(&self) -> Option<&RoleDefinition> {
+        self.roles.get(self.rule_selected)
+    }
+
+    /// Everything the Rules screen lists: roles, then conventions and ADRs.
+    pub fn book_len(&self) -> usize {
+        self.roles.len() + self.rules.len()
     }
 
     /// Rules an agent proposed, or the user drafted, that wait for a decision.
@@ -544,17 +564,18 @@ impl App {
     /// Back from the editor: read the rules again, the file has changed.
     pub fn edited(&mut self, outcome: Result<(), String>) -> Vec<Command> {
         match outcome {
-            Ok(()) => self.status = "règle enregistrée".into(),
+            Ok(()) => self.status = "fichier enregistré".into(),
             Err(e) => self.status = format!("éditeur : {e}"),
         }
         self.request_rules();
         std::mem::take(&mut self.outbox)
     }
 
+    /// The Rules screen's two lists, read together: they share its cursor.
     fn request_rules(&mut self) {
-        self.outbox.push(Command::ListRules {
-            project_id: self.selected_project().map(|p| p.id),
-        });
+        let project_id = self.selected_project().map(|p| p.id);
+        self.outbox.push(Command::ListRoles { project_id });
+        self.outbox.push(Command::ListRules { project_id });
     }
 
     pub fn selected_todo(&self) -> Option<&Todo> {
@@ -878,6 +899,10 @@ impl App {
     }
 
     fn on_rules_char(&mut self, c: char) {
+        if self.selected_role().is_some() {
+            self.on_role_char(c);
+            return;
+        }
         let Some(r) = self.selected_rule() else {
             self.status = "aucune règle sélectionnée".into();
             return;
@@ -933,6 +958,59 @@ impl App {
                     rule_kind: kind,
                     name,
                 },
+            ),
+            _ => {}
+        }
+    }
+
+    /// A role is a file: edited by hand, its git opened or closed, moved to
+    /// the global catalog, deleted. Created from the palette (`:role add`).
+    fn on_role_char(&mut self, c: char) {
+        let Some(r) = self.selected_role() else {
+            return;
+        };
+        let project_id = self.selected_project().map(|p| p.id);
+        let (name, scope, source) = (r.name.clone(), r.scope, r.source.clone());
+        let git = r.git.unwrap_or_default();
+        match c {
+            'e' => self.edit_request = Some(source),
+            // Opening git is outward-facing — a push leaves the machine — so it
+            // is asked; closing it takes nothing away that cannot be given back.
+            'p' => match git {
+                GitPolicy::Confined => self.ask(
+                    format!(
+                        "Donner git complet (push, merge, rebase) au rôle « {name} » ? \
+                         Il restera dans son worktree."
+                    ),
+                    Command::SetRoleGit {
+                        project_id,
+                        name,
+                        git: GitPolicy::Full,
+                    },
+                ),
+                GitPolicy::Full => self.outbox.push(Command::SetRoleGit {
+                    project_id,
+                    name,
+                    git: GitPolicy::Confined,
+                }),
+            },
+            'g' => match (project_id, scope) {
+                (Some(project_id), orchestra_core::model::RoleScope::Project) => self.ask(
+                    format!("Rendre le rôle « {name} » global, pour tous les projets ?"),
+                    Command::PromoteRole { project_id, name },
+                ),
+                _ => self.status = "seul un rôle de projet peut devenir global".into(),
+            },
+            'd' => self.ask(
+                match scope {
+                    orchestra_core::model::RoleScope::Project => {
+                        format!("Supprimer la version du projet du rôle « {name} » ?")
+                    }
+                    orchestra_core::model::RoleScope::Global => {
+                        format!("Supprimer le rôle « {name} », pour tous les projets ?")
+                    }
+                },
+                Command::DeleteRole { project_id, name },
             ),
             _ => {}
         }
@@ -1044,6 +1122,10 @@ impl App {
                 let branch = detail.ticket.branch.clone().unwrap_or_default();
                 let into = detail.project.default_branch.clone();
                 let question = match detail.integration_mode {
+                    _ if detail.merge_blocked.is_some() => format!(
+                        "Réessayer la fusion de « {branch} » dans « {into} » ? Sans agent si \
+                         la branche n'a pas bougé depuis."
+                    ),
                     orchestra_core::config::IntegrationMode::Pr => {
                         format!("Pousser « {branch} » et ouvrir une pull request vers « {into} » ?")
                     }
@@ -1091,6 +1173,9 @@ impl App {
 
     /// What the integration key does on this project, in the user's words.
     pub fn integration_label(&self) -> &'static str {
+        if self.ticket.as_ref().is_some_and(|d| d.merge_blocked.is_some()) {
+            return "réessayer la fusion";
+        }
         match self.ticket.as_ref().map(|d| d.integration_mode) {
             Some(orchestra_core::config::IntegrationMode::Pr) => "ouvrir la pull request",
             _ => "intégrer et terminer",
@@ -1388,7 +1473,7 @@ impl App {
             }
             (Screen::Cost, _) => (self.cost.rows.len(), &mut self.cost.selected),
             (Screen::Todo, _) => (self.todos.len(), &mut self.todo_selected),
-            (Screen::Rules, _) => (self.rules.len(), &mut self.rule_selected),
+            (Screen::Rules, _) => (self.book_len(), &mut self.rule_selected),
             (Screen::Proposal, _) => {
                 self.editor.move_selection(delta);
                 return;
@@ -1441,7 +1526,7 @@ impl App {
             }
             (Screen::Cost, _) => (self.cost.rows.len(), &mut self.cost.selected),
             (Screen::Todo, _) => (self.todos.len(), &mut self.todo_selected),
-            (Screen::Rules, _) => (self.rules.len(), &mut self.rule_selected),
+            (Screen::Rules, _) => (self.book_len(), &mut self.rule_selected),
             _ => return,
         };
         *sel = index.min(len.saturating_sub(1));
@@ -1587,7 +1672,22 @@ impl App {
                     _ => self.status = format!("usage : :{verb} add <titre>"),
                 }
             }
-            "regles" | "règles" | "rules" => self.go(Screen::Rules),
+            "role" | "rôle" => {
+                let (sub, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                let arg = arg.trim();
+                match sub {
+                    "add" if !arg.is_empty() => {
+                        self.outbox.push(Command::CreateRole {
+                            project_id: self.selected_project().map(|p| p.id),
+                            name: arg.into(),
+                        });
+                        self.awaiting_rule_file = true;
+                        self.status = format!("création du rôle « {arg} »…");
+                    }
+                    _ => self.status = "usage : :role add <nom>".into(),
+                }
+            }
+            "regles" | "règles" | "rules" | "roles" | "rôles" => self.go(Screen::Rules),
             "usage" | "cout" | "coût" => self.go(Screen::Cost),
             "refresh" => self.refresh(),
             "q" | "quit" => self.should_quit = true,
@@ -1610,9 +1710,6 @@ impl App {
     /// Ask the daemon for everything the current screen shows.
     pub fn refresh(&mut self) {
         self.outbox.push(Command::ListProjects);
-        self.outbox.push(Command::ListRoles {
-            project_id: self.selected_project().map(|p| p.id),
-        });
         self.request_tickets();
         self.request_usage();
         self.outbox.push(Command::ListTodos);
@@ -1812,8 +1909,24 @@ impl App {
                     }
                 }
             }
-            Reply::Roles { roles } => {
+            Reply::Roles { roles, errors } => {
+                // The cursor stays on what it was on, role or rule, even when
+                // a role appears or goes above it.
+                let previous_role = self.selected_role().map(|r| r.name.clone());
+                let previous_rule = self.selected_rule().map(|r| (r.kind, r.name.clone()));
                 self.roles = roles;
+                self.role_errors = errors;
+                self.rule_selected = match (previous_role, previous_rule) {
+                    (Some(name), _) => self.roles.iter().position(|r| r.name == name),
+                    (None, Some((k, n))) => self
+                        .rules
+                        .iter()
+                        .position(|r| r.kind == k && r.name == n)
+                        .map(|i| i + self.roles.len()),
+                    (None, None) => None,
+                }
+                .unwrap_or(self.rule_selected)
+                .min(self.book_len().saturating_sub(1));
             }
             Reply::Rules { rules, errors } => {
                 let previous = self
@@ -1823,10 +1936,11 @@ impl App {
                 self.rule_errors = errors;
                 self.rule_selected = previous
                     .and_then(|(k, n)| self.rules.iter().position(|r| r.kind == k && r.name == n))
+                    .map(|i| i + self.roles.len())
                     .unwrap_or(self.rule_selected)
-                    .min(self.rules.len().saturating_sub(1));
+                    .min(self.book_len().saturating_sub(1));
             }
-            Reply::RuleFile { path } => {
+            Reply::RuleFile { path } | Reply::RoleFile { path } => {
                 if std::mem::take(&mut self.awaiting_rule_file) {
                     self.edit_request = Some(path);
                 } else {
@@ -1895,7 +2009,10 @@ impl App {
             EventKind::RuleProposed { .. }
             | EventKind::RuleCreated { .. }
             | EventKind::RuleStatusChanged { .. }
-            | EventKind::RuleDeleted { .. } => self.request_rules(),
+            | EventKind::RuleDeleted { .. }
+            | EventKind::RoleCreated { .. }
+            | EventKind::RoleUpdated { .. }
+            | EventKind::RoleDeleted { .. } => self.request_rules(),
             EventKind::TodoPromoted { .. } => {
                 self.outbox.push(Command::ListTodos);
                 self.request_tickets();
@@ -1945,6 +2062,14 @@ impl App {
             // Two moments the user must not have to go looking for.
             EventKind::ReviewVerdict { round, verdict, .. } => {
                 self.status = format!("relecture {round} : {}", verdict.label_fr());
+                self.request_tickets();
+                self.refresh_open_ticket(e.ticket_id);
+            }
+            EventKind::MergeBlocked { reason, .. } => {
+                self.status = format!(
+                    "{} fusion en attente : {reason} — « f » pour réessayer",
+                    crate::theme::merge_waiting().symbol
+                );
                 self.request_tickets();
                 self.refresh_open_ticket(e.ticket_id);
             }
@@ -2090,6 +2215,9 @@ pub fn describe(e: &Event) -> Option<String> {
             }
             None => format!("{branch} fusionnée dans {into} ({commits} commits)"),
         },
+        EventKind::MergeBlocked { branch, reason, .. } => {
+            format!("fusion de {branch} en attente : {reason}")
+        }
         EventKind::ReviewVerdict {
             round,
             verdict,
@@ -2128,6 +2256,9 @@ pub fn describe(e: &Event) -> Option<String> {
             to,
             ..
         } => format!("{} « {title} » : {}", rule_kind.label_fr(), to.label_fr()),
+        EventKind::RoleCreated { name, .. } => format!("rôle « {name} » créé"),
+        EventKind::RoleUpdated { name, change } => format!("rôle « {name} » : {change}"),
+        EventKind::RoleDeleted { name } => format!("rôle « {name} » supprimé"),
         EventKind::RuleDeleted { rule_kind, title, .. } => {
             format!("{} « {title} » supprimée", rule_kind.label_fr())
         }

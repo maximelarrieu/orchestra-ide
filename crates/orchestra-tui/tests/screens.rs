@@ -49,6 +49,7 @@ fn role(name: &str) -> RoleDefinition {
         max_budget_usd: None,
         subagents: None,
         tags: vec![],
+        git: None,
         system_prompt: "consigne".into(),
         source: PathBuf::from("/tmp/r.md"),
         scope: RoleScope::Global,
@@ -146,6 +147,7 @@ fn detail(with_proposal: bool, with_team: bool) -> TicketDetail {
         review: None,
         checks: None,
         pull_request: None,
+        merge_blocked: None,
         integration_mode: orchestra_core::config::IntegrationMode::Merge,
     }
 }
@@ -366,6 +368,7 @@ fn app_on_kanban() -> App {
             tokens: Tokens::default(),
             cost_usd: Some(1.25),
             pull_request: pr.map(str::to_string),
+            merge_blocked: None,
         }
     };
     let mut app = App::new();
@@ -485,6 +488,7 @@ fn opening_a_ticket_from_the_board_asks_the_daemon_for_it() {
         tokens: Tokens::default(),
         cost_usd: None,
         pull_request: None,
+        merge_blocked: None,
     }];
     app.update(Msg::Reply(Box::new(Reply::Tickets { tickets: summaries })));
     app.update(Msg::Key(Action::Right));
@@ -553,6 +557,7 @@ fn the_team_editor_adjusts_and_accepts() {
     let mut app = app_on_ticket(true, false);
     app.update(Msg::Reply(Box::new(Reply::Roles {
         roles: vec![role("architect"), role("backend"), role("tests")],
+        errors: vec![],
     })));
 
     app.update(Msg::Key(Action::Char('a')));
@@ -592,6 +597,7 @@ fn an_invalid_team_is_refused_with_its_reason() {
     // A catalog missing `backend` makes the proposal invalid.
     app.update(Msg::Reply(Box::new(Reply::Roles {
         roles: vec![role("architect")],
+        errors: vec![],
     })));
     app.update(Msg::Key(Action::Char('a')));
 
@@ -609,6 +615,7 @@ fn an_objective_can_be_rewritten_in_place() {
     let mut app = app_on_ticket(true, false);
     app.update(Msg::Reply(Box::new(Reply::Roles {
         roles: vec![role("architect"), role("backend")],
+        errors: vec![],
     })));
     app.update(Msg::Key(Action::Char('a')));
 
@@ -633,6 +640,7 @@ fn going_back_walks_the_screens_rather_than_quitting() {
     let mut app = app_on_ticket(true, false);
     app.update(Msg::Reply(Box::new(Reply::Roles {
         roles: vec![role("architect"), role("backend")],
+        errors: vec![],
     })));
     app.update(Msg::Key(Action::Char('a')));
     assert_eq!(app.screen, Screen::Proposal);
@@ -695,6 +703,7 @@ fn every_screen_survives_a_narrow_pane() {
     let mut app = app_on_ticket(true, true);
     app.update(Msg::Reply(Box::new(Reply::Roles {
         roles: vec![role("architect"), role("backend")],
+        errors: vec![],
     })));
     for screen in [Screen::Ticket, Screen::NewTicket, Screen::Proposal] {
         app.screen = screen;
@@ -1240,6 +1249,26 @@ fn a_request_already_waiting_is_shown_and_not_reopened() {
     let out = draw(&app, 130, 30);
     assert!(out.contains("PR ouverte"), "{out}");
     assert!(out.contains("pull/12"), "{out}");
+}
+
+#[test]
+fn a_refused_merge_says_why_and_offers_to_retry_it() {
+    let mut app = app_on_reviewed_ticket(Verdict::Ready);
+    if let Some(d) = app.ticket.as_mut() {
+        d.merge_blocked = Some(
+            "le dépôt principal a 1 fichier(s) modifié(s) non commité(s) (docker-compose.yml)"
+                .into(),
+        );
+    }
+    assert!(app.can_integrate(), "la branche est prête : on peut réessayer");
+    let out = draw(&app, 140, 30);
+    assert!(out.contains("⏸ fusion en attente"), "{out}");
+    assert!(out.contains("docker-compose.yml"), "{out}");
+    assert!(out.contains("[f] réessayer la fusion"), "{out}");
+
+    app.update(Msg::Key(Action::Char('f')));
+    let question = app.confirm.as_ref().map(|c| c.question.clone()).unwrap();
+    assert!(question.contains("Réessayer la fusion"), "{question}");
 }
 
 #[test]

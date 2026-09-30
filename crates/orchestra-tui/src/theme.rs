@@ -230,6 +230,28 @@ pub fn urgent() -> Badge {
     }
 }
 
+/// A ready branch the daemon could not merge: the ticket is waiting on the
+/// user, not on an agent, and that is what the eye must find on the board.
+pub fn merge_waiting() -> Badge {
+    Badge {
+        symbol: "⏸",
+        color: Color::Magenta,
+        bold: true,
+        dim: false,
+    }
+}
+
+/// A role with git open (push, merge, rebase): what the eye must find in the
+/// list of roles, since it is the one right that reaches outside the machine.
+pub fn git_open() -> Badge {
+    Badge {
+        symbol: "⎇",
+        color: Color::Cyan,
+        bold: true,
+        dim: false,
+    }
+}
+
 /// A key the current screen alone offers.
 ///
 /// Weight carries the distinction and colour only backs it up: on a monochrome

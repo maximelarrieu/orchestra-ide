@@ -11,8 +11,9 @@ Dashboard de dev pilotant une ferme d'agents **Claude Code**. Plan de référenc
 4. **Parsing tolérant** du stream-json et des transcripts : `#[serde(default)]`, `#[serde(flatten)] rest`, `#[serde(other)]`.
    Toute évolution du parseur s'accompagne d'une fixture réelle dans `crates/orchestra-core/tests/fixtures/`.
 5. **Les agents ne travaillent que dans un worktree git** créé par le daemon. Jamais dans le dépôt principal.
-   L'intégrateur (`config.integration`) est le seul à qui git est ouvert, et il reste
-   lui aussi dans son worktree : la fusion dans la branche par défaut est faite par le
+   Git ne s'ouvre qu'aux rôles dont l'entête dit `git: full` (l'intégrateur,
+   `config.integration`, l'a par défaut ; `GitPolicy::for_role`), et ils restent
+   eux aussi dans leur worktree : la fusion dans la branche par défaut est faite par le
    daemon en `--ff-only`, pas par un agent — ou, en `mode = "pr"`, par l'humain qui
    valide la pull request.
 6. **Tokens bruts = vérité.** Le `$` est indicatif, calculé à la requête depuis la grille de `config.toml`.

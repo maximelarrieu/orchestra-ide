@@ -333,6 +333,36 @@ pub fn merge_fast_forward(project: &Project, branch: &str) -> Result<usize> {
     Ok(commits)
 }
 
+/// The commit a branch points at.
+pub fn branch_head(repo: &Path, branch: &str) -> Option<String> {
+    git(
+        repo,
+        &[
+            "rev-parse".into(),
+            "--verify".into(),
+            "--quiet".into(),
+            format!("refs/heads/{branch}^{{commit}}"),
+        ],
+    )
+    .ok()
+    .filter(|s| !s.is_empty())
+}
+
+/// True when the default branch is still an ancestor of `branch`: what makes a
+/// fast-forward possible without anyone bringing the default branch in first.
+pub fn fast_forwardable(project: &Project, branch: &str) -> bool {
+    git(
+        &project.path,
+        &[
+            "merge-base".into(),
+            "--is-ancestor".into(),
+            project.default_branch.clone(),
+            branch.to_string(),
+        ],
+    )
+    .is_ok()
+}
+
 fn branch_exists(repo: &Path, branch: &str) -> bool {
     git(
         repo,
@@ -524,6 +554,24 @@ mod tests {
             format!("{err:#}").contains("avance rapide"),
             "la raison doit être lisible : {err:#}"
         );
+    }
+
+    #[test]
+    fn a_ready_branch_stays_fast_forwardable_until_main_moves() {
+        let f = fixture();
+        let plan = plan_for(&f.project, &ticket(1, "cache"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        commit(&wt.path, "cache.rs", "le cache");
+        let head = branch_head(&f.project.path, &wt.branch).expect("la branche a un commit");
+        assert_eq!(head.len(), 40, "un sha complet : {head}");
+        assert!(fast_forwardable(&f.project, &wt.branch));
+
+        commit(&f.project.path, "autre.rs", "ailleurs");
+        assert!(
+            !fast_forwardable(&f.project, &wt.branch),
+            "main a bougé : il faut d'abord le ramener dans la branche"
+        );
+        assert_eq!(branch_head(&f.project.path, "orch/inexistante"), None);
     }
 
     #[test]

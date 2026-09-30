@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use orchestra_core::config::{Config, Paths, ResolvedPaths};
+use orchestra_core::config::{Config, ResolvedPaths};
 use orchestra_core::events::{EventFilter, EventKind, NewEvent};
+use orchestra_core::guard::GitPolicy;
 use orchestra_core::conventions::{RuleKind, RuleStatus};
 use orchestra_core::model::{
-    can_transition, AgentStatus, Project, ProjectId, ProjectKind, Team, TeamProposal, Ticket,
+    can_transition, AgentStatus, Project, ProjectId, ProjectKind, RoleScope, Team, TeamProposal,
+    Ticket,
     TicketId, TicketStatus, Todo, TodoId, TodoStatus,
 };
 use orchestra_core::protocol::{
@@ -343,6 +345,14 @@ impl Daemon {
                 name,
             } => self.delete_rule(project_id, rule_kind, name).await,
             Command::PromoteRule { project_id, name } => self.promote_rule(project_id, name).await,
+            Command::CreateRole { project_id, name } => self.create_role(project_id, name).await,
+            Command::SetRoleGit {
+                project_id,
+                name,
+                git,
+            } => self.set_role_git(project_id, name, git).await,
+            Command::DeleteRole { project_id, name } => self.delete_role(project_id, name).await,
+            Command::PromoteRole { project_id, name } => self.promote_role(project_id, name).await,
             Command::CreateTodo {
                 title,
                 notes,
@@ -477,8 +487,16 @@ impl Daemon {
         let mut out = Vec::with_capacity(tickets.len());
         for ticket in tickets {
             let url = open_prs.get(&ticket.id).cloned();
+            // Only a ticket « à relire » can be waiting on its merge, and those
+            // are few: one query each is cheaper than reading every refusal.
+            let blocked = if ticket.status == TicketStatus::Review {
+                crate::integration::blocked_merge(&self.store, ticket.id).await
+            } else {
+                None
+            };
             let mut summary = self.summarise(ticket).await.map_err(internal)?;
             summary.pull_request = url;
+            summary.merge_blocked = blocked.map(|b| b.reason);
             out.push(summary);
         }
         out.sort_by_key(|s| (s.ticket.status.board_order(), -s.ticket.number));
@@ -498,6 +516,7 @@ impl Daemon {
             cost_usd: cost.cost_usd,
             tokens: cost.tokens,
             pull_request: None,
+            merge_blocked: None,
             ticket,
         })
     }
@@ -543,6 +562,12 @@ impl Daemon {
         let review = self.last_review(ticket_id).await?;
         let checks = self.last_checks(ticket_id).await?;
         let pull_request = crate::github::open_pull_request(&self.store, ticket_id).await;
+        let merge_blocked = match ticket.status {
+            TicketStatus::Review => crate::integration::blocked_merge(&self.store, ticket_id)
+                .await
+                .map(|b| b.reason),
+            _ => None,
+        };
 
         Ok(Reply::Ticket {
             detail: Box::new(TicketDetail {
@@ -555,6 +580,7 @@ impl Daemon {
                 review,
                 checks,
                 pull_request,
+                merge_blocked,
                 integration_mode: self.cfg.integration.mode,
             }),
         })
@@ -948,8 +974,7 @@ impl Daemon {
 
     /// Load the catalog a project sees: global roles plus its own overrides.
     fn catalog_for(&self, project: Option<&Project>) -> Catalog {
-        let project_dir = project.map(|p| Paths::project_roles_dir(&p.path));
-        Catalog::load(&self.paths.roles_dir, project_dir.as_deref())
+        crate::roles::catalog(&self.paths.roles_dir, project)
     }
 
     async fn list_roles(&self, project_id: Option<ProjectId>) -> Result<Reply, ApiError> {
@@ -957,15 +982,119 @@ impl Daemon {
             Some(id) => self.store.project(id).await.map_err(internal)?,
             None => None,
         };
-        let catalog = self.catalog_for(project.as_ref());
-        for (path, err) in &catalog.errors {
-            self.bus
-                .warn(format!("rôle illisible {} : {err}", path.display()))
-                .await;
+        let mut catalog = self.catalog_for(project.as_ref());
+        // Resolved here, where the config is: a client shows what an agent of
+        // this role will really get, without knowing which role integrates.
+        for role in &mut catalog.roles {
+            role.git = Some(GitPolicy::for_role(
+                role.git,
+                &role.name,
+                &self.cfg.integration.role,
+            ));
         }
+        // In the reply rather than as a warning: the roles are read every
+        // second while their screen is open, and a broken file would flood
+        // the activity with the same line.
         Ok(Reply::Roles {
             roles: catalog.roles,
+            errors: catalog
+                .errors
+                .iter()
+                .map(|(path, e)| format!("{} : {e}", path.display()))
+                .collect(),
         })
+    }
+
+    async fn create_role(
+        &self,
+        project_id: Option<ProjectId>,
+        name: String,
+    ) -> Result<Reply, ApiError> {
+        let project = self.project_opt(project_id).await?;
+        let path = crate::roles::create(&self.paths.roles_dir, project.as_ref(), &name)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        let scope = Some(if project.is_some() {
+            RoleScope::Project
+        } else {
+            RoleScope::Global
+        });
+        self.bus
+            .publish(self.rule_event(
+                project.as_ref(),
+                EventKind::RoleCreated {
+                    name: name.trim().to_string(),
+                    scope,
+                },
+            ))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::RoleFile { path })
+    }
+
+    /// What git a role gets is a line of its file, so it is changed where a
+    /// human would change it — and read back by every launch after.
+    async fn set_role_git(
+        &self,
+        project_id: Option<ProjectId>,
+        name: String,
+        git: GitPolicy,
+    ) -> Result<Reply, ApiError> {
+        let project = self.project_opt(project_id).await?;
+        let catalog = self.catalog_for(project.as_ref());
+        let role = crate::roles::find(&catalog, &name)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        let before = GitPolicy::for_role(role.git, &role.name, &self.cfg.integration.role);
+        if role.git == Some(git) {
+            return Ok(Reply::Ack);
+        }
+        crate::roles::set_git(&role.source, git)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        let change = if before == git {
+            format!("{} désormais écrit dans son fichier", git.label_fr())
+        } else {
+            git.label_fr().to_string()
+        };
+        self.bus
+            .publish(self.rule_event(project.as_ref(), EventKind::RoleUpdated { name, change }))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
+    async fn delete_role(
+        &self,
+        project_id: Option<ProjectId>,
+        name: String,
+    ) -> Result<Reply, ApiError> {
+        let project = self.project_opt(project_id).await?;
+        let required = [
+            self.cfg.review.role.as_str(),
+            self.cfg.integration.role.as_str(),
+        ];
+        crate::roles::delete(&self.paths.roles_dir, project.as_ref(), &name, &required)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        self.bus
+            .publish(self.rule_event(project.as_ref(), EventKind::RoleDeleted { name }))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
+    async fn promote_role(&self, project_id: ProjectId, name: String) -> Result<Reply, ApiError> {
+        let project = self
+            .project_opt(Some(project_id))
+            .await?
+            .ok_or_else(|| ApiError::not_found("projet"))?;
+        let path = crate::roles::promote(&self.paths.roles_dir, &project, &name)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        self.bus
+            .publish(NewEvent::new(EventKind::RoleUpdated {
+                name,
+                change: "devenu global".into(),
+            }))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::RoleFile { path })
     }
 
     /// Start the planning run. Replies at once; the proposal arrives as an

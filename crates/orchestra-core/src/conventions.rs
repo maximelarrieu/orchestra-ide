@@ -835,28 +835,7 @@ pub fn skeleton_body(kind: RuleKind) -> &'static str {
 /// Change the `status:` line of a rule file, keeping everything else — the
 /// user's comments and layout included — exactly as it was.
 pub fn with_status(src: &str, status: RuleStatus) -> Result<String> {
-    let (header, _) = split_frontmatter(src)?;
-    let start = src
-        .find(header)
-        .ok_or_else(|| CoreError::Parse("entête introuvable".into()))?;
-    let end = start + header.len();
-    let mut replaced = false;
-    let lines: Vec<String> = header
-        .lines()
-        .map(|l| {
-            if !replaced && l.trim_start().starts_with("status:") && !l.starts_with(' ') {
-                replaced = true;
-                format!("status: {}", status.as_str())
-            } else {
-                l.to_string()
-            }
-        })
-        .collect();
-    let mut new_header = lines.join("\n");
-    if !replaced {
-        new_header.push_str(&format!("\nstatus: {}", status.as_str()));
-    }
-    Ok(format!("{}{}{}", &src[..start], new_header, &src[end..]))
+    crate::roles::set_header_field(src, "status", status.as_str())
 }
 
 #[cfg(test)]
