@@ -306,8 +306,6 @@ fn render_body(rule: Option<&Rule>, frame: &mut Frame<'_>, area: Rect) {
 mod tests {
     use super::*;
     use orchestra_core::conventions::{RuleCheck, RuleMode, RuleStatus};
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
 
     fn rule(name: &str, kind: RuleKind, status: RuleStatus, checked: bool) -> Rule {
         Rule {
@@ -331,17 +329,7 @@ mod tests {
     }
 
     fn draw(app: &App, w: u16, h: u16) -> String {
-        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(app, f, f.area())).unwrap();
-        let buf = term.backend().buffer().clone();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        crate::screens::text_of(w, h, |f| render(app, f, f.area()))
     }
 
     #[test]

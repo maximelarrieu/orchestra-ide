@@ -19,23 +19,10 @@ use orchestra_tui::app::{App, Screen};
 use orchestra_tui::forms::TicketField;
 use orchestra_tui::keymap::Action;
 use orchestra_tui::Msg;
-use ratatui::backend::TestBackend;
-use ratatui::Terminal;
 use uuid::Uuid;
 
 fn draw(app: &App, w: u16, h: u16) -> String {
-    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| orchestra_tui::screens::render(app, f))
-        .unwrap();
-    let buf = term.backend().buffer().clone();
-    (0..buf.area.height)
-        .map(|y| {
-            (0..buf.area.width)
-                .map(|x| buf[(x, y)].symbol().to_string())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    orchestra_tui::screens::text_of(w, h, |f| orchestra_tui::screens::render(app, f))
 }
 
 fn role(name: &str) -> RoleDefinition {
@@ -1767,4 +1754,36 @@ fn the_two_global_keys_are_not_claimed_by_any_screen() {
         assert!(app.activity_hidden, "{screen:?}");
         assert!(cmds.is_empty(), "{screen:?} : {cmds:?}");
     }
+}
+
+// Snapshots: the whole frame, character for character, at the sizes people
+// actually use. A `contains` says something is there; a snapshot says where,
+// and fails on the layout drifting. Only fixtures with nothing time- or
+// random-dependent on screen are snapshotted. Review a change with
+// `cargo insta review`, or by reading the `.snap.new` next to the old one.
+
+#[test]
+fn snapshot_board_with_a_queue() {
+    let app = board_waiting();
+    insta::assert_snapshot!("board_80x24", draw(&app, 80, 24));
+    insta::assert_snapshot!("board_120x40", draw(&app, 120, 40));
+}
+
+#[test]
+fn snapshot_team_editor() {
+    let mut app = app_on_ticket(true, false);
+    app.update(Msg::Reply(Box::new(Reply::Roles {
+        roles: vec![role("architect"), role("backend"), role("tests")],
+        errors: vec![],
+    })));
+    app.update(Msg::Key(Action::Char('a')));
+    insta::assert_snapshot!("team_editor_80x24", draw(&app, 80, 24));
+    insta::assert_snapshot!("team_editor_120x40", draw(&app, 120, 40));
+}
+
+#[test]
+fn snapshot_help_overlay() {
+    let mut app = board_waiting();
+    app.update(Msg::Key(Action::Help));
+    insta::assert_snapshot!("help_120x40", draw(&app, 120, 40));
 }

@@ -1,0 +1,28 @@
+---
+source: crates/orchestra-tui/tests/screens.rs
+expression: "draw(&app, 80, 24)"
+---
+ 1  2  3  4  5  6 Équipe  7  8                                                  
+┌ Proposition ─────────────────────────────────────────────────────────────────┐
+│ordre : architect  →  backend                                                 │
+│Deux rôles suffisent pour ce cache.                                           │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Équipe ──────────────────────────────────────────────────────────────────────┐
+│rôle                         modèle     effort    dépend de                   │
+│architect                    défaut     défaut    -                           │
+│backend                      défaut     défaut    architect                   │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Objectif — « o » pour le réécrire ───────────────────────────────────────────┐
+│objectif détaillé de architect                                                │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Activité ────────────────────────────────────────────────────────────────────┐
+│en attente d'activité…                                                        │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+[y] accepter l'équipe  [o] objectif  [m] modèle  [e] effort …  │  [?] aide      
+● orchestra  connexion au daemon…             0 msg · 0 tokens · ≈$- (indicatif)

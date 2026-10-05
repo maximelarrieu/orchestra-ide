@@ -240,22 +240,10 @@ mod tests {
     use super::*;
     use crate::screens::layout::render;
     use crate::app::ProjectRow;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
     use uuid::Uuid;
 
     fn draw(app: &App, w: u16, h: u16) -> String {
-        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(app, f)).unwrap();
-        let buf = term.backend().buffer().clone();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        crate::screens::text_of(w, h, |f| render(app, f))
     }
 
     fn app_with_a_project() -> App {

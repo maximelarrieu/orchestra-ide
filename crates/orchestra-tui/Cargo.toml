@@ -19,3 +19,6 @@ tokio-util.workspace = true
 tracing.workspace = true
 unicode-width.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+insta = "1.49.0"

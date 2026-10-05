@@ -421,6 +421,8 @@ pub const PARTOUT: &[(&str, &str)] = &[
     ("q", "revenir en arrière"),
     ("Q", "quitter"),
     ("Ctrl-C", "quitter"),
+    ("!", "aller à ce qui t'attend"),
+    ("A", "replier le bandeau Activité"),
 ];
 
 /// What the palette takes. Written as one types it, brackets left off: a

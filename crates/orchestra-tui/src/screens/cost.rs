@@ -168,8 +168,6 @@ mod tests {
     use super::*;
     use orchestra_core::model::Tokens;
     use orchestra_core::protocol::{UsageRow, UsageTotals};
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
     use std::collections::BTreeMap;
 
     fn row(name: &str, out: u64, cost: Option<f64>, estimated: bool) -> UsageRow {
@@ -210,17 +208,7 @@ mod tests {
     }
 
     fn draw(app: &App, w: u16, h: u16) -> String {
-        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| crate::screens::render(app, f)).unwrap();
-        let buf = term.backend().buffer().clone();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        crate::screens::text_of(w, h, |f| crate::screens::render(app, f))
     }
 
     #[test]

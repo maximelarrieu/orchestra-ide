@@ -283,9 +283,6 @@ fn render_help(app: &App, frame: &mut Frame<'_>, area: Rect) {
     // Side by side when the width allows, stacked otherwise, and in that
     // order: if the bottom is cut, what goes missing is what can be guessed.
     let side_by_side = area.width >= 80;
-    let width = if side_by_side { 78 } else { 46 }
-        .min(area.width.saturating_sub(2))
-        .max(20);
     let (left, right) = if side_by_side {
         let mut left = here_lines;
         left.extend(move_lines);
@@ -299,6 +296,17 @@ fn render_help(app: &App, frame: &mut Frame<'_>, area: Rect) {
     // pay for it.
     let left = trimmed(left);
     let right = trimmed(right);
+    // Each column as wide as what it holds: a fixed split cut the palette's
+    // descriptions while the keys' column stood half empty.
+    let widest = |lines: &[Line]| lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
+    let left_width = widest(&left) + 2;
+    let width = if side_by_side {
+        left_width + widest(&right) + 2
+    } else {
+        46
+    }
+    .min(area.width.saturating_sub(2))
+    .max(20);
     let needed = left.len().max(right.len()) as u16;
     let height = (needed + 2).min(area.height.saturating_sub(2)).max(3);
     let popup = centered(area, width, height);
@@ -312,7 +320,7 @@ fn render_help(app: &App, frame: &mut Frame<'_>, area: Rect) {
     if side_by_side {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .constraints([Constraint::Length(left_width), Constraint::Min(0)])
             .split(inner);
         frame.render_widget(Paragraph::new(left), columns[0]);
         frame.render_widget(Paragraph::new(right), columns[1]);
