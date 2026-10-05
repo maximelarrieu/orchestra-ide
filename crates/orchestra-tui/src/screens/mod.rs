@@ -5,10 +5,11 @@
 pub mod agent;
 pub mod board;
 pub mod cost;
+pub mod layout;
 pub mod new_ticket;
 pub mod proposal;
 pub mod rules;
 pub mod ticket;
 pub mod todo;
 
-pub use board::{pane_block, render, truncate};
+pub use layout::{pane_block, render, truncate};
