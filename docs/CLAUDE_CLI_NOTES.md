@@ -102,6 +102,27 @@ Le flux contient aussi des lignes `system` de sous-type `hook_started` et
 `hook_response`, mais seulement pour certains hooks sans `--include-hook-events`.
 On ne s'appuie donc pas dessus.
 
+## Isolation de l'environnement utilisateur — confirmé (2.1.289)
+
+Sans précaution, un agent hérite de tout `~/.claude` : plugins, leurs hooks, serveurs
+MCP, skills. Mesuré sur le message `system/init`, sur la machine de développement :
+
+| | défaut | `--setting-sources project --strict-mcp-config` |
+|---|---|---|
+| outils | 86 | 30 |
+| serveurs MCP | 11 | 0 |
+| skills | 326 | 19 |
+| hooks utilisateur (`SessionStart`, `Stop`) | déclenchés | aucun |
+
+Les plugins qui restent sont ceux livrés ou imposés par l'administration (`managed`).
+**Un hook passé par `--settings` se déclenche toujours** sous ces deux drapeaux :
+le garde d'Orchestra n'en dépend pas. `ClaudeCommand::isolated`, vrai par défaut,
+pose les deux drapeaux pour l'orchestrateur comme pour les agents.
+
+Écartés : `--bare` coupe aussi l'OAuth (seul `ANTHROPIC_API_KEY` reste),
+`--restricted` refuse `bypassPermissions` et retire Bash, `--safe-mode` désactive
+tous les hooks, garde compris.
+
 ## Sessions d'arrière-plan
 
 `claude --bg` est incompatible avec `-p` et n'offre aucun moyen non interactif

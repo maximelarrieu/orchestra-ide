@@ -12,6 +12,8 @@ use orchestra_core::conventions::RuleStatus;
 use orchestra_core::model::{AgentStatus, TicketStatus, TodoStatus};
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::widgets::live_log::LineKind;
+
 /// How a status is drawn: a symbol, a colour, and whether it should stand out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Badge {
@@ -294,6 +296,37 @@ pub fn elapsed(since: time::OffsetDateTime, now: time::OffsetDateTime) -> String
     }
 }
 
+/// How one log line is drawn. The agent's own words stay plain so they read
+/// as prose; everything around them is marked and dimmed.
+pub fn log_line(kind: LineKind) -> (&'static str, Style, Style) {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    match kind {
+        LineKind::Text => ("  ", dim, Style::default()),
+        LineKind::ToolRunning => ("▸ ", Style::default().fg(Color::Cyan), dim),
+        LineKind::ToolOk => ("✓ ", Style::default().fg(Color::Green), dim),
+        LineKind::ToolFailed => (
+            "✗ ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default(),
+        ),
+        LineKind::Blocked => (
+            "⚠ ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        LineKind::Steer => (
+            "› ",
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        LineKind::Notice | LineKind::Thinking => ("· ", dim, dim),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +401,15 @@ mod tests {
                 assert!(
                     b.symbol == "✗" || b.symbol == "✓",
                     "{status:?} s'appuie sur la couleur seule"
+                );
+            }
+        }
+        for kind in LineKind::ALL {
+            let (symbol, style, _) = log_line(kind);
+            if style.fg == Some(Color::Red) || style.fg == Some(Color::Green) {
+                assert!(
+                    symbol.trim() == "✗" || symbol.trim() == "✓",
+                    "{kind:?} s'appuie sur la couleur seule"
                 );
             }
         }

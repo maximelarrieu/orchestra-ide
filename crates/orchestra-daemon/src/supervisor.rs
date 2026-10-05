@@ -23,7 +23,7 @@ use orchestra_core::model::{
     Team, Ticket, TicketId, TicketStatus,
 };
 use orchestra_core::roles::Catalog;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 use crate::bus::EventBus;
@@ -76,6 +76,10 @@ pub struct Supervisor {
     /// when `zellij.auto_pane` is off. Per run, not per configuration: the
     /// choice belongs to the launch that asked for it.
     panes_wanted: Arc<Mutex<HashSet<TicketId>>>,
+    /// One permit per `claude` process, `daemon.max_concurrent_agents` in all,
+    /// shared by every ticket. Held for the life of the process only: checks
+    /// and the wait between stages do not count.
+    slots: Arc<Semaphore>,
 }
 
 impl Supervisor {
@@ -91,12 +95,13 @@ impl Supervisor {
             store,
             bus,
             ledger,
-            cfg,
             cache_dir,
             conventions_dir,
             running: Arc::new(Mutex::new(HashMap::new())),
             tickets: Arc::new(Mutex::new(HashMap::new())),
             panes_wanted: Arc::new(Mutex::new(HashSet::new())),
+            slots: Arc::new(Semaphore::new(cfg.daemon.max_concurrent_agents)),
+            cfg,
         }
     }
 
@@ -1639,9 +1644,12 @@ impl Supervisor {
         );
         let rules = crate::rules::book(&self.conventions_dir, Some(project))
             .prompt_section(&role.name, self.cfg.integration.mode.is_pr());
+        // One file per agent: the rules depend on the project, and a resume
+        // reads the file again, by which time another ticket may have run the
+        // same role.
         let prompt_file = write_prompt_file(
             &self.cache_dir,
-            &role.name,
+            &format!("{}-{}", role.name, agent.id),
             &format!("{}\n\n{FOOTER}{rules}{appendix}", role.system_prompt),
         )?;
 
@@ -1690,9 +1698,36 @@ impl Supervisor {
                     .await;
                     continue;
                 }
-                other => return Ok(other),
+                other => {
+                    // Its last reader is gone; left behind it would only pile up.
+                    let _ = std::fs::remove_file(&prompt_file);
+                    return Ok(other);
+                }
             }
         }
+    }
+
+    /// Wait for room under `daemon.max_concurrent_agents`, saying so on the
+    /// ticket when there is none: an agent that sits pending without a word
+    /// looks exactly like a stuck one.
+    async fn take_slot(&self, agent: &Agent) -> Result<OwnedSemaphorePermit> {
+        if let Ok(slot) = self.slots.clone().try_acquire_owned() {
+            return Ok(slot);
+        }
+        self.warn_ticket(
+            agent.ticket_id,
+            agent.project_id,
+            format!(
+                "l'agent « {} » attend une place ({} agents au plus, daemon.max_concurrent_agents)",
+                agent.role, self.cfg.daemon.max_concurrent_agents
+            ),
+        )
+        .await;
+        self.slots
+            .clone()
+            .acquire_owned()
+            .await
+            .context("le superviseur s'arrête")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1711,6 +1746,7 @@ impl Supervisor {
         // `[projet] rôle #12`: the session's name, and its pane's.
         label: &str,
     ) -> Result<AgentOutcome> {
+        let _slot = self.take_slot(agent).await?;
         let mut cmd = ClaudeCommand::new(&self.cfg.daemon.claude_bin, worktree_path, prompt);
         cmd.session_id = Some(agent.session_id);
         cmd.resume = resume;
@@ -2386,7 +2422,7 @@ fn correction_objective(original: &str, blocking: &[String], blocked_by: Blocked
             "Mettre la branche en conformité avec les conventions de l'équipe, et rien d'autre :"
         }
     };
-    format!("{head}\n{list}\n\n         (ton objectif initial était : {original})")
+    format!("{head}\n{list}\n\n(ton objectif initial était : {original})")
 }
 
 /// What a resumed agent is told.
@@ -2396,7 +2432,7 @@ fn correction_objective(original: &str, blocking: &[String], blocked_by: Blocked
 /// takes stock, decides it is done, and stops without delivering.
 pub fn resume_prompt(member: &orchestra_core::model::TeamMember, worktree: &Path) -> String {
     format!(
-        "Tu as été interrompu avant d'avoir fini. Reprends le travail.\n\n         Ton objectif reste : {}\n\n         Vérifie d'abord ce qui est déjà en place dans `{}` (fichiers et commits),          puis termine ce qui manque. Ne recommence pas ce qui est déjà fait, et ne          conclus pas que c'est terminé sans l'avoir constaté.",
+        "Tu as été interrompu avant d'avoir fini. Reprends le travail.\n\nTon objectif reste : {}\n\nVérifie d'abord ce qui est déjà en place dans `{}` (fichiers et commits), puis termine ce qui manque. Ne recommence pas ce qui est déjà fait, et ne conclus pas que c'est terminé sans l'avoir constaté.",
         member.objective.trim(),
         worktree.display()
     )
@@ -2447,7 +2483,7 @@ fn integration_objective(
     mode: orchestra_core::config::IntegrationMode,
 ) -> String {
     let ending = if mode.is_pr() {
-        " Quand tu auras fini, la branche sera poussée et une pull request ouverte          dessus : laisse-la dans un état qu'on peut relire, et dis dans ton résumé ce          qu'il faut savoir pour la valider."
+        " Quand tu auras fini, la branche sera poussée et une pull request ouverte dessus : laisse-la dans un état qu'on peut relire, et dis dans ton résumé ce qu'il faut savoir pour la valider."
     } else if push {
         " Pousse ensuite la branche sur son remote."
     } else {
@@ -2822,6 +2858,62 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("équipe acceptée"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn agents_beyond_the_limit_wait_for_a_place_and_say_so() {
+        let store = Store::open_memory().unwrap();
+        let bus = EventBus::new(store.clone());
+        let mut cfg = Config::default();
+        cfg.daemon.max_concurrent_agents = 1;
+        let cfg = Arc::new(cfg);
+        let ledger = UsageLedger::new(store.clone(), &cfg);
+        let dir = tempfile::tempdir().unwrap();
+        let sup = Supervisor::new(store.clone(), bus, ledger, cfg, dir.path().to_path_buf(), dir.path().join("conventions"));
+        let agent = |role: &str| Agent {
+            id: Uuid::new_v4(),
+            ticket_id: Uuid::new_v4(),
+            project_id: Uuid::new_v4(),
+            role: role.into(),
+            objective: String::new(),
+            stage: 0,
+            session_id: Uuid::new_v4(),
+            model: String::new(),
+            effort: Effort::Medium,
+            max_budget_usd: None,
+            status: AgentStatus::Pending,
+            exit_reason: None,
+            pid: None,
+            pane_id: None,
+            attempt: 1,
+            handoff: None,
+            started_at: None,
+            ended_at: None,
+        };
+
+        let first = sup.take_slot(&agent("backend")).await.unwrap();
+        let waiting = {
+            let sup = sup.clone();
+            let second = agent("tests");
+            tokio::spawn(async move { sup.take_slot(&second).await.map(drop) })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished(), "le second agent doit attendre");
+        let said = store
+            .recent_events(orchestra_core::events::EventFilter::default(), 10)
+            .await
+            .unwrap();
+        assert!(
+            said.iter().any(|e| matches!(&e.kind, EventKind::Warning { message } if message.contains("attend une place"))),
+            "l'attente doit se voir : {said:?}"
+        );
+
+        drop(first);
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("la place libérée doit servir")
+            .unwrap()
+            .unwrap();
     }
 
     /// A supervisor over an in-memory store, plus a project and a ticket the

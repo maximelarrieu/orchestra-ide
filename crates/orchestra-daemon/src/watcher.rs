@@ -126,7 +126,7 @@ impl TranscriptWatcher {
         if started.elapsed() > Duration::from_secs(5) {
             self.bus
                 .warn(format!(
-                    "rattrapage des transcripts长 : {} fichiers en {} s",
+                    "rattrapage des transcripts : {} fichiers en {} s",
                     report.files,
                     started.elapsed().as_secs()
                 ))

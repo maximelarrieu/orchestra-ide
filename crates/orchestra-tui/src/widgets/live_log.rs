@@ -31,6 +31,19 @@ pub enum LineKind {
     Thinking,
 }
 
+impl LineKind {
+    pub const ALL: [LineKind; 8] = [
+        LineKind::Text,
+        LineKind::ToolRunning,
+        LineKind::ToolOk,
+        LineKind::ToolFailed,
+        LineKind::Blocked,
+        LineKind::Steer,
+        LineKind::Notice,
+        LineKind::Thinking,
+    ];
+}
+
 #[derive(Debug, Clone)]
 pub struct LogLine {
     pub kind: LineKind,

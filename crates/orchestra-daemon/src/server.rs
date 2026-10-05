@@ -230,15 +230,30 @@ async fn connection(
                         // The client fell behind: replay what it missed from the store.
                         tracing::warn!("client en retard de {n} événements, resynchronisation");
                         if let Some(s) = sub.as_mut() {
-                            let missed = handle
-                                .bus()
-                                .store()
-                                .events_since(s.last_sent, s.filter.clone(), 1000)
-                                .await
-                                .unwrap_or_default();
-                            for ev in missed {
-                                s.last_sent = ev.seq;
-                                send(&mut framed, Frame::Event(Box::new(ev))).await?;
+                            // Page until the store has nothing newer: a single
+                            // page would drop whatever lies between its end and
+                            // what the channel still holds, without a word.
+                            loop {
+                                let missed = match handle
+                                    .bus()
+                                    .store()
+                                    .events_since(s.last_sent, s.filter.clone(), REPLAY_PAGE)
+                                    .await
+                                {
+                                    Ok(missed) => missed,
+                                    Err(e) => {
+                                        tracing::error!("resynchronisation impossible : {e}");
+                                        break;
+                                    }
+                                };
+                                let full = missed.len() == REPLAY_PAGE as usize;
+                                for ev in missed {
+                                    s.last_sent = ev.seq;
+                                    send(&mut framed, Frame::Event(Box::new(ev))).await?;
+                                }
+                                if !full {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -250,6 +265,9 @@ async fn connection(
         }
     }
 }
+
+/// Events read from the store per query when a lagging client is caught up.
+const REPLAY_PAGE: u32 = 1000;
 
 struct Subscription {
     rx: broadcast::Receiver<Arc<Event>>,

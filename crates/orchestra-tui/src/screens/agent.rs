@@ -2,7 +2,7 @@
 
 use orchestra_core::pricing::{fmt_tokens, fmt_usd};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
@@ -17,7 +17,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let Some(agent) = app.watched_agent() else {
         frame.render_widget(
             Paragraph::new(
-                "Aucun agent ne tourne en ce moment.\n\nDepuis un ticket, « L » lance l'équipe,                  puis Entrée sur un agent suit son travail en direct.",
+                "Aucun agent ne tourne en ce moment.\n\nDepuis un ticket, « L » lance l'équipe, puis Entrée sur un agent suit son travail en direct.",
             )
             .style(Style::default().add_modifier(Modifier::DIM))
             .block(pane_block("Agent", true))
@@ -183,35 +183,9 @@ fn render_log(app: &App, frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(pane_block(&title, true)), area);
 }
 
-/// How one log line is drawn. The agent's own words stay plain so they read
-/// as prose; everything around them is marked and dimmed.
+/// How one log line is drawn; the palette lives in `theme`, with the rest.
 pub fn line_styles(kind: LineKind) -> (&'static str, Style, Style) {
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    match kind {
-        LineKind::Text => ("  ", dim, Style::default()),
-        LineKind::ToolRunning => ("▸ ", Style::default().fg(Color::Cyan), dim),
-        LineKind::ToolOk => ("✓ ", Style::default().fg(Color::Green), dim),
-        LineKind::ToolFailed => (
-            "✗ ",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            Style::default(),
-        ),
-        LineKind::Blocked => (
-            "⚠ ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        LineKind::Steer => (
-            "› ",
-            Style::default()
-                .fg(Color::Blue)
-                .add_modifier(Modifier::BOLD),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        LineKind::Notice | LineKind::Thinking => ("· ", dim, dim),
-    }
+    crate::theme::log_line(kind)
 }
 
 fn render_steer(app: &App, frame: &mut Frame<'_>, area: Rect) {

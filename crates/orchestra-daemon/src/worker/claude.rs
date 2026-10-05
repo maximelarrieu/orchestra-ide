@@ -45,6 +45,13 @@ pub struct ClaudeCommand {
     pub json_schema: Option<String>,
     pub settings_json: Option<String>,
     pub agents_json: Option<String>,
+    /// Load only the repository's own settings and no MCP server.
+    ///
+    /// Without it an agent inherits everything in the user's `~/.claude`:
+    /// plugins, their hooks, MCP servers and skills, none of which the farm
+    /// chose. The daemon's guard still applies, since `--settings` is loaded
+    /// whatever the sources.
+    pub isolated: bool,
     pub env: Vec<(String, String)>,
     /// Close stdin as soon as the prompt is written.
     ///
@@ -74,6 +81,7 @@ impl ClaudeCommand {
             json_schema: None,
             settings_json: None,
             agents_json: None,
+            isolated: true,
             env: Vec::new(),
             one_shot: false,
         }
@@ -144,6 +152,11 @@ impl ClaudeCommand {
             a.push("--agents".into());
             a.push(agents.clone());
         }
+        if self.isolated {
+            a.push("--setting-sources".into());
+            a.push("project".into());
+            a.push("--strict-mcp-config".into());
+        }
         a
     }
 
@@ -153,8 +166,10 @@ impl ClaudeCommand {
             .args()
             .into_iter()
             .map(|a| {
-                if a.len() > 60 {
-                    format!("{}…", &a[..57.min(a.len())])
+                if a.chars().count() > 60 {
+                    // By characters: a byte index can fall inside an accent.
+                    let head: String = a.chars().take(57).collect();
+                    format!("{head}…")
                 } else {
                     a
                 }
@@ -233,8 +248,8 @@ impl ClaudeProcess {
 
         let out_tx = tx.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(stdout);
+            while let Some(line) = next_lossy_line(&mut reader).await {
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -252,8 +267,8 @@ impl ClaudeProcess {
         });
 
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(stderr);
+            while let Some(line) = next_lossy_line(&mut reader).await {
                 if tx.send(ProcessEvent::Stderr(line)).await.is_err() {
                     break;
                 }
@@ -326,8 +341,31 @@ impl ClaudeProcess {
     }
 }
 
-/// Write a role's rendered prompt where `--append-system-prompt-file` can read
-/// it, and return the path.
+/// The next line of a child's output, without its newline; `None` at end of
+/// file or on a read error.
+///
+/// Invalid UTF-8 is replaced rather than refused: `lines()` would stop at the
+/// first bad byte, and the rest of the stream — the `result` line included —
+/// would be lost without a word.
+async fn next_lossy_line<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Option<String> {
+    let mut buf = Vec::new();
+    match reader.read_until(b'\n', &mut buf).await {
+        Ok(0) | Err(_) => None,
+        Ok(_) => {
+            while matches!(buf.last(), Some(b'\n' | b'\r')) {
+                buf.pop();
+            }
+            Some(String::from_utf8_lossy(&buf).into_owned())
+        }
+    }
+}
+
+/// Write a rendered prompt where `--append-system-prompt-file` can read it, and
+/// return the path.
+///
+/// `name` must be unique to the run that reads the file: the body carries the
+/// project's rules, and `claude` reads it again on every resume, so two agents
+/// sharing a file would read each other's.
 pub fn write_prompt_file(cache_dir: &Path, name: &str, body: &str) -> Result<PathBuf> {
     let dir = cache_dir.join("roles");
     std::fs::create_dir_all(&dir).with_context(|| format!("création de {}", dir.display()))?;
@@ -417,6 +455,8 @@ mod tests {
         c.json_schema = Some("{}".into());
         c.settings_json = Some("{\"hooks\":{}}".into());
         let args = c.args();
+        assert!(args.windows(2).any(|w| w == ["--setting-sources", "project"]));
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
 
         for pair in [
             ["--name", "[proj] backend #1"],
@@ -434,6 +474,33 @@ mod tests {
                 "{pair:?} absent de {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_agent_does_not_inherit_the_users_setup_unless_asked() {
+        let mut c = cmd();
+        c.isolated = false;
+        let args = c.args();
+        assert!(!args.contains(&"--setting-sources".to_string()));
+        assert!(!args.contains(&"--strict-mcp-config".to_string()));
+    }
+
+    #[test]
+    fn shortening_never_cuts_inside_a_character() {
+        let mut c = cmd();
+        c.name = Some("é".repeat(80));
+        assert!(c.display().contains('…'));
+    }
+
+    #[tokio::test]
+    async fn a_line_that_is_not_utf8_does_not_end_the_stream() {
+        let bytes: &[u8] = b"avant\n\xff\xfe cass\xc3\r\napr\xc3\xa8s\n";
+        let mut reader = BufReader::new(bytes);
+        assert_eq!(next_lossy_line(&mut reader).await.as_deref(), Some("avant"));
+        let broken = next_lossy_line(&mut reader).await.unwrap();
+        assert!(broken.contains('\u{FFFD}') && broken.ends_with("cass\u{FFFD}"));
+        assert_eq!(next_lossy_line(&mut reader).await.as_deref(), Some("après"));
+        assert_eq!(next_lossy_line(&mut reader).await, None);
     }
 
     #[test]

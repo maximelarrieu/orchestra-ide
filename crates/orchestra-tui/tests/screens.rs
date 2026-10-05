@@ -1146,6 +1146,42 @@ fn leaving_an_agent_returns_to_the_whole_ticket() {
 }
 
 #[test]
+fn tabbing_away_from_an_agent_stops_following_it() {
+    let mut app = app_watching_agent();
+    let cmds = app.update(Msg::Key(Action::Screen(1)));
+    assert_eq!(app.screen, Screen::Board);
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Subscribe { filter, .. } if filter.agent_id.is_none()
+        )),
+        "le tableau ne doit pas rester filtré sur un seul agent"
+    );
+}
+
+#[test]
+fn tabbing_onto_the_agent_screen_follows_the_agent_of_the_ticket() {
+    let mut app = app_on_ticket(false, true);
+    app.log.push_event(&Event::from_new(
+        1,
+        NewEvent::new(EventKind::AgentText { text: "reste d'un autre agent".into() }),
+    ));
+    assert!(!app.log.is_empty());
+    let cmds = app.update(Msg::Key(Action::NextScreen));
+    assert_eq!(app.screen, Screen::Agent);
+    let watched = app.watched_agent_id();
+    assert!(watched.is_some());
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Subscribe { filter, .. } if filter.agent_id == watched
+        )),
+        "l'écran s'abonne à l'agent suivi"
+    );
+    assert!(app.log.is_empty(), "le journal d'un autre agent ne reste pas affiché");
+}
+
+#[test]
 fn typing_exit_out_of_reflex_cancels_nothing() {
     // `x` sits inside the word someone types to leave a program, and it is
     // the cancel key. Nothing irreversible may go through unanswered.

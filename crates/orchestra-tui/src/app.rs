@@ -1200,6 +1200,20 @@ impl App {
         self.status = "l'orchestrateur compose l'équipe…".into();
     }
 
+    /// Back from a single agent's stream to the wider one: the planned
+    /// ticket's while the orchestrator works, the board's otherwise.
+    fn subscribe_wide(&mut self) {
+        let filter = match (self.planning, self.ticket.as_ref()) {
+            (true, Some(detail)) => orchestra_core::events::EventFilter::for_ticket(detail.ticket.id),
+            _ => orchestra_core::events::EventFilter::board(),
+        };
+        self.outbox.push(Command::Subscribe {
+            filter,
+            since_seq: None,
+            backlog: 0,
+        });
+    }
+
     /// Planning is over, whatever its outcome: back to the board's stream.
     fn stop_planning(&mut self) {
         if !self.planning {
@@ -1430,16 +1444,35 @@ impl App {
 
     fn go(&mut self, screen: Screen) {
         let entering_agent = screen == Screen::Agent && self.screen != Screen::Agent;
+        let leaving_agent = screen != Screen::Agent && self.screen == Screen::Agent;
         if screen == Screen::Rules && self.screen != Screen::Rules {
             // The project may have changed on the board since the last read.
             self.request_rules();
         }
         self.screen = screen;
-        if entering_agent && self.watched_agent().is_none() {
-            // Reached from the tab strip rather than from a ticket: find the
-            // agent that is working, wherever it is.
-            self.outbox.push(Command::ListAgents { only_active: true });
-            self.status = "recherche d'un agent en cours…".into();
+        // The daemon keeps one subscription per connection: whatever the
+        // screen streams must be asked for again on the way in and out, or the
+        // board goes on showing one agent and the agent screen shows nothing.
+        if leaving_agent {
+            self.subscribe_wide();
+        }
+        if entering_agent {
+            match self.watched_agent_id() {
+                Some(agent_id) => {
+                    self.log.clear();
+                    self.outbox.push(Command::Subscribe {
+                        filter: orchestra_core::events::EventFilter::for_agent(agent_id),
+                        since_seq: None,
+                        backlog: 500,
+                    });
+                }
+                None => {
+                    // Reached from the tab strip rather than from a ticket:
+                    // find the agent that is working, wherever it is.
+                    self.outbox.push(Command::ListAgents { only_active: true });
+                    self.status = "recherche d'un agent en cours…".into();
+                }
+            }
         }
         if !screen.is_implemented() {
             self.status = format!("« {} » arrive dans une phase suivante", screen.title_fr());
