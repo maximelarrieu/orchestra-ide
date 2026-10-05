@@ -508,28 +508,15 @@ impl Daemon {
                 None
             };
             let team = agents.remove(&ticket.id).unwrap_or_default();
-            // Verdict and checks matter only once the team handed back; those
-            // tickets are few, so one read each stays cheap.
-            let (verdict, checks_failed) = if ticket.status == TicketStatus::Review {
-                let verdict = self.last_review(ticket.id).await?.map(|r| r.verdict);
-                let failed = self
-                    .last_checks(ticket.id)
-                    .await?
-                    .is_some_and(|c| c.failed().is_some());
-                (verdict, failed)
-            } else {
-                (None, false)
-            };
-            let attention = orchestra_core::attention::of(&orchestra_core::attention::Facts {
-                status: Some(ticket.status),
-                has_proposal: ticket.proposal.is_some(),
-                has_team: ticket.team.is_some(),
-                agent_stalled: team.iter().any(|a| stalled.contains(&a.id)),
-                verdict,
-                checks_failed,
-                merge_blocked: blocked.is_some(),
-                pull_request_open: url.is_some(),
-            });
+            let attention = crate::attention::of_ticket(
+                &self.store,
+                &ticket,
+                &team,
+                &stalled,
+                url.is_some(),
+                blocked.is_some(),
+            )
+            .await;
             let cost = costs.remove(&ticket.id).unwrap_or_default();
             let mut summary = summarise(ticket, &team, cost);
             summary.pull_request = url;

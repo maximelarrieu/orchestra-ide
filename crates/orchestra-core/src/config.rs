@@ -22,6 +22,7 @@ pub struct Config {
     pub checks: ChecksConfig,
     pub integration: IntegrationConfig,
     pub zellij: ZellijConfig,
+    pub notify: NotifyConfig,
     pub models: ModelsConfig,
     pub pricing: PriceTable,
 }
@@ -42,6 +43,7 @@ impl Default for Config {
             checks: ChecksConfig::default(),
             integration: IntegrationConfig::default(),
             zellij: ZellijConfig::default(),
+            notify: NotifyConfig::default(),
             models: ModelsConfig::default(),
             pricing: PriceTable::defaults(),
         }
@@ -262,6 +264,15 @@ impl Default for IntegrationConfig {
             remove_worktree: true,
         }
     }
+}
+
+/// Desktop notifications from the daemon.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotifyConfig {
+    /// A notification each time a ticket starts waiting on the user — the
+    /// « à toi » queue. Off by default: it reaches outside the tool.
+    pub attention: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

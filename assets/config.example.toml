@@ -103,6 +103,11 @@ remove_worktree = true
 auto_pane = true
 layout = "orchestra"
 
+# Une notification de bureau (notify-send) chaque fois qu'un ticket se met à
+# t'attendre : équipe à relire, fusion bloquée, agent silencieux…
+[notify]
+attention = false
+
 [models]
 aliases = [
     "fable",

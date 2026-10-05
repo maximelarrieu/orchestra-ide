@@ -9,9 +9,11 @@ pub mod checks;
 pub mod daemon;
 pub mod github;
 pub mod hooks;
+pub mod attention;
 pub mod integration;
 pub mod init;
 pub mod ledger;
+pub mod notify;
 pub mod orchestrator;
 pub mod repo_summary;
 pub mod roles;
@@ -44,6 +46,8 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     prepare_dirs(&paths)?;
 
     let store = Store::open(&paths.db_file)?;
+    let notify_attention = cfg.notify.attention;
+    let notify_store = store.clone();
     let daemon = Daemon::new(cfg, store.clone());
     let handle = daemon.handle();
     let bus = daemon.bus().clone();
@@ -82,10 +86,23 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
         async move { supervisor.watch_pull_requests(cancel).await }
     });
 
+    // Off unless asked: a desktop notification reaches outside the tool.
+    let notifying = notify_attention.then(|| {
+        tokio::spawn(crate::attention::notify_on_attention(
+            notify_store,
+            bus.clone(),
+            supervisor.clone(),
+            cancel.clone(),
+        ))
+    });
+
     let result = server::serve(guard, handle, started_at, shutdown).await;
     cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), watching).await;
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), pull_requests).await;
+    if let Some(task) = notifying {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
+    }
     // Dropping the last handle ends the core loop.
     drop(bus);
     core.abort();

@@ -97,6 +97,10 @@ toucher au disque ni au réseau.
   d'un refus dans le flux.
 - `checks.rs` — les vérifications du dépôt, lancées par le daemon dans le
   worktree : quelles commandes, et ce qu'elles ont rendu.
+- `attention.rs` — ce qu'un ticket attend de l'utilisateur, lu depuis la base (la
+  règle est dans `orchestra-core`), et le veilleur qui notifie le bureau quand un
+  ticket se met à attendre (`notify.attention`). `notify.rs` envoie, sans jamais
+  échouer.
 - `zellij.rs` — les panes. Tout y est best-effort et sous échéance ; rien n'y
   peut faire échouer un ticket. Faits sur le CLI dans `docs/ZELLIJ_NOTES.md`.
 

@@ -9,7 +9,7 @@ use orchestra_core::pricing::{fmt_tokens, fmt_usd};
 use orchestra_core::protocol::{Command as Cmd, GroupBy, Reply, TimeRange, UsageQuery};
 use orchestra_tui::Client;
 
-use crate::notify;
+use orchestra_daemon::notify;
 
 #[derive(Parser, Debug)]
 #[command(

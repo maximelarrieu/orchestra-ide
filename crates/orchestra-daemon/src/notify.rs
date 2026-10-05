@@ -1,10 +1,10 @@
 //! Desktop notifications, via `notify-send` (libnotify over D-Bus).
 //!
-//! Best-effort only, on the model of `orchestra-daemon`'s own `zellij.rs`: a
-//! systemd timer that failed every morning because the binary is missing or
-//! D-Bus does not answer would be worse than a notification that silently
-//! did not show. The digest printed to stdout — and so to the journal when
-//! run from a timer — stays the source of truth either way.
+//! Best-effort only, on the model of `zellij.rs`: a systemd timer that failed
+//! every morning because the binary is missing or D-Bus does not answer would
+//! be worse than a notification that silently did not show. Used by the
+//! morning `orchestra todo notify`, and by the daemon when a ticket starts
+//! waiting on the user (`attention::notify_on_attention`).
 
 use std::process::Stdio;
 use std::time::Duration;
