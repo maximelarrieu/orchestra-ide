@@ -2283,6 +2283,9 @@ pub fn describe(e: &Event) -> Option<String> {
         } => {
             format!("agent terminé ({subtype}, {num_turns} tours)")
         }
+        EventKind::AgentStalled { silent_secs } => {
+            format!("⚑ agent silencieux depuis {} min", silent_secs / 60)
+        }
         EventKind::PullRequestOpened { url, number } => match number {
             Some(n) => format!("pull request #{n} ouverte — {url}"),
             None => format!("pull request ouverte — {url}"),

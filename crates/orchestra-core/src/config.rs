@@ -58,6 +58,13 @@ pub struct DaemonConfig {
     pub max_concurrent_agents: usize,
     /// How many times a crashed agent is resumed before giving up.
     pub max_attempts: u32,
+    /// Seconds of silence after which a running agent is reported as stalled
+    /// (`AgentStalled`). It is not stopped. `0` turns the watch off.
+    pub stall_secs: u64,
+    /// A role run again on the same ticket — a correction, a second
+    /// relecture — continues a fork of its last session instead of starting
+    /// cold: it keeps what it read, and the cached prefix with it.
+    pub fork_on_rerun: bool,
     pub claude_bin: String,
     /// Root of the Claude Code transcripts the watcher tails.
     pub transcripts_dir: Option<PathBuf>,
@@ -70,6 +77,8 @@ impl Default for DaemonConfig {
             data_dir: None,
             worktrees_dir: None,
             max_concurrent_agents: 3,
+            stall_secs: 600,
+            fork_on_rerun: true,
             max_attempts: 2,
             claude_bin: "claude".into(),
             transcripts_dir: None,
@@ -158,6 +167,11 @@ pub struct ChecksConfig {
     /// [`crate::checks::detect`] — and a project it cannot guess simply has no
     /// gate rather than a made-up one.
     pub commands: Vec<String>,
+    /// Quick commands run after every implementation step — a `cargo check`
+    /// rather than the whole suite — so a broken build goes back to the role
+    /// that broke it while its context is fresh. Empty: none. Repairs come out
+    /// of the same `max_rounds` budget as the gate's.
+    pub after_stage: Vec<String>,
     /// How long a single command is given before it is killed. A suite that
     /// hangs must not hold a ticket for the afternoon.
     pub timeout_secs: u64,
@@ -172,6 +186,7 @@ impl Default for ChecksConfig {
         ChecksConfig {
             enabled: true,
             commands: Vec::new(),
+            after_stage: Vec::new(),
             // Fifteen minutes is a long suite and a short afternoon.
             timeout_secs: 900,
             // The same two as the relecture, so there is one number in the

@@ -22,8 +22,9 @@ pub enum Attention {
     /// The relecture still blocks after its correction rounds, or ended
     /// without a readable verdict.
     ReviewBlocked,
-    /// An agent asked a question and waits for the answer.
-    AgentWaiting,
+    /// An agent has gone silent for `daemon.stall_secs`: slow or stuck,
+    /// only the user can tell.
+    AgentStalled,
     /// The orchestrator's proposal waits to be read (rule 9).
     ProposalReady,
     /// The relecture found nothing blocking: the branch can be integrated.
@@ -39,7 +40,7 @@ impl Attention {
         Attention::MergeBlocked,
         Attention::ChecksFailed,
         Attention::ReviewBlocked,
-        Attention::AgentWaiting,
+        Attention::AgentStalled,
         Attention::ProposalReady,
         Attention::ReadyToIntegrate,
         Attention::ReadyToLaunch,
@@ -51,7 +52,7 @@ impl Attention {
             Attention::MergeBlocked => "fusion bloquée",
             Attention::ChecksFailed => "vérifications en échec",
             Attention::ReviewBlocked => "relecture bloquante",
-            Attention::AgentWaiting => "un agent attend ta réponse",
+            Attention::AgentStalled => "un agent est silencieux",
             Attention::ProposalReady => "équipe à relire",
             Attention::ReadyToIntegrate => "prêt à intégrer",
             Attention::ReadyToLaunch => "équipe à lancer",
@@ -66,7 +67,7 @@ impl Attention {
             Attention::MergeBlocked
                 | Attention::ChecksFailed
                 | Attention::ReviewBlocked
-                | Attention::AgentWaiting
+                | Attention::AgentStalled
         )
     }
 }
@@ -77,7 +78,7 @@ pub struct Facts {
     pub status: Option<TicketStatus>,
     pub has_proposal: bool,
     pub has_team: bool,
-    pub agent_waiting: bool,
+    pub agent_stalled: bool,
     /// The last relecture verdict, if there was one.
     pub verdict: Option<Verdict>,
     /// The last pass of checks failed.
@@ -90,8 +91,8 @@ pub struct Facts {
 pub fn of(f: &Facts) -> Option<Attention> {
     use TicketStatus::*;
     let status = f.status?;
-    if f.agent_waiting && matches!(status, Running | Review) {
-        return Some(Attention::AgentWaiting);
+    if f.agent_stalled && matches!(status, Running | Review) {
+        return Some(Attention::AgentStalled);
     }
     match status {
         // A draft with a proposal but no team: the proposal is what waits.
@@ -149,8 +150,8 @@ mod tests {
     fn a_running_team_needs_nobody_unless_an_agent_asks() {
         let mut f = facts(TicketStatus::Running);
         assert_eq!(of(&f), None);
-        f.agent_waiting = true;
-        assert_eq!(of(&f), Some(Attention::AgentWaiting));
+        f.agent_stalled = true;
+        assert_eq!(of(&f), Some(Attention::AgentStalled));
     }
 
     #[test]

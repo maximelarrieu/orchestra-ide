@@ -17,6 +17,12 @@
 [daemon]
 max_concurrent_agents = 3
 max_attempts = 2
+# Un agent muet depuis ce nombre de secondes est signalé (« ⚑ un agent est
+# silencieux »), sans être arrêté : un long build se tait aussi. 0 désactive.
+stall_secs = 600
+# Un rôle relancé sur le même ticket (correction, seconde relecture) reprend
+# une copie de sa session précédente au lieu de tout relire.
+fork_on_rerun = true
 claude_bin = "claude"
 branch_prefix = "orch/"
 
@@ -60,6 +66,9 @@ max_rounds = 2
 [checks]
 enabled = true
 commands = []
+# Commandes rapides après chaque étape d'implémentation, par exemple
+# ["cargo check"] : un build cassé repart vers son auteur tout de suite.
+after_stage = []
 timeout_secs = 900
 max_rounds = 2
 

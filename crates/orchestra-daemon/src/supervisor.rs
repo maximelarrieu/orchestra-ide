@@ -77,6 +77,9 @@ pub struct Supervisor {
     /// shared by every ticket. Held for the life of the process only: checks
     /// and the wait between stages do not count.
     slots: Arc<Semaphore>,
+    /// Agents currently reported silent (`AgentStalled`), until they speak
+    /// again or stop. Read by the board's « à toi » queue.
+    stalled: Arc<Mutex<HashSet<AgentId>>>,
 }
 
 impl Supervisor {
@@ -98,12 +101,29 @@ impl Supervisor {
             tickets: Arc::new(Mutex::new(HashMap::new())),
             panes_wanted: Arc::new(Mutex::new(HashSet::new())),
             slots: Arc::new(Semaphore::new(cfg.daemon.max_concurrent_agents)),
+            stalled: Arc::new(Mutex::new(HashSet::new())),
             cfg,
         }
     }
 
     pub async fn is_running(&self, ticket_id: TicketId) -> bool {
         self.tickets.lock().await.contains_key(&ticket_id)
+    }
+
+    /// The session of the last finished run of `role` on this ticket, other
+    /// than `except` (the run being started).
+    async fn last_session_of(&self, ticket_id: TicketId, role: &str, except: AgentId) -> Option<Uuid> {
+        let agents = self.store.agents_of_ticket(ticket_id).await.ok()?;
+        agents
+            .into_iter()
+            .filter(|a| a.id != except && a.role == role && a.status == AgentStatus::Done)
+            .max_by_key(|a| a.ended_at)
+            .map(|a| a.session_id)
+    }
+
+    /// Agents that have gone silent and not spoken since.
+    pub async fn stalled_agents(&self) -> HashSet<AgentId> {
+        self.stalled.lock().await.clone()
     }
 
     pub async fn running_agents(&self) -> usize {
@@ -130,11 +150,53 @@ impl Supervisor {
             project.path.display()
         );
 
-        let mut ticket = ticket;
-        let (branch, worktree_path) = self.ensure_worktree(&mut ticket, &project).await?;
+        check_transition(ticket.status, TicketStatus::Running)?;
+
+        // Everything slow happens in the task: creating a worktree on a large
+        // repository takes seconds, and the daemon answers every client from
+        // one loop. The caller hears « accepted »; what follows is events.
+        let me = self.clone();
+        let ticket_id = ticket.id;
+        if open_panes {
+            self.panes_wanted.lock().await.insert(ticket_id);
+        }
+        // Held across the spawn, so the task cannot remove its entry before
+        // it is there, and a second launch is refused from this instant.
+        let mut tickets = self.tickets.lock().await;
+        let handle = tokio::spawn(async move {
+            if let Err(e) = me.start_team(ticket, project, team, catalog).await {
+                tracing::error!("exécution du ticket interrompue : {e:#}");
+            }
+            me.tickets.lock().await.remove(&ticket_id);
+            me.panes_wanted.lock().await.remove(&ticket_id);
+        });
+        tickets.insert(ticket_id, handle);
+        Ok(())
+    }
+
+    /// The worktree, the move to « en cours », then the team.
+    async fn start_team(
+        &self,
+        mut ticket: Ticket,
+        project: Project,
+        team: Team,
+        catalog: Catalog,
+    ) -> Result<()> {
+        let (branch, worktree_path) = match self.ensure_worktree(&mut ticket, &project).await {
+            Ok(found) => found,
+            Err(e) => {
+                // Nothing has started: the ticket stays ready to launch.
+                self.warn_ticket(
+                    ticket.id,
+                    project.id,
+                    format!("lancement impossible, le worktree n'a pas pu être préparé : {e:#}"),
+                )
+                .await;
+                return Err(e);
+            }
+        };
 
         let from = ticket.status;
-        check_transition(from, TicketStatus::Running)?;
         ticket.branch = Some(branch);
         ticket.worktree_path = Some(worktree_path.clone());
         ticket.status = TicketStatus::Running;
@@ -152,23 +214,8 @@ impl Supervisor {
             )
             .await?;
 
-        let me = self.clone();
-        let ticket_id = ticket.id;
-        if open_panes {
-            self.panes_wanted.lock().await.insert(ticket_id);
-        }
-        let handle = tokio::spawn(async move {
-            let outcome = me
-                .run_team(ticket, project, team, catalog, worktree_path)
-                .await;
-            if let Err(e) = outcome {
-                tracing::error!("exécution du ticket interrompue : {e:#}");
-            }
-            me.tickets.lock().await.remove(&ticket_id);
-            me.panes_wanted.lock().await.remove(&ticket_id);
-        });
-        self.tickets.lock().await.insert(ticket_id, handle);
-        Ok(())
+        self.run_team(ticket, project, team, catalog, worktree_path)
+            .await
     }
 
     /// The ticket's worktree, recreated from its branch if it is not there.
@@ -277,8 +324,39 @@ impl Supervisor {
                 );
             }
         }
-        let mut ticket = ticket;
-        let (branch, worktree_path) = self.ensure_worktree(&mut ticket, &project).await?;
+        // The worktree and the git questions run in the task, like a launch:
+        // see `launch`.
+        let me = self.clone();
+        let ticket_id = ticket.id;
+        let mut tickets = self.tickets.lock().await;
+        let handle = tokio::spawn(async move {
+            if let Err(e) = me.start_integration(ticket, project, catalog).await {
+                tracing::error!("intégration interrompue : {e:#}");
+            }
+            me.tickets.lock().await.remove(&ticket_id);
+        });
+        tickets.insert(ticket_id, handle);
+        Ok(())
+    }
+
+    async fn start_integration(
+        &self,
+        mut ticket: Ticket,
+        project: Project,
+        catalog: Catalog,
+    ) -> Result<()> {
+        let (branch, worktree_path) = match self.ensure_worktree(&mut ticket, &project).await {
+            Ok(found) => found,
+            Err(e) => {
+                self.warn_ticket(
+                    ticket.id,
+                    project.id,
+                    format!("intégration impossible, le worktree n'a pas pu être préparé : {e:#}"),
+                )
+                .await;
+                return Err(e);
+            }
+        };
 
         // A branch the integrator already prepared, refused only at the door:
         // if nothing has moved since, the door is all there is to retry.
@@ -297,22 +375,12 @@ impl Supervisor {
             _ => false,
         };
 
-        let me = self.clone();
-        let ticket_id = ticket.id;
-        let handle = tokio::spawn(async move {
-            let outcome = if ready {
-                me.deliver(ticket, project, worktree_path, branch).await
-            } else {
-                me.run_integration(ticket, project, catalog, worktree_path, branch)
-                    .await
-            };
-            if let Err(e) = outcome {
-                tracing::error!("intégration interrompue : {e:#}");
-            }
-            me.tickets.lock().await.remove(&ticket_id);
-        });
-        self.tickets.lock().await.insert(ticket_id, handle);
-        Ok(())
+        if ready {
+            self.deliver(ticket, project, worktree_path, branch).await
+        } else {
+            self.run_integration(ticket, project, catalog, worktree_path, branch)
+                .await
+        }
     }
 
     async fn run_integration(
@@ -832,6 +900,35 @@ impl Supervisor {
                     break;
                 }
             }
+            // A quick look after each step that wrote code: a broken build
+            // goes back to its author now, not after the whole team.
+            if member.role != self.cfg.review.role && !self.cfg.checks.after_stage.is_empty() {
+                let mut gate_stage = next_stage;
+                match self
+                    .stage_gate(
+                        &ticket,
+                        &project,
+                        &team,
+                        &catalog,
+                        &worktree_path,
+                        &mut handoffs,
+                        &mut gate_stage,
+                        &member.role,
+                    )
+                    .await
+                {
+                    StepOutcome::Done => {}
+                    StepOutcome::Cancelled => {
+                        self.finish_ticket(&ticket, TicketStatus::Cancelled).await;
+                        return Ok(());
+                    }
+                    StepOutcome::Failed => {
+                        failed = true;
+                        break;
+                    }
+                }
+                next_stage = next_stage.max(gate_stage);
+            }
         }
 
         // A team whose reviewer was taken out still gets its gate: the branch
@@ -945,6 +1042,9 @@ impl Supervisor {
                 StepOutcome::Done
             }
             Ok(AgentOutcome::Cancelled) => StepOutcome::Cancelled,
+            // `run_role` resumes a redirected agent itself; reaching here
+            // would be a bug, and failing the step is the safe reading.
+            Ok(AgentOutcome::Redirected { .. }) => StepOutcome::Failed,
             Ok(AgentOutcome::Failed { reason }) => {
                 self.bus
                     .warn(format!(
@@ -1146,8 +1246,54 @@ impl Supervisor {
         handoffs: &mut Vec<(String, String)>,
         stage: &mut u32,
     ) -> StepOutcome {
+        let commands = crate::checks::commands(&self.cfg.checks, &project.path);
+        self.gate_with(ticket, project, team, catalog, worktree_path, handoffs, stage, commands, None)
+            .await
+    }
+
+    /// The quick checks after one role's step (`checks.after_stage`). A
+    /// failure goes back to that role, not to whoever ran last.
+    #[allow(clippy::too_many_arguments)]
+    async fn stage_gate(
+        &self,
+        ticket: &Ticket,
+        project: &Project,
+        team: &Team,
+        catalog: &Catalog,
+        worktree_path: &Path,
+        handoffs: &mut Vec<(String, String)>,
+        stage: &mut u32,
+        role: &str,
+    ) -> StepOutcome {
         let cfg = &self.cfg.checks;
-        let commands = crate::checks::commands(cfg, &project.path);
+        if !cfg.enabled {
+            return StepOutcome::Done;
+        }
+        let commands: Vec<_> = cfg
+            .after_stage
+            .iter()
+            .filter_map(|c| orchestra_core::checks::Check::parse(c))
+            .collect();
+        self.gate_with(ticket, project, team, catalog, worktree_path, handoffs, stage, commands, Some(role))
+            .await
+    }
+
+    /// Run `commands`; while they refuse and the budget allows, send the
+    /// repair to `culprit`, or to the last role that wrote code.
+    #[allow(clippy::too_many_arguments)]
+    async fn gate_with(
+        &self,
+        ticket: &Ticket,
+        project: &Project,
+        team: &Team,
+        catalog: &Catalog,
+        worktree_path: &Path,
+        handoffs: &mut Vec<(String, String)>,
+        stage: &mut u32,
+        commands: Vec<orchestra_core::checks::Check>,
+        culprit: Option<&str>,
+    ) -> StepOutcome {
+        let cfg = &self.cfg.checks;
         if commands.is_empty() {
             return StepOutcome::Done;
         }
@@ -1202,7 +1348,10 @@ impl Supervisor {
                 return StepOutcome::Done;
             };
 
-            let Some(role) = last_worker(handoffs, &workers) else {
+            let named = culprit
+                .filter(|r| workers.iter().any(|w| w == r))
+                .map(str::to_string);
+            let Some(role) = named.or_else(|| last_worker(handoffs, &workers)) else {
                 self.warn_ticket(
                     ticket.id,
                     project.id,
@@ -1680,15 +1829,32 @@ impl Supervisor {
             &format!("{}\n\n{FOOTER}{rules}{appendix}", role.system_prompt),
         )?;
 
+        // A role that already ran on this ticket picks up from its last
+        // session: the first turn forks it, and says only what is new.
+        let fork_from = if self.cfg.daemon.fork_on_rerun {
+            self.last_session_of(ticket.id, &member.role, agent.id).await
+        } else {
+            None
+        };
+        // A redirection the user sent, waiting for the turn that delivers it.
+        let mut redirect: Option<String> = None;
+        let mut redirected = false;
         loop {
-            let resume = (agent.attempt > 1).then_some(agent.session_id);
-            let turn_prompt = if resume.is_some() {
+            let first_turn = agent.attempt == 1 && !redirected;
+            let fork = first_turn && fork_from.is_some();
+            let resume = if fork {
+                fork_from
+            } else {
+                (!first_turn).then_some(agent.session_id)
+            };
+            let turn_prompt = match redirect.take() {
+                Some(text) => redirect_prompt(&text, member),
+                None if fork => rerun_prompt(member, worktree_path),
                 // Restating the objective matters: told only that it was
                 // interrupted, an agent concluded it had finished and
                 // delivered nothing.
-                resume_prompt(member, worktree_path)
-            } else {
-                prompt.clone()
+                None if resume.is_some() => resume_prompt(member, worktree_path),
+                None => prompt.clone(),
             };
 
             let outcome = self
@@ -1702,12 +1868,21 @@ impl Supervisor {
                     effort,
                     budget,
                     resume,
+                    fork,
                     git,
                     &label,
                 )
                 .await?;
 
             match outcome {
+                // The user stopped it to say something: same session, the
+                // instruction as the next turn, and no attempt spent — an
+                // interruption sent on purpose is not a crash (rule 15).
+                AgentOutcome::Redirected { text } => {
+                    redirect = Some(text);
+                    redirected = true;
+                    continue;
+                }
                 AgentOutcome::Failed { .. }
                     if agent.status == AgentStatus::Crashed
                         && agent.attempt < self.cfg.daemon.max_attempts =>
@@ -1769,6 +1944,7 @@ impl Supervisor {
         effort: Effort,
         budget: Option<f64>,
         resume: Option<Uuid>,
+        fork: bool,
         git: GitPolicy,
         // `[projet] rôle #12`: the session's name, and its pane's.
         label: &str,
@@ -1777,6 +1953,7 @@ impl Supervisor {
         let mut cmd = ClaudeCommand::new(&self.cfg.daemon.claude_bin, worktree_path, prompt);
         cmd.session_id = Some(agent.session_id);
         cmd.resume = resume;
+        cmd.fork_session = fork;
         cmd.name = Some(label.to_string());
         cmd.model = model;
         cmd.effort = Some(effort);
@@ -1851,13 +2028,31 @@ impl Supervisor {
         let mut result_line: Option<(String, bool, Option<String>)> = None;
         let mut structured: Option<serde_json::Value> = None;
         let mut cancelled = false;
-        let mut interrupted = false;
+        let mut interrupted: Option<String> = None;
         let mut stderr_tail: Vec<String> = Vec::new();
+        // Silence watch: reported once per silence, never acted upon — a
+        // long build is quiet too, and only the user can tell the two apart.
+        let stall = std::time::Duration::from_secs(self.cfg.daemon.stall_secs);
+        let mut last_heard = tokio::time::Instant::now();
+        let mut stall_reported = false;
 
         loop {
             tokio::select! {
+                _ = tokio::time::sleep_until(last_heard + stall),
+                    if !stall.is_zero() && !stall_reported =>
+                {
+                    stall_reported = true;
+                    self.stalled.lock().await.insert(agent.id);
+                    self.emit(agent, EventKind::AgentStalled { silent_secs: stall.as_secs() })
+                        .await;
+                }
                 event = rx.recv() => {
                     let Some(event) = event else { break };
+                    last_heard = tokio::time::Instant::now();
+                    if stall_reported {
+                        stall_reported = false;
+                        self.stalled.lock().await.remove(&agent.id);
+                    }
                     match event {
                         ProcessEvent::Line(line) => {
                             if let StreamLine::Result(r) = line.as_ref() {
@@ -1909,10 +2104,10 @@ impl Supervisor {
                                 hard: true,
                             })
                             .await;
-                            interrupted = true;
+                            interrupted = Some(text);
                             let _ = process.stop(STOP_GRACE).await;
-                            // The redirection is delivered by the next attempt,
-                            // which resumes the same session.
+                            // The redirection is delivered by the next turn,
+                            // which resumes the same session (`run_role`).
                             self.store.update_agent(agent.clone()).await?;
                             break;
                         }
@@ -1928,6 +2123,7 @@ impl Supervisor {
         }
 
         self.running.lock().await.remove(&agent.id);
+        self.stalled.lock().await.remove(&agent.id);
         // Closing stdin lets a finished process exit rather than wait.
         process.close_stdin();
         let status = process.stop(STOP_GRACE).await.ok();
@@ -1940,12 +2136,9 @@ impl Supervisor {
                 .await;
             return Ok(AgentOutcome::Cancelled);
         }
-        if interrupted {
-            self.set_status(agent, AgentStatus::Crashed, Some(ExitReason::Interrupted))
-                .await;
-            return Ok(AgentOutcome::Failed {
-                reason: "redirigé".into(),
-            });
+        if let Some(text) = interrupted {
+            // Not a crash and not an end: the next turn starts at once.
+            return Ok(AgentOutcome::Redirected { text });
         }
 
         match result_line {
@@ -2460,6 +2653,27 @@ fn correction_objective(original: &str, blocking: &[String], blocked_by: Blocked
     format!("{head}\n{list}\n\n(ton objectif initial était : {original})")
 }
 
+/// What a redirected agent is told: the user's words first, then its
+/// objective, so the instruction steers the work instead of replacing it.
+pub fn redirect_prompt(text: &str, member: &orchestra_core::model::TeamMember) -> String {
+    format!(
+        "L'utilisateur t'a interrompu pour te dire ceci :\n\n{}\n\nTiens-en compte dès maintenant. Ton objectif reste : {}",
+        text.trim(),
+        member.objective.trim()
+    )
+}
+
+/// What a role run again is told, in a fork of its previous session: that
+/// session already holds the brief, the repository and its own work, so only
+/// the new objective — the blocking points, the second look — is sent.
+pub fn rerun_prompt(member: &orchestra_core::model::TeamMember, worktree: &Path) -> String {
+    format!(
+        "Nouveau tour sur ce même ticket.\n\n{}\n\nTu travailles toujours dans `{}`.",
+        member.objective.trim(),
+        worktree.display()
+    )
+}
+
 /// What a resumed agent is told.
 ///
 /// Its session still holds the whole conversation, so the ticket is not
@@ -2495,6 +2709,9 @@ enum AgentOutcome {
     Done { handoff: String },
     Failed { reason: String },
     Cancelled,
+    /// Stopped by the user to be given this instruction; only `run_role`
+    /// sees it, and resumes the session with it.
+    Redirected { text: String },
 }
 
 /// Where the integrator leaves the description it wrote.
@@ -3077,6 +3294,268 @@ mod tests {
             .expect("la place libérée doit servir")
             .unwrap()
             .unwrap();
+    }
+
+    /// A role as the catalog would hand it over, for runs started directly.
+    fn role_def(name: &str) -> RoleDefinition {
+        RoleDefinition {
+            name: name.into(),
+            description: String::new(),
+            model: None,
+            effort: None,
+            allowed_tools: vec![],
+            disallowed_tools: vec![],
+            max_budget_usd: None,
+            subagents: None,
+            tags: vec![],
+            git: None,
+            system_prompt: "consigne".into(),
+            source: PathBuf::from("/tmp/r.md"),
+            scope: orchestra_core::model::RoleScope::Global,
+        }
+    }
+
+    /// A stand-in for `claude` that keeps a log in `dir`: every command line,
+    /// and what each run read on stdin. The first run blocks until it is
+    /// stopped; the next ones answer at once.
+    fn scripted_claude(dir: &Path) -> String {
+        script_claude(dir, true)
+    }
+
+    fn script_claude(dir: &Path, block_first: bool) -> String {
+        let first = if block_first { 1 } else { 0 };
+        let log = dir.display();
+        let script = format!(
+            "#!/bin/sh\n\
+             echo \"$@\" >> {log}/args\n\
+             n=$(cat {log}/runs 2>/dev/null || echo 0); n=$((n+1)); echo $n > {log}/runs\n\
+             read line; echo \"$line\" >> {log}/stdin\n\
+             if [ $n -eq {first} ]; then exec sleep 30; fi\n\
+             echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"fait\"}}'\n"
+        );
+        let path = dir.join("claude.sh");
+        std::fs::write(&path, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.display().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_redirection_reaches_the_resumed_turn_and_costs_no_attempt() {
+        let (sup, t, project, dir) = gated(vec![], 0).await;
+        let mut cfg = (*sup.cfg).clone();
+        cfg.daemon.claude_bin = scripted_claude(dir.path());
+        cfg.daemon.max_attempts = 1;
+        let sup = Supervisor { cfg: Arc::new(cfg), ..sup };
+        let role = role_def("backend");
+        let m = member("backend");
+
+        let run = {
+            let sup = sup.clone();
+            let (t, project, dir_path) = (t.clone(), project.clone(), dir.path().to_path_buf());
+            tokio::spawn(async move {
+                sup.run_role(RoleRun {
+                    ticket: &t,
+                    project: &project,
+                    role: &role,
+                    member: &m,
+                    stage: 0,
+                    worktree_path: &dir_path,
+                    handoffs: &[],
+                    blocking: &[],
+                    blocked_by: Blocked::Review,
+                    git: GitPolicy::Confined,
+                    appendix: "",
+                })
+                .await
+                .map(|o| matches!(o, AgentOutcome::Done { .. }))
+            })
+        };
+
+        // Wait for the first run to be up, then redirect it.
+        let agent_id = loop {
+            if let Some(id) = sup.running.lock().await.keys().next().copied() {
+                if std::fs::read_to_string(dir.path().join("stdin")).is_ok() {
+                    break id;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        sup.steer(agent_id, "utilise plutôt un BTreeMap".into(), true)
+            .await
+            .unwrap();
+
+        let done = tokio::time::timeout(std::time::Duration::from_secs(20), run)
+            .await
+            .expect("la reprise doit aboutir")
+            .unwrap()
+            .unwrap();
+        assert!(done, "avec max_attempts = 1, une redirection ne doit pas épuiser les tentatives");
+
+        let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
+        let turns: Vec<&str> = stdin.lines().collect();
+        assert_eq!(turns.len(), 2, "{stdin}");
+        assert!(turns[1].contains("utilise plutôt un BTreeMap"), "la consigne arrive : {}", turns[1]);
+        assert!(turns[1].contains("écrire le cache"), "l'objectif est rappelé");
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        let second = args.lines().nth(1).unwrap();
+        assert!(second.contains("--resume"), "même session : {second}");
+    }
+
+    #[tokio::test]
+    async fn a_silent_agent_is_reported_once_and_left_running() {
+        let (sup, t, project, dir) = gated(vec![], 0).await;
+        let mut cfg = (*sup.cfg).clone();
+        cfg.daemon.claude_bin = scripted_claude(dir.path());
+        cfg.daemon.stall_secs = 1;
+        let sup = Supervisor { cfg: Arc::new(cfg), ..sup };
+        let role = role_def("backend");
+        let m = member("backend");
+        let run = {
+            let sup = sup.clone();
+            let (t, project, dir_path) = (t.clone(), project.clone(), dir.path().to_path_buf());
+            tokio::spawn(async move {
+                sup.run_role(RoleRun {
+                    ticket: &t,
+                    project: &project,
+                    role: &role,
+                    member: &m,
+                    stage: 0,
+                    worktree_path: &dir_path,
+                    handoffs: &[],
+                    blocking: &[],
+                    blocked_by: Blocked::Review,
+                    git: GitPolicy::Confined,
+                    appendix: "",
+                })
+                .await
+                .map(|o| matches!(o, AgentOutcome::Cancelled))
+            })
+        };
+
+        // The scripted first run says nothing and sleeps.
+        let agent_id = loop {
+            if let Some(id) = sup.stalled_agents().await.into_iter().next() {
+                break id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert!(sup.running.lock().await.contains_key(&agent_id), "il n'est pas arrêté");
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let said = sup
+            .store
+            .recent_events(orchestra_core::events::EventFilter::for_agent(agent_id), 50)
+            .await
+            .unwrap();
+        let stalls = said
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::AgentStalled { .. }))
+            .count();
+        assert_eq!(stalls, 1, "un silence, un signalement");
+
+        sup.cancel_agent(agent_id).await.unwrap();
+        let cancelled = tokio::time::timeout(std::time::Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(cancelled);
+        assert!(sup.stalled_agents().await.is_empty(), "un agent arrêté n'est plus « silencieux »");
+    }
+
+    #[tokio::test]
+    async fn a_role_run_again_forks_its_last_session() {
+        let (sup, t, project, dir) = gated(vec![], 0).await;
+        let mut cfg = (*sup.cfg).clone();
+        cfg.daemon.claude_bin = script_claude(dir.path(), false);
+        let sup = Supervisor { cfg: Arc::new(cfg), ..sup };
+        let role = role_def("backend");
+        let mut m = member("backend");
+        let run = |m: TeamMember| {
+            let (sup, t, project, role) = (sup.clone(), t.clone(), project.clone(), role.clone());
+            let dir_path = dir.path().to_path_buf();
+            async move {
+                sup.run_role(RoleRun {
+                    ticket: &t,
+                    project: &project,
+                    role: &role,
+                    member: &m,
+                    stage: 0,
+                    worktree_path: &dir_path,
+                    handoffs: &[],
+                    blocking: &[],
+                    blocked_by: Blocked::Review,
+                    git: GitPolicy::Confined,
+                    appendix: "",
+                })
+                .await
+                .map(|o| matches!(o, AgentOutcome::Done { .. }))
+                .unwrap()
+            }
+        };
+        assert!(run(m.clone()).await);
+        let first = sup.store.agents_of_ticket(t.id).await.unwrap()[0].session_id;
+
+        m.objective = "corriger la boucle de rows.rs:88".into();
+        assert!(run(m).await);
+
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        let lines: Vec<&str> = args.lines().collect();
+        assert!(!lines[0].contains("--resume"), "le premier passage part à froid");
+        assert!(lines[1].contains(&format!("--resume {first}")), "{}", lines[1]);
+        assert!(lines[1].contains("--fork-session"));
+        let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
+        let second = stdin.lines().nth(1).unwrap();
+        assert!(second.contains("Nouveau tour") && second.contains("rows.rs:88"), "{second}");
+        assert!(!second.contains("## Brief"), "la session sait déjà le brief");
+
+        // The second agent has its own session: the watcher can tell them apart.
+        let sessions: std::collections::HashSet<_> = sup
+            .store
+            .agents_of_ticket(t.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|a| a.session_id)
+            .collect();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_broken_step_goes_back_to_its_own_author() {
+        let (sup, t, project, dir) = gated(vec![], 1).await;
+        let mut cfg = (*sup.cfg).clone();
+        cfg.daemon.claude_bin = script_claude(dir.path(), false);
+        // Red once, green once repaired: the first run leaves a mark.
+        let mark = dir.path().join("repare");
+        cfg.checks.after_stage = vec![format!(
+            "sh -c 'test -f {m} || {{ touch {m}; exit 1; }}'",
+            m = mark.display()
+        )];
+        let sup = Supervisor { cfg: Arc::new(cfg), ..sup };
+        let team = team_of(&["backend", "tests"]);
+        std::fs::write(
+            dir.path().join("backend.md"),
+            "---\nname: backend\ndescription: b\n---\nTu es backend.\n",
+        )
+        .unwrap();
+        let catalog = Catalog::load(dir.path(), None);
+        assert!(catalog.get("backend").is_some(), "le rôle de test se charge");
+        // `tests` ran last, but the step being checked is backend's.
+        let mut handoffs = vec![
+            ("backend".to_string(), "fait".to_string()),
+            ("tests".to_string(), "fait".to_string()),
+        ];
+        let mut stage = 2;
+        let out = sup
+            .stage_gate(&t, &project, &team, &catalog, dir.path(), &mut handoffs, &mut stage, "backend")
+            .await;
+        assert!(matches!(out, StepOutcome::Done));
+        let agents = sup.store.agents_of_ticket(t.id).await.unwrap();
+        assert_eq!(agents.len(), 1, "une réparation");
+        assert_eq!(agents[0].role, "backend", "l'auteur de l'étape, pas le dernier passé");
+        let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
+        assert!(stdin.contains("Réparer ce que la vérification"), "{stdin}");
     }
 
     /// A supervisor over an in-memory store, plus a project and a ticket the

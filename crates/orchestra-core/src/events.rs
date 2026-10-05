@@ -134,6 +134,7 @@ pub enum EventTag {
     Usage,
     AgentSteered,
     AgentResult,
+    AgentStalled,
     TicketResumed,
     ReviewVerdict,
     CheckStarted,
@@ -164,7 +165,7 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 45] = [
+    pub const ALL: [EventTag; 46] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::TicketCreated,
@@ -183,6 +184,7 @@ impl EventTag {
         EventTag::Usage,
         EventTag::AgentSteered,
         EventTag::AgentResult,
+        EventTag::AgentStalled,
         EventTag::TicketResumed,
         EventTag::ReviewVerdict,
         EventTag::CheckStarted,
@@ -232,6 +234,7 @@ impl EventTag {
             EventTag::Usage => "usage",
             EventTag::AgentSteered => "agent_steered",
             EventTag::AgentResult => "agent_result",
+            EventTag::AgentStalled => "agent_stalled",
             EventTag::TicketResumed => "ticket_resumed",
             EventTag::ReviewVerdict => "review_verdict",
             EventTag::CheckStarted => "check_started",
@@ -365,6 +368,12 @@ pub enum EventKind {
         #[serde(default)]
         total_cost_usd: Option<f64>,
         text: String,
+    },
+    /// An agent has said nothing for `silent_secs`: no text, no tool, no
+    /// result. It is not stopped — a long build is silent too — but the user
+    /// is told, since only they can tell a slow agent from a stuck one.
+    AgentStalled {
+        silent_secs: u64,
     },
     /// A ticket picked up where it stopped, rather than run again from the
     /// start. `skipped` names the roles whose work was taken as it stands.
@@ -548,6 +557,7 @@ impl EventKind {
             EventKind::Usage { .. } => EventTag::Usage,
             EventKind::AgentSteered { .. } => EventTag::AgentSteered,
             EventKind::AgentResult { .. } => EventTag::AgentResult,
+            EventKind::AgentStalled { .. } => EventTag::AgentStalled,
             EventKind::TicketResumed { .. } => EventTag::TicketResumed,
             EventKind::ReviewVerdict { .. } => EventTag::ReviewVerdict,
             EventKind::CheckStarted { .. } => EventTag::CheckStarted,

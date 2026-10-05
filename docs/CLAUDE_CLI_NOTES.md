@@ -109,6 +109,14 @@ prompt reçu en `--input-format stream-json` sur stdin : les outils tournent
 normalement, puis la ligne `result` porte `structured_output`. Le relecteur s'en
 sert pour son verdict ; fixture réelle : `tests/fixtures/reviewer_result.jsonl`.
 
+### `--resume` + `--fork-session` + `--session-id` — confirmé (2.1.289)
+
+`--resume <ancienne> --fork-session --session-id <neuve>` reprend le contexte de
+l'ancienne session dans une copie, sous l'id imposé : la ligne `result` porte
+`session_id = <neuve>`, et l'ancienne session reste telle quelle. Orchestra s'en
+sert quand un rôle repasse sur un ticket (`daemon.fork_on_rerun`) ; chaque agent
+garde ainsi son propre id, ce dont dépend l'attribution des transcripts.
+
 ### `--max-turns` — confirmé (2.1.289), absent de `--help`
 
 Accepté et appliqué : une limite dépassée termine la ligne `result` par

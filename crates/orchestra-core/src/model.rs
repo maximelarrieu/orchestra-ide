@@ -621,7 +621,10 @@ pub enum AgentStatus {
     /// Process spawned, no `system/init` seen yet.
     Starting,
     Running,
-    /// Backing off (rate limit) or waiting for the user.
+    /// Backing off (rate limit) or waiting for the user. Never assigned in
+    /// headless runs today — an agent there ends its turn instead of asking —
+    /// but kept, since rows and clients already know the value. A silent
+    /// agent is reported with `AgentStalled`, not with this.
     WaitingInput,
     Done,
     Failed,

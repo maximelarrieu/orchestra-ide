@@ -33,6 +33,9 @@ pub struct ClaudeCommand {
     pub prompt_via: PromptVia,
     pub session_id: Option<Uuid>,
     pub resume: Option<Uuid>,
+    /// With `resume`: continue in a copy under `session_id`, so the old
+    /// session stays as it was and the new run keeps an id of its own.
+    pub fork_session: bool,
     pub name: Option<String>,
     /// `None` leaves the user's own default model in place.
     pub model: Option<String>,
@@ -71,6 +74,7 @@ impl ClaudeCommand {
             prompt_via: PromptVia::Stdin,
             session_id: None,
             resume: None,
+            fork_session: false,
             name: None,
             model: None,
             effort: None,
@@ -106,6 +110,14 @@ impl ClaudeCommand {
         if let Some(id) = self.resume {
             a.push("--resume".into());
             a.push(id.to_string());
+            if self.fork_session {
+                // Honoured together (2.1.289): the fork takes the id given.
+                a.push("--fork-session".into());
+                if let Some(new) = self.session_id {
+                    a.push("--session-id".into());
+                    a.push(new.to_string());
+                }
+            }
         } else if let Some(id) = self.session_id {
             a.push("--session-id".into());
             a.push(id.to_string());
@@ -511,6 +523,19 @@ mod tests {
         assert!(broken.contains('\u{FFFD}') && broken.ends_with("cass\u{FFFD}"));
         assert_eq!(next_lossy_line(&mut reader).await.as_deref(), Some("après"));
         assert_eq!(next_lossy_line(&mut reader).await, None);
+    }
+
+    #[test]
+    fn a_fork_resumes_one_session_under_another_id() {
+        let (old, new) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut c = cmd();
+        c.resume = Some(old);
+        c.session_id = Some(new);
+        c.fork_session = true;
+        let args = c.args();
+        assert!(args.windows(2).any(|w| w == ["--resume", &old.to_string()]));
+        assert!(args.contains(&"--fork-session".to_string()));
+        assert!(args.windows(2).any(|w| w == ["--session-id", &new.to_string()]));
     }
 
     #[test]

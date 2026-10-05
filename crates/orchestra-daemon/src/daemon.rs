@@ -495,6 +495,7 @@ impl Daemon {
             agents.entry(agent.ticket_id).or_default().push(agent);
         }
         let mut costs = self.ledger.ticket_costs(project_id).await.map_err(internal)?;
+        let stalled = self.supervisor.stalled_agents().await;
         let mut out = Vec::with_capacity(tickets.len());
         for ticket in tickets {
             let url = open_prs.get(&ticket.id).cloned();
@@ -522,7 +523,7 @@ impl Daemon {
                 status: Some(ticket.status),
                 has_proposal: ticket.proposal.is_some(),
                 has_team: ticket.team.is_some(),
-                agent_waiting: team.iter().any(|a| a.status == AgentStatus::WaitingInput),
+                agent_stalled: team.iter().any(|a| stalled.contains(&a.id)),
                 verdict,
                 checks_failed,
                 merge_blocked: blocked.is_some(),

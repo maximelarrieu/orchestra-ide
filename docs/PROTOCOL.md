@@ -77,9 +77,18 @@ où `git` est toujours résolu : ce qu'un agent du rôle recevra). `create_role`
 être fusionnée. Tant qu'il reste le dernier mot du ticket, `list_tickets` et
 `get_ticket` renvoient sa raison dans `merge_blocked`, à côté de `pull_request`.
 
+`launch_ticket` et `integrate_ticket` répondent `ack` dès les vérifications
+rapides faites (équipe acceptée, transition permise, ticket pas déjà en route). Le
+worktree se prépare ensuite, hors de la boucle du daemon : la suite arrive en
+événements (`worktree_created`, `ticket_status_changed`, ou un `warning` si le
+worktree n'a pas pu être préparé, le ticket restant alors prêt à lancer).
+
+`agent_stalled` (`silent_secs`) signale un agent muet depuis `daemon.stall_secs`
+secondes. Il n'est pas arrêté ; il redevient normal au premier mot.
+
 Chaque carte de `list_tickets` porte aussi `attention` : ce que le ticket attend de
 l'utilisateur, ou `null`. Valeurs, de la plus urgente à la moins urgente :
-`merge_blocked`, `checks_failed`, `review_blocked`, `agent_waiting`,
+`merge_blocked`, `checks_failed`, `review_blocked`, `agent_stalled`,
 `proposal_ready`, `ready_to_integrate`, `ready_to_launch`, `pull_request_open`. La
 règle vit dans `orchestra-core/src/attention.rs` ; le daemon l'applique, les
 clients se contentent de l'afficher.
