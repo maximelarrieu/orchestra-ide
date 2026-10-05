@@ -88,6 +88,11 @@ enum Sub {
         #[command(subcommand)]
         action: TicketAction,
     },
+    /// Épopées : une demande découpée en plusieurs tickets, dans l'ordre.
+    Epic {
+        #[command(subcommand)]
+        action: EpicAction,
+    },
     /// Pilotage d'un agent en cours.
     Agent {
         #[command(subcommand)]
@@ -118,6 +123,35 @@ enum Sub {
         #[arg(long)]
         managed_only: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum EpicAction {
+    /// Écrit une épopée et demande son découpage à l'orchestrateur.
+    New {
+        /// Projet : identifiant ou fragment de son nom.
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        title: String,
+        /// La demande, en ligne.
+        #[arg(long, conflicts_with = "brief_file")]
+        brief: Option<String>,
+        /// La demande, depuis un fichier ; « - » pour l'entrée standard.
+        #[arg(long)]
+        brief_file: Option<String>,
+    },
+    /// Liste les épopées.
+    List {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Affiche une épopée : son découpage, ou les tickets qu'elle est devenue.
+    Show { epic: String },
+    /// Redemande un découpage.
+    Plan { epic: String },
+    /// Accepte le découpage tel quel : ses tickets sont créés.
+    Accept { epic: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -649,6 +683,7 @@ impl Cli {
                 }
             }
             Sub::Ticket { action } => run_ticket(action, &socket).await,
+            Sub::Epic { action } => run_epic(action, &socket).await,
             Sub::Agent { action } => run_agent(action, &socket).await,
             Sub::Tail { agent, ticket } => {
                 let mut client = Client::connect_or_spawn(&socket).await?;
@@ -1452,5 +1487,133 @@ fn truncate(s: &str, width: usize) -> String {
     } else {
         let keep: String = s.chars().take(width.saturating_sub(1)).collect();
         format!("{keep}…")
+    }
+}
+
+async fn run_epic(action: EpicAction, socket: &std::path::Path) -> Result<()> {
+    use orchestra_core::epic::EpicStatus;
+    let mut client = Client::connect_or_spawn(socket).await?;
+    match action {
+        EpicAction::New { project, title, brief, brief_file } => {
+            let brief = read_brief(brief, brief_file)?;
+            let project = resolve_project(&mut client, &project).await?;
+            let epic = match client
+                .call(Cmd::CreateEpic { project_id: project.id, title, brief })
+                .await?
+            {
+                Reply::Epic { detail } => detail.epic,
+                other => bail!("réponse inattendue : {other:?}"),
+            };
+            client.call(Cmd::PlanEpic { epic_id: epic.id }).await?;
+            println!("épopée « {} » écrite dans {} ; découpage en cours", epic.title, project.name);
+            println!("relis-le : orchestra epic show « {} »", epic.title);
+            Ok(())
+        }
+        EpicAction::List { project } => {
+            let project_id = match project {
+                Some(name) => Some(resolve_project(&mut client, &name).await?.id),
+                None => None,
+            };
+            let epics = list_epics(&mut client, project_id).await?;
+            if epics.is_empty() {
+                println!("aucune épopée — « orchestra epic new --project <p> --title <t> --brief <b> »");
+            }
+            for e in epics {
+                println!("{:<20} {}", e.status.label_fr(), e.title);
+            }
+            Ok(())
+        }
+        EpicAction::Show { epic } => {
+            let detail = epic_detail(&mut client, &epic).await?;
+            let e = &detail.epic;
+            println!("{} — {}", e.title, e.status.label_fr());
+            match (e.status, &e.proposal) {
+                (EpicStatus::Split, Some(split)) => {
+                    println!("\n{}\n", split.summary);
+                    for (i, t) in split.tickets.iter().enumerate() {
+                        let after = if t.depends_on.is_empty() {
+                            String::new()
+                        } else {
+                            let deps: Vec<String> = t.depends_on.iter().map(|d| (d + 1).to_string()).collect();
+                            format!("  (après {})", deps.join(", "))
+                        };
+                        println!("{}. {}{after}", i + 1, t.title);
+                        println!("   {}", t.brief.replace('\n', "\n   "));
+                        for c in &t.acceptance {
+                            println!("   ☐ {c}");
+                        }
+                    }
+                    println!("\naccepte-le : orchestra epic accept « {} »", e.title);
+                }
+                _ => {
+                    for t in &detail.tickets {
+                        let deps: Vec<String> = t.depends_on.iter().map(|n| format!("#{n}")).collect();
+                        let after = if deps.is_empty() { String::new() } else { format!("  (après {})", deps.join(", ")) };
+                        println!("#{:<4} {:<12} {}{after}", t.number, t.status.label_fr(), t.title);
+                    }
+                }
+            }
+            Ok(())
+        }
+        EpicAction::Plan { epic } => {
+            let detail = epic_detail(&mut client, &epic).await?;
+            client.call(Cmd::PlanEpic { epic_id: detail.epic.id }).await?;
+            println!("découpage de « {} » demandé", detail.epic.title);
+            Ok(())
+        }
+        EpicAction::Accept { epic } => {
+            let detail = epic_detail(&mut client, &epic).await?;
+            let proposal = detail
+                .epic
+                .proposal
+                .clone()
+                .context("pas encore de découpage : orchestra epic plan d'abord")?;
+            match client
+                .call(Cmd::AcceptEpic { epic_id: detail.epic.id, proposal })
+                .await?
+            {
+                Reply::Epic { detail } => {
+                    println!("« {} » acceptée :", detail.epic.title);
+                    for t in &detail.tickets {
+                        println!("  #{} {}", t.number, t.title);
+                    }
+                    Ok(())
+                }
+                other => bail!("réponse inattendue : {other:?}"),
+            }
+        }
+    }
+}
+
+async fn list_epics(
+    client: &mut Client,
+    project_id: Option<orchestra_core::model::ProjectId>,
+) -> Result<Vec<orchestra_core::epic::Epic>> {
+    match client.call(Cmd::ListEpics { project_id }).await? {
+        Reply::Epics { epics } => Ok(epics),
+        other => bail!("réponse inattendue : {other:?}"),
+    }
+}
+
+/// An epic by id or by a fragment of its title.
+async fn epic_detail(client: &mut Client, spec: &str) -> Result<orchestra_core::protocol::EpicDetail> {
+    let epics = list_epics(client, None).await?;
+    let lowered = spec.to_lowercase();
+    let found: Vec<_> = epics
+        .into_iter()
+        .filter(|e| e.id.to_string() == spec || e.title.to_lowercase().contains(&lowered))
+        .collect();
+    let epic = match found.as_slice() {
+        [one] => one.id,
+        [] => bail!("aucune épopée ne correspond à « {spec} »"),
+        many => bail!(
+            "« {spec} » désigne {} épopées : {}",
+            many.len(),
+            many.iter().map(|e| e.title.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+    };
+    match client.call(Cmd::GetEpic { epic_id: epic }).await? {
+        Reply::Epic { detail } => Ok(*detail),
+        other => bail!("réponse inattendue : {other:?}"),
     }
 }

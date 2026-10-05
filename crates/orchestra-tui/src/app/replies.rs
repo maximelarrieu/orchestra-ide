@@ -18,6 +18,8 @@ impl App {
     }
 
     pub(super) fn request_tickets(&mut self) {
+        // The epics' badge rides along with the board it sits on.
+        self.request_epics();
         self.outbox.push(Command::ListTickets {
             project_id: self.selected_project().map(|p| p.id),
             status: None,
@@ -136,6 +138,11 @@ impl App {
                         .min(self.cost.rows.len().saturating_sub(1));
                 }
             }
+            Reply::Epics { epics } => {
+                self.epics = epics;
+                self.epic_selected = self.epic_selected.min(self.epics.len().saturating_sub(1));
+            }
+            Reply::Epic { detail } => self.adopt_epic(detail),
             Reply::Diff { diff } => {
                 self.status = format!(
                     "{} fichier(s) — j/k pour lire, q pour fermer",
@@ -286,6 +293,18 @@ impl App {
     pub(super) fn on_event(&mut self, e: Event) {
         // What the orchestrator does while it composes the team.
         self.trace_planning(&e);
+        // An epic that moved: the list and, if it is open, the epic itself.
+        if let EventKind::EpicCreated { epic_id, .. }
+        | EventKind::EpicSplitReady { epic_id, .. }
+        | EventKind::EpicSplitFailed { epic_id, .. }
+        | EventKind::EpicAccepted { epic_id, .. }
+        | EventKind::EpicFinished { epic_id } = &e.kind
+        {
+            self.request_epics();
+            if self.epic.as_ref().is_some_and(|d| d.epic.id == *epic_id) {
+                self.outbox.push(Command::GetEpic { epic_id: *epic_id });
+            }
+        }
         // While watching one agent, its events feed the live log.
         if self.screen == Screen::Agent && e.agent_id == self.watched_agent_id() {
             if self.log.push_event(&e) {

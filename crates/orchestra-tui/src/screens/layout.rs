@@ -53,6 +53,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
         Screen::Proposal => super::proposal::render(app, frame, chunks[1]),
         Screen::Todo => super::todo::render(app, frame, chunks[1]),
         Screen::Rules => super::rules::render(app, frame, chunks[1]),
+        Screen::Epic => super::epic::render(app, frame, chunks[1]),
     }
     if chunks[2].height > 0 {
         render_activity(app, frame, chunks[2]);
@@ -84,6 +85,14 @@ fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect) {
             // The key rides along: on a narrow bar it is the first to go.
             format!("{} {} à toi [!] ", badge.symbol, waiting.len()),
             badge.style(),
+        ));
+    }
+    // A split is a decision waiting on the user too, before any ticket exists.
+    let splits = app.splits_waiting();
+    if splits > 0 {
+        spans.push(Span::styled(
+            format!("▶ {splits} découpage(s) "),
+            theme::attention(orchestra_core::attention::Attention::ProposalReady).style(),
         ));
     }
     let badges: usize = spans.iter().map(|s| s.content.chars().count()).sum();

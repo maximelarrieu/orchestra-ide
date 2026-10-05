@@ -57,6 +57,29 @@ pub enum Command {
     GetDiff {
         ticket_id: TicketId,
     },
+    /// Write an epic down. Planning its split is a separate command.
+    CreateEpic {
+        project_id: ProjectId,
+        title: String,
+        brief: String,
+    },
+    /// Ask the orchestrator for a split. Replies at once; the split arrives
+    /// as `epic_split_ready` (or `epic_split_failed`).
+    PlanEpic {
+        epic_id: crate::epic::EpicId,
+    },
+    ListEpics {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+    },
+    GetEpic {
+        epic_id: crate::epic::EpicId,
+    },
+    /// Create the tickets of the split, as the user edited it.
+    AcceptEpic {
+        epic_id: crate::epic::EpicId,
+        proposal: crate::epic::EpicProposal,
+    },
     CreateTicket {
         project_id: ProjectId,
         title: String,
@@ -267,6 +290,12 @@ pub enum Reply {
     Diff {
         diff: Box<TicketDiff>,
     },
+    Epic {
+        detail: Box<EpicDetail>,
+    },
+    Epics {
+        epics: Vec<crate::epic::Epic>,
+    },
     Roles {
         /// `git` is always resolved in this reply: what an agent of the role
         /// will get, declared or not.
@@ -452,6 +481,28 @@ pub struct TicketSummary {
     /// What the ticket waits on the user for, if anything (`attention::of`).
     #[serde(default)]
     pub attention: Option<crate::attention::Attention>,
+    /// The epic it belongs to, and what it still waits for there.
+    #[serde(default)]
+    pub epic: Option<crate::epic::EpicLink>,
+}
+
+/// An epic and the tickets it became, in order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EpicDetail {
+    pub epic: crate::epic::Epic,
+    pub tickets: Vec<EpicTicketRow>,
+}
+
+/// One ticket of an accepted epic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EpicTicketRow {
+    pub ticket_id: TicketId,
+    pub number: i64,
+    pub title: String,
+    pub status: TicketStatus,
+    /// Numbers of the tickets it depends on.
+    #[serde(default)]
+    pub depends_on: Vec<i64>,
 }
 
 /// One file a branch touches. `None` counts for a binary file.

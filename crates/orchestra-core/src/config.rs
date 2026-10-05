@@ -23,6 +23,7 @@ pub struct Config {
     pub integration: IntegrationConfig,
     pub zellij: ZellijConfig,
     pub notify: NotifyConfig,
+    pub epic: EpicConfig,
     pub models: ModelsConfig,
     pub pricing: PriceTable,
 }
@@ -44,6 +45,7 @@ impl Default for Config {
             integration: IntegrationConfig::default(),
             zellij: ZellijConfig::default(),
             notify: NotifyConfig::default(),
+            epic: EpicConfig::default(),
             models: ModelsConfig::default(),
             pricing: PriceTable::defaults(),
         }
@@ -263,6 +265,22 @@ impl Default for IntegrationConfig {
             push: false,
             remove_worktree: true,
         }
+    }
+}
+
+/// How an accepted epic moves along.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EpicConfig {
+    /// Ask for a team as soon as a ticket of the epic is free — accepted
+    /// with no dependency, or its dependencies merged. Only a proposal: no
+    /// team ever starts without the user (rule 9).
+    pub auto_plan: bool,
+}
+
+impl Default for EpicConfig {
+    fn default() -> Self {
+        EpicConfig { auto_plan: true }
     }
 }
 

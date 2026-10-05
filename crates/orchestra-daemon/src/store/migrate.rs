@@ -23,6 +23,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "todos",
         sql: include_str!("migrations/0002_todos.sql"),
     },
+    Migration {
+        version: 3,
+        name: "epics",
+        sql: include_str!("migrations/0003_epics.sql"),
+    },
 ];
 
 /// Highest version this binary knows about.
@@ -71,7 +76,7 @@ mod tests {
     fn migrating_twice_is_a_no_op() {
         let mut c = mem();
         let first = migrate(&mut c).unwrap();
-        assert_eq!(first, vec![1, 2]);
+        assert_eq!(first, vec![1, 2, 3]);
         assert_eq!(current_version(&c).unwrap(), latest_version());
         let second = migrate(&mut c).unwrap();
         assert!(second.is_empty());
@@ -93,6 +98,8 @@ mod tests {
             tables,
             vec![
                 "agents",
+                "epic_tickets",
+                "epics",
                 "events",
                 "projects",
                 "sessions",

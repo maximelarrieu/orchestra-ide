@@ -358,6 +358,7 @@ fn app_on_kanban() -> App {
             pull_request: pr.map(str::to_string),
             merge_blocked: None,
             attention: None,
+            epic: None,
         }
     };
     let mut app = App::new();
@@ -479,6 +480,7 @@ fn opening_a_ticket_from_the_board_asks_the_daemon_for_it() {
         pull_request: None,
         merge_blocked: None,
         attention: None,
+        epic: None,
     }];
     app.update(Msg::Reply(Box::new(Reply::Tickets { tickets: summaries })));
     app.update(Msg::Key(Action::Right));
@@ -1662,6 +1664,7 @@ fn board_waiting() -> App {
             pull_request: None,
             merge_blocked: None,
             attention,
+            epic: None,
         }
     };
     let mut app = App::new();
@@ -1828,7 +1831,17 @@ fn a_key_the_screen_does_not_announce_does_nothing() {
     // Every key a screen answers must be on its bar or in the help: a key
     // that acts without being written anywhere is one nobody finds, or one
     // somebody hits by accident.
-    for name in ["tableau", "ticket", "ticket relu", "agent", "agent arrêté", "équipe", "coût"] {
+    for name in [
+        "tableau",
+        "ticket",
+        "ticket relu",
+        "agent",
+        "agent arrêté",
+        "équipe",
+        "coût",
+        "épopées",
+        "découpage",
+    ] {
         let promised = promised_keys(&fixture_named(name));
         for c in ('a'..='z').chain('A'..='Z') {
             if promised.contains(&c) {
@@ -1865,6 +1878,17 @@ fn fixture_named(name: &str) -> App {
         "coût" => {
             let mut app = App::new();
             app.screen = Screen::Cost;
+            app
+        }
+        "épopées" => {
+            let mut app = app_with_a_project();
+            app.screen = Screen::Epic;
+            app.update(Msg::Reply(Box::new(Reply::Epics { epics: vec![split_epic().epic] })));
+            app
+        }
+        "découpage" => {
+            let mut app = app_with_a_project();
+            app.update(Msg::Reply(Box::new(Reply::Epic { detail: Box::new(split_epic()) })));
             app
         }
         _ => unreachable!(),
@@ -2111,4 +2135,128 @@ fn the_palette_opens_a_ticket_completes_and_remembers() {
     assert_eq!(app.palette.as_deref(), Some("t 3"));
     app.update(Msg::Key(Action::Down));
     assert_eq!(app.palette.as_deref(), Some(""));
+}
+
+/// One project selected on the board, as a fresh daemon would report it.
+fn app_with_a_project() -> App {
+    let mut app = App::new();
+    app.connected = true;
+    app.update(Msg::Reply(Box::new(Reply::Projects {
+        projects: vec![detail(false, false).project],
+    })));
+    app
+}
+
+/// An epic whose split waits to be read: schema, then api, then the screen.
+fn split_epic() -> orchestra_core::protocol::EpicDetail {
+    use orchestra_core::epic::{Epic, EpicProposal, EpicStatus, EpicTicket};
+    let t = |title: &str, deps: &[usize]| EpicTicket {
+        title: title.into(),
+        brief: format!("livrer {title}"),
+        depends_on: deps.to_vec(),
+        acceptance: vec![format!("{title} fusionné")],
+    };
+    orchestra_core::protocol::EpicDetail {
+        epic: Epic {
+            id: Uuid::new_v4(),
+            project_id: detail(false, false).project.id,
+            title: "paiements".into(),
+            brief: "accepter les cartes".into(),
+            status: EpicStatus::Split,
+            proposal: Some(EpicProposal {
+                summary: "trois temps".into(),
+                tickets: vec![t("schéma", &[]), t("api", &[0]), t("écran", &[1])],
+            }),
+            created_at: orchestra_core::now(),
+            updated_at: orchestra_core::now(),
+        },
+        tickets: vec![],
+    }
+}
+
+#[test]
+fn an_epic_is_written_then_split_without_a_second_step() {
+    let mut app = app_with_a_project();
+    app.update(Msg::Key(Action::CommandPalette));
+    for c in "epic new paiements".chars() {
+        app.update(Msg::Key(Action::Char(c)));
+    }
+    app.update(Msg::Key(Action::Submit));
+    assert_eq!(app.screen, Screen::NewTicket);
+    assert!(draw(&app, 100, 30).contains("[Ctrl-S] écrire l'épopée"));
+    for c in "accepter les paiements par carte, du schéma jusqu'à l'écran".chars() {
+        app.update(Msg::Key(Action::Char(c)));
+    }
+    let cmds = app.update(Msg::Key(Action::Accept));
+    assert!(
+        cmds.iter().any(|c| matches!(c, Command::CreateEpic { title, .. } if title == "paiements")),
+        "{cmds:?}"
+    );
+    assert_eq!(app.screen, Screen::Epic);
+
+    // The daemon answers with the epic, still a draft: its split is asked for.
+    let mut draft = split_epic();
+    draft.epic.status = orchestra_core::epic::EpicStatus::Draft;
+    draft.epic.proposal = None;
+    let cmds = app.update(Msg::Reply(Box::new(Reply::Epic { detail: Box::new(draft) })));
+    assert!(cmds.iter().any(|c| matches!(c, Command::PlanEpic { .. })), "{cmds:?}");
+    assert!(!app.creating_epic);
+}
+
+#[test]
+fn a_split_is_read_trimmed_and_accepted_with_its_order_kept() {
+    let mut app = fixture_named("découpage");
+    let out = draw(&app, 110, 32);
+    assert!(out.contains("Découpage — paiements"), "{out}");
+    assert!(out.contains("ordre : 1  →  2  →  3"));
+    assert!(out.contains("3. écran  ⛓ après 2"));
+    assert!(out.contains("☐ schéma fusionné"));
+    assert!(out.contains("▶ 1 découpage(s)") || app.splits_waiting() == 0);
+
+    // Take the api out: the screen now follows the schema directly.
+    app.update(Msg::Key(Action::Down));
+    app.update(Msg::Key(Action::Char('d')));
+    let split = app.split.as_ref().unwrap();
+    assert_eq!(split.tickets.len(), 2);
+    assert_eq!(split.tickets[1].depends_on, Vec::<usize>::new(), "la dépendance sur l'api tombe avec elle");
+
+    // Rewrite the screen's brief.
+    app.update(Msg::Key(Action::Char('e')));
+    assert!(app.is_typing());
+    app.update(Msg::Key(Action::Char('!')));
+    app.update(Msg::Key(Action::Accept));
+    assert!(app.split.as_ref().unwrap().tickets[1].brief.ends_with('!'));
+
+    let cmds = app.update(Msg::Key(Action::Char('y')));
+    let sent = cmds.iter().find_map(|c| match c {
+        Command::AcceptEpic { proposal, .. } => Some(proposal.tickets.len()),
+        _ => None,
+    });
+    assert_eq!(sent, Some(2), "{cmds:?}");
+
+    // `q` closes the epic back to the list, not the screen.
+    app.update(Msg::Key(Action::Back));
+    assert!(app.epic.is_none());
+    assert_eq!(app.screen, Screen::Epic);
+}
+
+#[test]
+fn a_ticket_of_an_epic_says_what_it_waits_for() {
+    let mut app = board_waiting();
+    let mut summaries = app.tickets.clone();
+    summaries[1].epic = Some(orchestra_core::epic::EpicLink {
+        epic_id: Uuid::new_v4(),
+        epic_title: "paiements".into(),
+        waiting_on: vec![3],
+    });
+    app.update(Msg::Reply(Box::new(Reply::Tickets { tickets: summaries })));
+    let out = draw(&app, 140, 30);
+    assert!(out.contains("⛓ attend #3"), "{out}");
+    assert!(out.contains("paiements"));
+}
+
+#[test]
+fn snapshot_split_to_review() {
+    let app = fixture_named("découpage");
+    insta::assert_snapshot!("split_100x30", draw(&app, 100, 30));
 }

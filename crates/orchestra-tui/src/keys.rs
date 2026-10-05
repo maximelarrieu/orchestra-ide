@@ -173,8 +173,15 @@ pub fn strip(app: &App) -> Vec<Hint> {
 /// The keys of a text field, when one has focus.
 fn typing_hints(app: &App) -> Option<Vec<Hint>> {
     if app.screen == Screen::NewTicket {
+        let verb = if app.creating_epic {
+            "écrire l'épopée"
+        } else if app.promoting_todo.is_some() {
+            "promouvoir en ticket"
+        } else {
+            "créer le ticket"
+        };
         return Some(vec![
-            Hint::screen("Ctrl-S", "créer le ticket"),
+            Hint::screen("Ctrl-S", verb),
             Hint::screen("Tab", "champ suivant"),
             Hint::global("Entrée", "nouvelle ligne"),
             Hint::global("Échap", "annuler"),
@@ -188,6 +195,13 @@ fn typing_hints(app: &App) -> Option<Vec<Hint>> {
         };
         return Some(vec![
             Hint::screen("Ctrl-S", what),
+            Hint::global("Échap", "annuler"),
+        ]);
+    }
+    if app.split_editing.is_some() {
+        return Some(vec![
+            Hint::screen("Ctrl-S", "garder le brief"),
+            Hint::global("Entrée", "nouvelle ligne"),
             Hint::global("Échap", "annuler"),
         ]);
     }
@@ -223,8 +237,11 @@ pub fn screen_hints(app: &App) -> Vec<Hint> {
         Screen::Proposal => proposal_hints(app),
         Screen::Todo => todo_hints(app),
         Screen::Rules => rules_hints(app),
+        Screen::Epic => epic_hints(app),
         Screen::NewTicket => {
-            let verb = if app.promoting_todo.is_some() {
+            let verb = if app.creating_epic {
+                "écrire l'épopée"
+            } else if app.promoting_todo.is_some() {
                 "promouvoir en ticket"
             } else {
                 "créer le ticket"
@@ -429,6 +446,34 @@ fn rules_hints(app: &App) -> Vec<Hint> {
     hints
 }
 
+fn epic_hints(app: &App) -> Vec<Hint> {
+    use orchestra_core::epic::EpicStatus;
+    let Some(detail) = app.epic.as_ref() else {
+        let mut hints = vec![Hint::screen("n", "nouvelle épopée")];
+        if !app.epics.is_empty() {
+            hints.insert(0, Hint::screen("Entrée", "ouvrir"));
+        }
+        if app
+            .selected_epic()
+            .is_some_and(|e| matches!(e.status, EpicStatus::Draft | EpicStatus::Split))
+        {
+            hints.push(Hint::screen("p", "découper"));
+        }
+        return hints;
+    };
+    match detail.epic.status {
+        EpicStatus::Split => vec![
+            Hint::screen("y", "accepter le découpage"),
+            Hint::screen("e", "réécrire le brief"),
+            Hint::screen("d", "retirer"),
+            Hint::screen("p", "redécouper"),
+        ],
+        EpicStatus::Draft => vec![Hint::screen("p", "découper")],
+        _ if !detail.tickets.is_empty() => vec![Hint::screen("Entrée", "ouvrir le ticket")],
+        _ => Vec::new(),
+    }
+}
+
 fn proposal_hints(app: &App) -> Vec<Hint> {
     if app.editor.is_empty() {
         return Vec::new();
@@ -448,7 +493,7 @@ fn proposal_hints(app: &App) -> Vec<Hint> {
 
 /// What moves the same way everywhere.
 pub const NAVIGATION: &[(&str, &str)] = &[
-    ("1…8", "aller à un écran"),
+    ("1…9", "aller à un écran"),
     ("Tab", "écran suivant"),
     ("⇧Tab", "écran précédent"),
     ("j k", "descendre / monter"),
@@ -474,6 +519,7 @@ pub const PARTOUT: &[(&str, &str)] = &[
 /// command is not a key.
 pub const PALETTE: &[(&str, &str)] = &[
     (":t <n>", "ouvrir le ticket n°"),
+    (":epic new <titre>", "écrire une épopée à découper"),
     (":project add <chemin>", "ajouter un projet"),
     (":project forget <nom>", "oublier un projet"),
     (":todo add <titre>", "ajouter un todo"),

@@ -166,6 +166,13 @@ impl App {
                 }
                 return;
             }
+            (Screen::Epic, _) => {
+                let (len, cursor) = self.epic_cursor();
+                if len > 0 {
+                    *cursor = (*cursor as isize + delta).clamp(0, len as isize - 1) as usize;
+                }
+                return;
+            }
             (Screen::Agent, _) => {
                 // On a live log, down means towards the newest.
                 if delta < 0 {
@@ -230,6 +237,7 @@ impl App {
             }
             (Screen::Proposal, _) => self.editor.start_editing_objective(),
             (Screen::Ticket, _) => self.open_agent(),
+            (Screen::Epic, _) => self.open_epic_selection(),
             _ => {}
         }
     }

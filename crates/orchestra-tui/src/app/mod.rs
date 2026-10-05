@@ -28,6 +28,7 @@ mod agent;
 mod board;
 mod cost;
 mod describe;
+mod epic;
 mod input;
 mod nav;
 mod palette;
@@ -51,10 +52,11 @@ pub enum Screen {
     Proposal,
     Todo,
     Rules,
+    Epic,
 }
 
 impl Screen {
-    pub const ALL: [Screen; 8] = [
+    pub const ALL: [Screen; 9] = [
         Screen::Board,
         Screen::Ticket,
         Screen::Agent,
@@ -63,6 +65,7 @@ impl Screen {
         Screen::Proposal,
         Screen::Todo,
         Screen::Rules,
+        Screen::Epic,
     ];
 
     pub fn from_number(n: u8) -> Option<Self> {
@@ -79,6 +82,7 @@ impl Screen {
             Screen::Proposal => "Équipe",
             Screen::Todo => "TODO",
             Screen::Rules => "Rôles & règles",
+            Screen::Epic => "Épopées",
         }
     }
 
@@ -406,6 +410,18 @@ pub struct App {
     /// Palette lines run before, oldest first, and where ↑/↓ stand in them.
     pub palette_history: Vec<String>,
     pub palette_history_at: Option<usize>,
+    /// Epics of the board's project, newest first, and the one highlighted.
+    pub epics: Vec<orchestra_core::epic::Epic>,
+    pub epic_selected: usize,
+    /// The epic open on its screen, with the tickets it became.
+    pub epic: Option<Box<orchestra_core::protocol::EpicDetail>>,
+    /// The split being read and edited before it is accepted.
+    pub split: Option<orchestra_core::epic::EpicProposal>,
+    pub split_selected: usize,
+    /// The brief of the highlighted split ticket, while it is rewritten.
+    pub split_editing: Option<String>,
+    /// The new-ticket form is writing an epic down.
+    pub creating_epic: bool,
     /// What is being typed after `/` in the agent log, while it is.
     pub log_search: Option<String>,
     /// The watched agent was chosen with `[` / `]`: the screen no longer
@@ -476,6 +492,13 @@ impl Default for App {
             ticket_timeline: false,
             diff_view: None,
             log_search: None,
+            epics: Vec::new(),
+            epic_selected: 0,
+            epic: None,
+            split: None,
+            split_selected: 0,
+            split_editing: None,
+            creating_epic: false,
             palette_history: Vec::new(),
             palette_history_at: None,
             agent_hand_picked: false,
@@ -662,6 +685,10 @@ impl App {
             Screen::Ticket | Screen::Agent => self.refresh_open_ticket(None),
             // Rule files are edited by hand too, outside of Orchestra.
             Screen::Rules => self.request_rules(),
+            Screen::Epic => match self.epic.as_ref() {
+                Some(d) => self.outbox.push(Command::GetEpic { epic_id: d.epic.id }),
+                None => self.request_epics(),
+            },
             _ => {}
         }
     }
@@ -673,6 +700,7 @@ impl App {
             || self.screen == Screen::NewTicket
             || self.steer.is_some()
             || self.log_search.is_some()
+            || self.split_editing.is_some()
             || (self.screen == Screen::Proposal && self.editor.is_editing())
     }
 }

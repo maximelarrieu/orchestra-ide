@@ -116,7 +116,7 @@ pub fn proposal_from_result(
 }
 
 /// First balanced `{…}` block, ignoring braces inside strings.
-fn extract_json_object(text: &str) -> Option<&str> {
+pub(crate) fn extract_json_object(text: &str) -> Option<&str> {
     let bytes = text.as_bytes();
     let start = text.find('{')?;
     let mut depth = 0usize;

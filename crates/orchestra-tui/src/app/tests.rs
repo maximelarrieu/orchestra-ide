@@ -19,13 +19,14 @@ fn app_with_projects(n: usize) -> App {
 #[test]
 fn screens_cycle_both_ways() {
     assert_eq!(Screen::Board.next(), Screen::Ticket);
-    assert_eq!(Screen::Board.prev(), Screen::Rules);
+    assert_eq!(Screen::Board.prev(), Screen::Epic);
     assert_eq!(Screen::from_number(1), Some(Screen::Board));
     assert_eq!(Screen::from_number(6), Some(Screen::Proposal));
     assert_eq!(Screen::from_number(7), Some(Screen::Todo));
     assert_eq!(Screen::from_number(8), Some(Screen::Rules));
+    assert_eq!(Screen::from_number(9), Some(Screen::Epic));
     assert_eq!(Screen::from_number(0), None);
-    assert_eq!(Screen::from_number(9), None);
+    assert_eq!(Screen::from_number(10), None);
 }
 
 #[test]

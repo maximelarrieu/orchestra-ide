@@ -135,6 +135,11 @@ pub enum EventTag {
     AgentSteered,
     AgentResult,
     AgentStalled,
+    EpicCreated,
+    EpicSplitReady,
+    EpicSplitFailed,
+    EpicAccepted,
+    EpicFinished,
     TicketResumed,
     ReviewVerdict,
     CheckStarted,
@@ -165,7 +170,7 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 46] = [
+    pub const ALL: [EventTag; 51] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::TicketCreated,
@@ -185,6 +190,11 @@ impl EventTag {
         EventTag::AgentSteered,
         EventTag::AgentResult,
         EventTag::AgentStalled,
+        EventTag::EpicCreated,
+        EventTag::EpicSplitReady,
+        EventTag::EpicSplitFailed,
+        EventTag::EpicAccepted,
+        EventTag::EpicFinished,
         EventTag::TicketResumed,
         EventTag::ReviewVerdict,
         EventTag::CheckStarted,
@@ -235,6 +245,11 @@ impl EventTag {
             EventTag::AgentSteered => "agent_steered",
             EventTag::AgentResult => "agent_result",
             EventTag::AgentStalled => "agent_stalled",
+            EventTag::EpicCreated => "epic_created",
+            EventTag::EpicSplitReady => "epic_split_ready",
+            EventTag::EpicSplitFailed => "epic_split_failed",
+            EventTag::EpicAccepted => "epic_accepted",
+            EventTag::EpicFinished => "epic_finished",
             EventTag::TicketResumed => "ticket_resumed",
             EventTag::ReviewVerdict => "review_verdict",
             EventTag::CheckStarted => "check_started",
@@ -374,6 +389,29 @@ pub enum EventKind {
     /// is told, since only they can tell a slow agent from a stuck one.
     AgentStalled {
         silent_secs: u64,
+    },
+    /// An epic was written down; its split comes next.
+    EpicCreated {
+        epic_id: crate::epic::EpicId,
+        title: String,
+    },
+    /// The orchestrator proposed a split, which waits to be read (rule 9).
+    EpicSplitReady {
+        epic_id: crate::epic::EpicId,
+        tickets: u32,
+    },
+    EpicSplitFailed {
+        epic_id: crate::epic::EpicId,
+        error: String,
+    },
+    /// The split was accepted: these tickets now exist, in this order.
+    EpicAccepted {
+        epic_id: crate::epic::EpicId,
+        tickets: Vec<crate::model::TicketId>,
+    },
+    /// Every ticket of the epic is merged.
+    EpicFinished {
+        epic_id: crate::epic::EpicId,
     },
     /// A ticket picked up where it stopped, rather than run again from the
     /// start. `skipped` names the roles whose work was taken as it stands.
@@ -558,6 +596,11 @@ impl EventKind {
             EventKind::AgentSteered { .. } => EventTag::AgentSteered,
             EventKind::AgentResult { .. } => EventTag::AgentResult,
             EventKind::AgentStalled { .. } => EventTag::AgentStalled,
+            EventKind::EpicCreated { .. } => EventTag::EpicCreated,
+            EventKind::EpicSplitReady { .. } => EventTag::EpicSplitReady,
+            EventKind::EpicSplitFailed { .. } => EventTag::EpicSplitFailed,
+            EventKind::EpicAccepted { .. } => EventTag::EpicAccepted,
+            EventKind::EpicFinished { .. } => EventTag::EpicFinished,
             EventKind::TicketResumed { .. } => EventTag::TicketResumed,
             EventKind::ReviewVerdict { .. } => EventTag::ReviewVerdict,
             EventKind::CheckStarted { .. } => EventTag::CheckStarted,

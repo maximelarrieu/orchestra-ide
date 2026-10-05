@@ -6,6 +6,7 @@ pub mod agent;
 pub mod board;
 pub mod cost;
 pub mod diff;
+pub mod epic;
 pub mod layout;
 pub mod new_ticket;
 pub mod proposal;

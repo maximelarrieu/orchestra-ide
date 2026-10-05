@@ -28,7 +28,9 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
         .selected_project()
         .map(|p| p.name.as_str())
         .unwrap_or("aucun projet");
-    let verb = if app.promoting_todo.is_some() {
+    let verb = if app.creating_epic {
+        "épopée de"
+    } else if app.promoting_todo.is_some() {
         "promotion vers"
     } else {
         "projet"

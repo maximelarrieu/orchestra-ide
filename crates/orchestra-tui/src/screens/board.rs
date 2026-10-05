@@ -203,14 +203,28 @@ fn render_lane(
         // agent: that goes first on the line, and it is not dimmed.
         let mut spans = vec![Span::raw("  ")];
         let mut used = 2;
-        let mark = match (t.attention, &t.merge_blocked) {
-            (Some(a), _) => Some((theme::attention(a), a.label_fr())),
+        // A ticket of an epic still waiting says for which one: it is why
+        // nothing happens to it.
+        let waiting = t
+            .epic
+            .as_ref()
+            .filter(|l| !l.waiting_on.is_empty())
+            .map(|l| {
+                let numbers: Vec<String> = l.waiting_on.iter().map(|n| format!("#{n}")).collect();
+                format!("attend {}", numbers.join(", "))
+            });
+        let mark: Option<(theme::Badge, String)> = match (t.attention, &t.merge_blocked, waiting) {
+            (Some(a), _, _) => Some((theme::attention(a), a.label_fr().to_string())),
             // A daemon from before the queue still says this much.
-            (None, Some(_)) => Some((theme::merge_waiting(), "fusion en attente")),
-            (None, None) => None,
+            (None, Some(_), _) => Some((theme::merge_waiting(), "fusion en attente".into())),
+            (None, None, Some(w)) => Some((theme::epic_waiting(), w)),
+            (None, None, None) => None,
         };
+        if let Some(epic) = &t.epic {
+            foot.push(epic.epic_title.clone());
+        }
         if let Some((badge, label)) = mark {
-            let mark = badge.label(label);
+            let mark = badge.label(&label);
             used += mark.chars().count() + 3;
             spans.push(Span::styled(truncate(&mark, width.saturating_sub(2)), badge.style()));
             if !foot.is_empty() {
@@ -330,6 +344,7 @@ mod tests {
             pull_request: None,
             merge_blocked: None,
             attention: None,
+            epic: None,
         }];
         // Still on "Tous les projets": the card must say whose ticket it is.
         assert!(app.selected_project().is_none());
@@ -373,6 +388,7 @@ mod tests {
             pull_request: None,
             merge_blocked: Some("le dépôt principal a 1 fichier(s) modifié(s)".into()),
             attention: None,
+            epic: None,
         }];
         let out = draw(&app, 120, 30);
         assert!(out.contains("⏸ fusion en attente"), "{out}");

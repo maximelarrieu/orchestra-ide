@@ -24,6 +24,7 @@ use crate::worker::translate::{self, Scope};
 
 /// The orchestrator's own instructions, shipped with the binary.
 const ORCHESTRATOR_PROMPT: &str = include_str!("../../../assets/roles/_orchestrator.md");
+const SPLITTER_PROMPT: &str = include_str!("../../../assets/roles/_splitter.md");
 
 /// What planning produced.
 #[derive(Debug, Clone)]
@@ -147,6 +148,92 @@ pub async fn plan(
             Err(e)
         }
     }
+}
+
+/// Ask the orchestrator to split an epic into tickets.
+///
+/// Same mechanics as `plan`: one turn, read-only tools, an answer held to a
+/// schema. Its cost lands on the project; the agent row it is tagged with is
+/// never stored, since there is no ticket yet to hang it on.
+pub async fn split(
+    epic: &orchestra_core::epic::Epic,
+    project: &Project,
+    cfg: &Config,
+    cache_dir: &Path,
+    bus: &EventBus,
+    ledger: &UsageLedger,
+) -> Result<orchestra_core::epic::EpicProposal> {
+    let session_id = Uuid::new_v4();
+    let agent = Agent {
+        id: Uuid::new_v4(),
+        // Events and usage carry the epic's id where a ticket's would be:
+        // neither table points at `tickets`, and the epic can be followed.
+        ticket_id: epic.id,
+        project_id: project.id,
+        role: ORCHESTRATOR_ROLE.to_string(),
+        objective: format!("découper l'épopée « {} »", epic.title),
+        stage: 0,
+        session_id,
+        model: cfg.orchestrator.model_flag().unwrap_or_default().to_string(),
+        effort: cfg.orchestrator.effort,
+        max_budget_usd: cfg.orchestrator.max_budget_usd,
+        status: AgentStatus::Starting,
+        exit_reason: None,
+        pid: None,
+        pane_id: None,
+        attempt: 1,
+        handoff: None,
+        started_at: Some(orchestra_core::now()),
+        ended_at: None,
+    };
+    let prompt_file = write_prompt_file(cache_dir, "_splitter", SPLITTER_PROMPT)
+        .context("écriture de la consigne du découpage")?;
+    let repo = project.path.clone();
+    let summary = crate::worktree::off_runtime(move || RepoSummary::build(&repo)).await;
+
+    let mut prompt = format!("# Épopée — {}\n\n## Demande\n\n{}\n", epic.title, epic.brief.trim());
+    let adrs = crate::rules::adr_summary(&project.path);
+    if !adrs.is_empty() {
+        prompt.push_str(&format!("\n## Décisions d'architecture en vigueur\n\n{adrs}\n"));
+    }
+    if !summary.is_empty() {
+        prompt.push_str("\n## Le dépôt\n\n");
+        prompt.push_str(&summary.text);
+    }
+    prompt.push_str("\nDécoupe cette demande en tickets, et réponds selon le schéma.\n");
+
+    let mut cmd = ClaudeCommand::new(&cfg.daemon.claude_bin, &project.path, prompt);
+    cmd.session_id = Some(session_id);
+    cmd.name = Some(format!("[{}] découpage « {} »", project.name, epic.title));
+    cmd.model = cfg.orchestrator.model_flag().map(str::to_string);
+    cmd.effort = Some(cfg.orchestrator.effort);
+    cmd.allowed_tools = vec!["Read".into(), "Glob".into(), "Grep".into()];
+    cmd.disallowed_tools = vec![
+        "Bash".into(),
+        "Edit".into(),
+        "Write".into(),
+        "WebFetch".into(),
+        "WebSearch".into(),
+        "Task".into(),
+    ];
+    cmd.append_system_prompt_file = Some(prompt_file);
+    cmd.json_schema = Some(orchestra_core::epic::epic_proposal_schema().to_string());
+    cmd.max_budget_usd = cfg.orchestrator.max_budget_usd;
+    cmd.max_turns = cfg.orchestrator.max_turns;
+    cmd.one_shot = true;
+
+    let scope = Scope {
+        agent_id: None,
+        ticket_id: None,
+        project_id: Some(project.id),
+        session_id,
+    };
+    let result = run(&cmd, &scope, bus, ledger, &agent).await?;
+    let proposal = orchestra_core::epic::proposal_from_result(
+        result.structured_output.as_ref(),
+        result.text.as_deref(),
+    )?;
+    Ok(proposal)
 }
 
 /// What the planning run returned.

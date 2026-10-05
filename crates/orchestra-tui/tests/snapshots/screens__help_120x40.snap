@@ -1,15 +1,14 @@
 ---
 source: crates/orchestra-tui/tests/screens.rs
-assertion_line: 1788
+assertion_line: 1791
 expression: "draw(&app, 120, 40)"
 ---
-⚑ 3 à toi [!]  1 Tableau  2  3  4  5  6  7  8                                                                           
+⚑ 3 à toi [!]  1 Tableau  2  3  4  5  6  7  8  9                                                                        
 ┌ Projets ───────────┐┌ À faire (1) ──────────┐┌ En cours (1) ────────┐┌ À relire (2) ─────────┐┌ Fusionné ────────────┐
 │◆ Tous les projets  ││#1 équipe proposée     ││#2 au travail         ││#3 branche refusée     ││                      │
 │aucun projet        ││  ▶ équipe à relire    ││                      ││  ⚑ fusion bloquée     ││                      │
 │                    ││                       ││                      ││                       ││                      │
 │                    ││                       ││                      ││#4 relu sans défaut    ││                      │
-│                    ││                       ││                      ││  ▶ prêt à intégrer    ││                      │
 │ ┌ Aide — Tableau ──────────────────────────────────────────────────────────────────────────────────────────────────┐ │
 │ │Sur cet écran                    Partout                                                                          │ │
 │ │ [Entrée] voir ses tickets             [:] palette de commandes                                                   │ │
@@ -18,14 +17,15 @@ expression: "draw(&app, 120, 40)"
 │ │      [n] nouveau ticket               [q] revenir en arrière                                                     │ │
 │ │                                       [Q] quitter                                                                │ │
 │ │Se déplacer                       [Ctrl-C] quitter                                                                │ │
-│ │       [1…8] aller à un écran          [!] aller à ce qui t'attend                                                │ │
+│ │       [1…9] aller à un écran          [!] aller à ce qui t'attend                                                │ │
 │ │       [Tab] écran suivant             [A] replier le bandeau Activité                                            │ │
 │ │      [⇧Tab] écran précédent                                                                                      │ │
 │ │       [j k] descendre / monter  Palette « : »                                                                    │ │
 │ │       [h l] gauche / droite      :t <n>                          ouvrir le ticket n°                             │ │
-│ │       [g G] début / fin          :project add <chemin>           ajouter un projet                               │ │
-│ │ [PgUp PgDn] page haut / bas      :project forget <nom>           oublier un projet                               │ │
-│ │    [Entrée] ouvrir               :todo add <titre>               ajouter un todo                                 │ │
+│ │       [g G] début / fin          :epic new <titre>               écrire une épopée à découper                    │ │
+│ │ [PgUp PgDn] page haut / bas      :project add <chemin>           ajouter un projet                               │ │
+│ │    [Entrée] ouvrir               :project forget <nom>           oublier un projet                               │ │
+│ │                                  :todo add <titre>               ajouter un todo                                 │ │
 │ │                                  :todo urgent <n>                basculer l'urgence                              │ │
 │ │                                  :todo due <n> <AAAA-MM-JJ>      fixer l'échéance                                │ │
 │ │                                  :todo open|doing|done|drop <n>  changer le statut                               │ │

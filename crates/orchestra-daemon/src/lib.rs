@@ -7,6 +7,7 @@
 pub mod bus;
 pub mod checks;
 pub mod daemon;
+pub mod epic_flow;
 pub mod github;
 pub mod hooks;
 pub mod attention;
@@ -47,6 +48,7 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
 
     let store = Store::open(&paths.db_file)?;
     let notify_attention = cfg.notify.attention;
+    let epic_auto_plan = cfg.epic.auto_plan;
     let notify_store = store.clone();
     let daemon = Daemon::new(cfg, store.clone());
     let handle = daemon.handle();
@@ -86,6 +88,15 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
         async move { supervisor.watch_pull_requests(cancel).await }
     });
 
+    // An accepted epic moves on when one of its tickets is merged.
+    let epics = tokio::spawn(crate::epic_flow::advance_epics(
+        notify_store.clone(),
+        bus.clone(),
+        handle.clone(),
+        epic_auto_plan,
+        cancel.clone(),
+    ));
+
     // Off unless asked: a desktop notification reaches outside the tool.
     let notifying = notify_attention.then(|| {
         tokio::spawn(crate::attention::notify_on_attention(
@@ -100,6 +111,7 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), watching).await;
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), pull_requests).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), epics).await;
     if let Some(task) = notifying {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
     }

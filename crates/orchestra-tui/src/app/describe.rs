@@ -66,6 +66,15 @@ pub fn describe(e: &Event) -> Option<String> {
     let stamp = format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second());
     let body = match &e.kind {
         EventKind::DaemonStarted { version } => format!("daemon {version} démarré"),
+        EventKind::EpicCreated { title, .. } => format!("épopée « {title} » écrite"),
+        EventKind::EpicSplitReady { tickets, .. } => {
+            format!("▶ découpage prêt : {tickets} ticket(s) à relire")
+        }
+        EventKind::EpicSplitFailed { error, .. } => format!("découpage impossible : {error}"),
+        EventKind::EpicAccepted { tickets, .. } => {
+            format!("épopée acceptée : {} ticket(s) créés", tickets.len())
+        }
+        EventKind::EpicFinished { .. } => "✓ épopée terminée : tous ses tickets sont fusionnés".into(),
         EventKind::ProjectAdded { name, .. } => format!("projet « {name} » ajouté"),
         EventKind::ProjectForgotten { name } => format!("projet « {name} » oublié"),
         EventKind::TicketCreated { number, title } => format!("ticket #{number} « {title} » créé"),

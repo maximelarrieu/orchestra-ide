@@ -9,6 +9,11 @@ impl App {
         let rest = rest.trim();
         match verb {
             "t" | "ticket" => self.open_ticket_number(rest),
+            "epic" | "epopee" | "épopée" => match rest.split_once(char::is_whitespace) {
+                Some(("new" | "nouvelle", title)) => self.open_new_epic(title.trim()),
+                None if rest == "new" || rest == "nouvelle" => self.open_new_epic(""),
+                _ => self.go(Screen::Epic),
+            },
             "project" | "projet" => {
                 let (sub, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
                 match sub {

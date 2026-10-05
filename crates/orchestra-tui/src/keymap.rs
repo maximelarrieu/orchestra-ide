@@ -58,7 +58,7 @@ pub fn map(key: KeyEvent) -> Option<Action> {
         (KeyCode::Char('c'), true) => Action::Quit,
         (KeyCode::Char('?'), false) => Action::Help,
         (KeyCode::Char('R'), false) => Action::Refresh,
-        (KeyCode::Char(c @ '1'..='8'), false) => Action::Screen(c as u8 - b'0'),
+        (KeyCode::Char(c @ '1'..='9'), false) => Action::Screen(c as u8 - b'0'),
         (KeyCode::Tab, false) => Action::NextScreen,
         (KeyCode::BackTab, _) => Action::PrevScreen,
         (KeyCode::Char('j'), false) | (KeyCode::Down, false) => Action::Down,
@@ -162,8 +162,9 @@ mod tests {
         assert_eq!(map(key('6')), Some(Action::Screen(6)));
         assert_eq!(map(key('7')), Some(Action::Screen(7)));
         assert_eq!(map(key('8')), Some(Action::Screen(8)));
-        // There is no ninth screen; the digit falls through to the screen.
-        assert_eq!(map(key('9')), Some(Action::Char('9')));
+        // The ninth is the epics; there is no tenth.
+        assert_eq!(map(key('9')), Some(Action::Screen(9)));
+        assert_eq!(map(key('0')), Some(Action::Char('0')));
     }
 
     #[test]

@@ -32,6 +32,8 @@ use crate::ledger::{AgentCost, UsageLedger};
 use crate::store::Store;
 use crate::supervisor::Supervisor;
 
+mod epics;
+
 /// A command plus where to send its reply.
 pub struct Job {
     pub cmd: Command,
@@ -273,6 +275,13 @@ impl Daemon {
             }
             Command::GetTicket { ticket_id } => self.get_ticket(ticket_id).await,
             Command::GetDiff { ticket_id } => self.get_diff(ticket_id).await,
+            Command::CreateEpic { project_id, title, brief } => {
+                self.create_epic(project_id, title, brief).await
+            }
+            Command::PlanEpic { epic_id } => self.plan_epic(epic_id).await,
+            Command::ListEpics { project_id } => self.list_epics(project_id).await,
+            Command::GetEpic { epic_id } => self.get_epic(epic_id).await,
+            Command::AcceptEpic { epic_id, proposal } => self.accept_epic(epic_id, proposal).await,
             Command::CreateTicket {
                 project_id,
                 title,
@@ -497,6 +506,7 @@ impl Daemon {
         }
         let mut costs = self.ledger.ticket_costs(project_id).await.map_err(internal)?;
         let stalled = self.supervisor.stalled_agents().await;
+        let links = self.epic_links(&tickets).await?;
         let mut out = Vec::with_capacity(tickets.len());
         for ticket in tickets {
             let url = open_prs.get(&ticket.id).cloned();
@@ -508,20 +518,28 @@ impl Daemon {
                 None
             };
             let team = agents.remove(&ticket.id).unwrap_or_default();
-            let attention = crate::attention::of_ticket(
-                &self.store,
-                &ticket,
-                &team,
-                &stalled,
-                url.is_some(),
-                blocked.is_some(),
-            )
-            .await;
+            let epic = links.get(&ticket.id).cloned();
+            // A ticket waiting for another of its epic waits on that ticket,
+            // not on the user: it stays out of the queue until it is free.
+            let attention = if epic.as_ref().is_some_and(|l| !l.waiting_on.is_empty()) {
+                None
+            } else {
+                crate::attention::of_ticket(
+                    &self.store,
+                    &ticket,
+                    &team,
+                    &stalled,
+                    url.is_some(),
+                    blocked.is_some(),
+                )
+                .await
+            };
             let cost = costs.remove(&ticket.id).unwrap_or_default();
             let mut summary = summarise(ticket, &team, cost);
             summary.pull_request = url;
             summary.merge_blocked = blocked.map(|b| b.reason);
             summary.attention = attention;
+            summary.epic = epic;
             out.push(summary);
         }
         out.sort_by_key(|s| (s.ticket.status.board_order(), -s.ticket.number));
@@ -1264,6 +1282,20 @@ impl Daemon {
             .await
             .map_err(internal)?
             .ok_or_else(|| ApiError::not_found("ticket"))?;
+        // An epic's ticket starts from the default branch once what it
+        // builds on is merged there, never before — the first
+        // thing to say, since no team or plan changes it.
+        let unmet = self.unmet_dependencies(ticket_id).await?;
+        if !unmet.is_empty() {
+            let names: Vec<String> = unmet
+                .iter()
+                .map(|t| format!("#{} « {} »", t.number, t.title))
+                .collect();
+            return Err(ApiError::invalid(format!(
+                "ce ticket dépend de {}, pas encore fusionné",
+                names.join(", ")
+            )));
+        }
         if ticket.team.is_none() {
             return Err(ApiError::invalid(
                 "ce ticket n'a pas d'équipe acceptée : planifie-le puis accepte la proposition",
@@ -1700,6 +1732,7 @@ fn summarise(ticket: Ticket, agents: &[Agent], cost: AgentCost) -> TicketSummary
         pull_request: None,
         merge_blocked: None,
         attention: None,
+        epic: None,
         ticket,
     }
 }
@@ -1854,6 +1887,65 @@ mod tests {
 
         let (daemon, _) = daemon_with_ticket(TicketStatus::Running).await;
         assert_eq!(attention(daemon.list_tickets(None, None).await.unwrap()), None);
+    }
+
+    #[tokio::test]
+    async fn an_accepted_epic_becomes_ordered_tickets_that_wait_their_turn() {
+        use orchestra_core::epic::{EpicProposal, EpicStatus, EpicTicket};
+        let (mut daemon, first) = daemon_with_ticket(TicketStatus::Draft).await;
+        let mut cfg = (*daemon.cfg).clone();
+        cfg.epic.auto_plan = false;
+        daemon.cfg = Arc::new(cfg);
+
+        let Reply::Epic { detail } = daemon
+            .create_epic(first.project_id, "paiements".into(), "accepter les cartes".into())
+            .await
+            .unwrap()
+        else {
+            panic!("réponse inattendue");
+        };
+        let epic_id = detail.epic.id;
+        let split = EpicProposal {
+            summary: "deux temps".into(),
+            tickets: vec![
+                EpicTicket { title: "schéma".into(), brief: "tables".into(), depends_on: vec![], acceptance: vec!["migration 0004".into()] },
+                EpicTicket { title: "api".into(), brief: "routes".into(), depends_on: vec![0], acceptance: vec!["POST /pay".into()] },
+            ],
+        };
+        // Accepting before a split exists is refused: the user reads first.
+        assert!(daemon.accept_epic(epic_id, split.clone()).await.is_err());
+        let mut epic = daemon.store.epic(epic_id).await.unwrap().unwrap();
+        epic.status = EpicStatus::Split;
+        epic.proposal = Some(split.clone());
+        daemon.store.update_epic(epic).await.unwrap();
+
+        let Reply::Epic { detail } = daemon.accept_epic(epic_id, split).await.unwrap() else {
+            panic!("réponse inattendue");
+        };
+        assert_eq!(detail.epic.status, EpicStatus::Active);
+        let numbers: Vec<i64> = detail.tickets.iter().map(|t| t.number).collect();
+        assert_eq!(numbers, vec![2, 3], "numérotés après le ticket existant, dans l'ordre");
+        assert_eq!(detail.tickets[1].depends_on, vec![2]);
+        let api = daemon.store.ticket(detail.tickets[1].ticket_id).await.unwrap().unwrap();
+        assert!(api.brief.contains("Critères d'acceptation :\n- POST /pay"));
+
+        // On the board: the api waits for the schema, and not on the user.
+        let Reply::Tickets { tickets } = daemon.list_tickets(None, None).await.unwrap() else {
+            panic!("réponse inattendue");
+        };
+        let card = tickets.iter().find(|t| t.ticket.number == 3).unwrap();
+        let link = card.epic.as_ref().expect("rattaché à l'épopée");
+        assert_eq!(link.epic_title, "paiements");
+        assert_eq!(link.waiting_on, vec![2]);
+        assert_eq!(card.attention, None);
+
+        // Launching it now is refused, whatever its team.
+        let mut ready = api.clone();
+        ready.status = TicketStatus::Planned;
+        ready.team = Some(orchestra_core::model::Team { members: vec![], stages: vec![] });
+        daemon.store.update_ticket(ready).await.unwrap();
+        let err = daemon.launch_ticket(api.id, false).await.unwrap_err();
+        assert!(err.message.contains("dépend de #2 « schéma »"), "{}", err.message);
     }
 
     async fn record_verdict(daemon: &Daemon, ticket: &Ticket, verdict: Verdict) {

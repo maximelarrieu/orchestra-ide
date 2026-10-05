@@ -42,6 +42,9 @@ toucher au disque ni au réseau.
   `EventFilter`.
 - `protocol.rs` — `Command`, `Reply`, `Frame`, plus les vues (`TicketSummary`,
   `UsageRow`…). Une trame tient sur une ligne.
+- `epic.rs` — les épopées : une demande découpée en tickets ordonnés, le découpage
+  proposé (`EpicProposal`, validé en vagues par `waves`), son schéma pour
+  `--json-schema`, et le lien d'un ticket à son épopée (`EpicLink`).
 - `attention.rs` — ce qu'un ticket attend de l'utilisateur (`attention::of`),
   d'où la file « à toi » du tableau.
 - `pricing.rs` — tokens vers dollars indicatifs, par plus long préfixe de modèle.
@@ -97,6 +100,10 @@ toucher au disque ni au réseau.
   d'un refus dans le flux.
 - `checks.rs` — les vérifications du dépôt, lancées par le daemon dans le
   worktree : quelles commandes, et ce qu'elles ont rendu.
+- `daemon/epics.rs` — les commandes des épopées ; `epic_flow.rs` les fait avancer :
+  à la fusion d'un ticket, ceux qu'il libère sont planifiés (`epic.auto_plan`, une
+  proposition seulement), et l'épopée se termine avec son dernier ticket. Le lien
+  ticket ↔ épopée vit dans `epic_tickets` (migration 0003), pas sur `tickets`.
 - `attention.rs` — ce qu'un ticket attend de l'utilisateur, lu depuis la base (la
   règle est dans `orchestra-core`), et le veilleur qui notifie le bureau quand un
   ticket se met à attendre (`notify.attention`). `notify.rs` envoie, sans jamais

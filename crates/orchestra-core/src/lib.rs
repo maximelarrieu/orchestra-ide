@@ -5,6 +5,7 @@ pub mod checks;
 pub mod claude;
 pub mod config;
 pub mod conventions;
+pub mod epic;
 pub mod error;
 pub mod events;
 pub mod guard;

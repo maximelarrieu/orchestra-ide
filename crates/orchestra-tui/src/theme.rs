@@ -275,6 +275,16 @@ pub fn diff_line(line: &str) -> Style {
     }
 }
 
+/// A ticket of an epic held back by another one, not yet merged.
+pub fn epic_waiting() -> Badge {
+    Badge {
+        symbol: "⛓",
+        color: Color::Gray,
+        bold: false,
+        dim: true,
+    }
+}
+
 pub fn merge_waiting() -> Badge {
     Badge {
         symbol: "⏸",

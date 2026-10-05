@@ -1,8 +1,9 @@
 ---
 source: crates/orchestra-tui/tests/screens.rs
+assertion_line: 1772
 expression: "draw(&app, 120, 40)"
 ---
-⚑ 3 à toi [!]  1 Tableau  2  3  4  5  6  7  8                                                                           
+⚑ 3 à toi [!]  1 Tableau  2  3  4  5  6  7  8  9                                                                        
 ┌ Projets ───────────┐┌ À faire (1) ──────────┐┌ En cours (1) ────────┐┌ À relire (2) ─────────┐┌ Fusionné ────────────┐
 │◆ Tous les projets  ││#1 équipe proposée     ││#2 au travail         ││#3 branche refusée     ││                      │
 │aucun projet        ││  ▶ équipe à relire    ││                      ││  ⚑ fusion bloquée     ││                      │

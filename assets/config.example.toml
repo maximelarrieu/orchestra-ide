@@ -108,6 +108,12 @@ layout = "orchestra"
 [notify]
 attention = false
 
+# Une épopée acceptée : dès qu'un de ses tickets est libre (sans dépendance, ou
+# ses dépendances fusionnées), l'orchestrateur lui propose une équipe. Une
+# proposition seulement : rien ne se lance sans toi.
+[epic]
+auto_plan = true
+
 [models]
 aliases = [
     "fable",

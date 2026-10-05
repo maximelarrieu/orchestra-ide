@@ -67,6 +67,10 @@ impl App {
             self.on_search_key(action);
             return;
         }
+        if self.split_editing.is_some() {
+            self.on_split_key(action);
+            return;
+        }
 
         match action {
             Action::Quit => self.should_quit = true,
@@ -122,6 +126,12 @@ impl App {
                     backlog: 50,
                 });
             }
+            // An open epic closes back to the list first.
+            Screen::Epic if self.epic.is_some() => {
+                self.epic = None;
+                self.split = None;
+                self.split_selected = 0;
+            }
             _ => self.screen = Screen::Board,
         }
     }
@@ -136,6 +146,7 @@ impl App {
             Action::Cancel => {
                 self.form.clear();
                 self.promoting_todo = None;
+                self.creating_epic = false;
                 self.screen = Screen::Board;
             }
             Action::Quit => self.should_quit = true,
@@ -150,6 +161,19 @@ impl App {
         };
         match self.form.validated() {
             Ok((title, brief)) => {
+                // `creating_epic` stays set: the reply opens the epic and asks
+                // for its split (`adopt_epic`).
+                if self.creating_epic {
+                    self.outbox.push(Command::CreateEpic {
+                        project_id: project,
+                        title,
+                        brief,
+                    });
+                    self.status = "épopée écrite, découpage à venir…".into();
+                    self.form.clear();
+                    self.screen = Screen::Epic;
+                    return;
+                }
                 match self.promoting_todo.take() {
                     Some(todo_id) => {
                         self.outbox.push(Command::PromoteTodo {
@@ -273,6 +297,7 @@ impl App {
             Screen::Proposal => self.on_proposal_char(c),
             Screen::Todo => self.on_todo_char(c),
             Screen::Rules => self.on_rules_char(c),
+            Screen::Epic => self.on_epic_char(c),
             _ => {}
         }
     }

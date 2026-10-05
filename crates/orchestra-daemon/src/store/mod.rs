@@ -267,6 +267,52 @@ impl Store {
         self.with(move |c| rows::usage_per_agent(c, ticket_id)).await
     }
 
+    // -- epics --------------------------------------------------------------
+
+    pub async fn insert_epic(&self, e: orchestra_core::epic::Epic) -> Result<()> {
+        self.with(move |c| rows::insert_epic(c, &e)).await
+    }
+
+    pub async fn update_epic(&self, e: orchestra_core::epic::Epic) -> Result<()> {
+        self.with(move |c| rows::update_epic(c, &e)).await
+    }
+
+    pub async fn epic(&self, id: orchestra_core::epic::EpicId) -> Result<Option<orchestra_core::epic::Epic>> {
+        self.with(move |c| rows::select_epic(c, id)).await
+    }
+
+    pub async fn epics(&self, project_id: Option<ProjectId>) -> Result<Vec<orchestra_core::epic::Epic>> {
+        self.with(move |c| rows::select_epics(c, project_id)).await
+    }
+
+    /// Create an accepted epic's tickets, numbered, linked and saved in one
+    /// transaction; returns them with their numbers.
+    pub async fn accept_epic(
+        &self,
+        epic: orchestra_core::epic::Epic,
+        mut tickets: Vec<Ticket>,
+        deps: Vec<Vec<usize>>,
+    ) -> Result<Vec<Ticket>> {
+        self.with(move |c| {
+            rows::accept_epic(c, &epic, &mut tickets, &deps)?;
+            Ok(tickets)
+        })
+        .await
+    }
+
+    pub async fn epic_members(
+        &self,
+        epic_id: orchestra_core::epic::EpicId,
+    ) -> Result<Vec<orchestra_core::epic::EpicMember>> {
+        self.with(move |c| rows::epic_members(c, epic_id)).await
+    }
+
+    pub async fn all_epic_members(
+        &self,
+    ) -> Result<Vec<(orchestra_core::epic::EpicId, orchestra_core::epic::EpicMember)>> {
+        self.with(rows::all_epic_members).await
+    }
+
     pub async fn agents_with_status(&self, statuses: Vec<AgentStatus>) -> Result<Vec<Agent>> {
         self.with(move |c| rows::select_agents_with_status(c, &statuses))
             .await

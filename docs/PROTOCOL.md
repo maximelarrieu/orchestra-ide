@@ -89,6 +89,19 @@ qu'elle a quitté la branche par défaut (`base...branche`), lu dans le dépôt
 principal. `added` et `removed` valent `null` pour un fichier binaire ; le patch
 est coupé en fin de ligne à 200 Kio (`truncated`).
 
+**Épopées.** `create_epic` (`project_id`, `title`, `brief`) répond
+`{"reply":"epic","detail":{epic, tickets}}` ; `plan_epic` (`epic_id`) répond `ack`,
+et le découpage arrive en `epic_split_ready` (`epic_id`, `tickets`) ou
+`epic_split_failed` (`epic_id`, `error`). `list_epics` (`project_id` facultatif)
+répond `{"reply":"epics","epics":[…]}`, `get_epic` (`epic_id`) un `epic`.
+`accept_epic` (`epic_id`, `proposal` : `{summary, tickets:[{title, brief,
+depends_on:[positions], acceptance}]}`) crée les tickets dans une seule transaction,
+publie `ticket_created` pour chacun puis `epic_accepted` (`epic_id`, `tickets`), et
+répond l'épopée. `epic_finished` (`epic_id`) suit la fusion du dernier ticket.
+Chaque carte de `list_tickets` porte `epic` (`epic_id`, `epic_title`, `waiting_on`
+: les numéros des tickets pas encore fusionnés dont elle dépend), et
+`launch_ticket` refuse un ticket dont une dépendance n'est pas fusionnée.
+
 `agent_stalled` (`silent_secs`) signale un agent muet depuis `daemon.stall_secs`
 secondes. Il n'est pas arrêté ; il redevient normal au premier mot.
 

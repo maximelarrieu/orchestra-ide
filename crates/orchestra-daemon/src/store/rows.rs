@@ -11,6 +11,7 @@ use orchestra_core::model::{
     TeamProposal, Ticket, TicketId, TicketStatus, Todo, TodoId, TodoStatus, Tokens, UsageSample,
 };
 use orchestra_core::protocol::{GroupBy, UsageQuery};
+use orchestra_core::epic::{Epic, EpicId, EpicMember, EpicProposal, EpicStatus};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -268,6 +269,11 @@ pub fn select_project_containing(conn: &mut Connection, cwd: &Path) -> Result<Op
 // ---------------------------------------------------------------------------
 
 pub fn insert_ticket(conn: &mut Connection, t: &Ticket) -> Result<()> {
+    insert_ticket_on(conn, t)
+}
+
+/// The insert itself, on a plain connection or inside a transaction.
+fn insert_ticket_on(conn: &Connection, t: &Ticket) -> Result<()> {
     conn.execute(
         "INSERT INTO tickets
            (id, project_id, number, title, brief, status, branch, worktree_path,
@@ -1093,4 +1099,153 @@ pub fn upsert_cursor(
         ],
     )?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Epics
+// ---------------------------------------------------------------------------
+
+
+pub fn insert_epic(conn: &mut Connection, e: &Epic) -> Result<()> {
+    conn.execute(
+        "INSERT INTO epics (id, project_id, title, brief, status, proposal_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            e.id.to_string(),
+            e.project_id.to_string(),
+            e.title,
+            e.brief,
+            e.status.as_str(),
+            e.proposal.as_ref().map(serde_json::to_string).transpose()?,
+            ts(e.created_at),
+            ts(e.updated_at),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_epic(conn: &mut Connection, e: &Epic) -> Result<()> {
+    conn.execute(
+        "UPDATE epics SET title = ?2, brief = ?3, status = ?4, proposal_json = ?5, updated_at = ?6
+         WHERE id = ?1",
+        params![
+            e.id.to_string(),
+            e.title,
+            e.brief,
+            e.status.as_str(),
+            e.proposal.as_ref().map(serde_json::to_string).transpose()?,
+            ts(e.updated_at),
+        ],
+    )?;
+    Ok(())
+}
+
+fn epic_from_row(row: &Row<'_>) -> rusqlite::Result<Epic> {
+    let status: String = row.get("status")?;
+    let proposal: Option<String> = row.get("proposal_json")?;
+    Ok(Epic {
+        id: uuid_of(row, "id")?,
+        project_id: uuid_of(row, "project_id")?,
+        title: row.get("title")?,
+        brief: row.get("brief")?,
+        status: EpicStatus::parse(&status).unwrap_or(EpicStatus::Draft),
+        proposal: proposal
+            .map(|s| serde_json::from_str::<EpicProposal>(&s))
+            .transpose()
+            .map_err(conv_err)?,
+        created_at: time_of(row, "created_at")?,
+        updated_at: time_of(row, "updated_at")?,
+    })
+}
+
+pub fn select_epic(conn: &mut Connection, id: EpicId) -> Result<Option<Epic>> {
+    let mut stmt = conn.prepare_cached("SELECT * FROM epics WHERE id = ?1")?;
+    Ok(stmt.query_row([id.to_string()], epic_from_row).optional()?)
+}
+
+pub fn select_epics(conn: &mut Connection, project_id: Option<ProjectId>) -> Result<Vec<Epic>> {
+    let (sql, args) = match project_id {
+        Some(p) => (
+            "SELECT * FROM epics WHERE project_id = ?1 ORDER BY created_at DESC",
+            vec![p.to_string()],
+        ),
+        None => ("SELECT * FROM epics ORDER BY created_at DESC", Vec::new()),
+    };
+    let mut stmt = conn.prepare_cached(sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter()), epic_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Create the tickets of an accepted split, numbered and linked in one
+/// transaction: two epics accepted at once cannot take the same number, and
+/// a failure leaves no half of an epic behind. `tickets` come in the split's
+/// order, with `deps[i]` the positions ticket `i` depends on.
+pub fn accept_epic(
+    conn: &mut Connection,
+    epic: &Epic,
+    tickets: &mut [Ticket],
+    deps: &[Vec<usize>],
+) -> Result<()> {
+    let tx = conn.transaction()?;
+    let mut next: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(number), 0) + 1 FROM tickets WHERE project_id = ?1",
+        [epic.project_id.to_string()],
+        |r| r.get(0),
+    )?;
+    for t in tickets.iter_mut() {
+        t.number = next;
+        next += 1;
+        insert_ticket_on(&tx, t)?;
+    }
+    for (position, t) in tickets.iter().enumerate() {
+        let depends: Vec<String> = deps[position]
+            .iter()
+            .map(|&d| tickets[d].id.to_string())
+            .collect();
+        tx.execute(
+            "INSERT INTO epic_tickets (ticket_id, epic_id, position, depends_on) VALUES (?1, ?2, ?3, ?4)",
+            params![t.id.to_string(), epic.id.to_string(), position as i64, serde_json::to_string(&depends)?],
+        )?;
+    }
+    tx.execute(
+        "UPDATE epics SET status = ?2, proposal_json = ?3, updated_at = ?4 WHERE id = ?1",
+        params![
+            epic.id.to_string(),
+            epic.status.as_str(),
+            epic.proposal.as_ref().map(serde_json::to_string).transpose()?,
+            ts(epic.updated_at),
+        ],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn member_from_row(row: &Row<'_>) -> rusqlite::Result<(EpicId, EpicMember)> {
+    let deps: String = row.get("depends_on")?;
+    let ids: Vec<String> = serde_json::from_str(&deps).map_err(conv_err)?;
+    Ok((
+        uuid_of(row, "epic_id")?,
+        EpicMember {
+            ticket_id: uuid_of(row, "ticket_id")?,
+            position: row.get::<_, i64>("position")? as u32,
+            depends_on: ids.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect(),
+        },
+    ))
+}
+
+/// The tickets of an epic, in order.
+pub fn epic_members(conn: &mut Connection, epic_id: EpicId) -> Result<Vec<EpicMember>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT * FROM epic_tickets WHERE epic_id = ?1 ORDER BY position")?;
+    let rows = stmt.query_map([epic_id.to_string()], member_from_row)?;
+    Ok(rows
+        .map(|r| r.map(|(_, m)| m))
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Every ticket that belongs to an epic, with that epic: the board's view.
+pub fn all_epic_members(conn: &mut Connection) -> Result<Vec<(EpicId, EpicMember)>> {
+    let mut stmt = conn.prepare_cached("SELECT * FROM epic_tickets ORDER BY epic_id, position")?;
+    let rows = stmt.query_map([], member_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
