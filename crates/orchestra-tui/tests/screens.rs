@@ -2032,3 +2032,83 @@ fn the_diff_opens_over_the_ticket_scrolls_and_closes() {
     assert!(app.diff_view.is_none());
     assert_eq!(app.screen, Screen::Ticket, "q ferme le diff, pas l'écran");
 }
+
+#[test]
+fn the_agent_log_is_searched_filtered_and_its_neighbours_reached() {
+    let mut app = app_watching(AgentStatus::Running);
+    for i in 0..40 {
+        let kind = if i % 10 == 3 {
+            EventKind::HookBlocked { tool: "Bash".into(), reason: format!("refus {i}") }
+        } else {
+            EventKind::AgentText { text: format!("réflexion {i}") }
+        };
+        app.log.push_event(&Event::from_new(i, NewEvent::new(kind)));
+    }
+
+    // `/` opens a search; letters go into it, not to the screen's keys.
+    app.update(Msg::Key(Action::Char('/')));
+    assert!(app.is_typing());
+    for c in "réflexion 2".chars() {
+        app.update(Msg::Key(Action::Char(c)));
+    }
+    assert!(draw(&app, 100, 30).contains("/réflexion 2▏"));
+    app.update(Msg::Key(Action::Submit));
+    assert!(!app.is_typing());
+    assert!(app.status.contains("n plus ancien"), "{}", app.status);
+    let bottom = |app: &App| app.log.window(app.log_height.get()).last().unwrap().text.clone();
+    draw(&app, 100, 30);
+    assert_eq!(bottom(&app), "réflexion 29", "la plus récente d'abord");
+    app.update(Msg::Key(Action::Char('n')));
+    assert_eq!(bottom(&app), "réflexion 28");
+
+    // `f` keeps only what went wrong.
+    app.update(Msg::Key(Action::Char('f')));
+    let out = draw(&app, 100, 30);
+    assert!(out.contains("filtre : échecs et refus"), "{out}");
+    let body: Vec<&str> = out.lines().filter(|l| l.starts_with('│')).collect();
+    assert!(body.iter().all(|l| !l.contains("réflexion")), "la prose disparaît : {out}");
+    assert_eq!(body.iter().filter(|l| l.contains("bloqué")).count(), 4);
+
+    // `[` / `]` reach a neighbour in the team, and the screen stays on it.
+    let team = app.ticket.as_ref().unwrap().agents.len();
+    assert!(team > 1, "la fixture a une équipe");
+    let before = app.watched_agent_id();
+    let key = if app.agent_selected + 1 < team { ']' } else { '[' };
+    let cmds = app.update(Msg::Key(Action::Char(key)));
+    assert_ne!(app.watched_agent_id(), before);
+    assert!(app.agent_hand_picked);
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Command::Subscribe { filter, .. } if filter.agent_id == app.watched_agent_id()
+    )));
+    assert!(app.log.is_empty(), "le journal du voisin repart de zéro");
+}
+
+#[test]
+fn the_palette_opens_a_ticket_completes_and_remembers() {
+    let mut app = board_waiting();
+    app.update(Msg::Key(Action::CommandPalette));
+    for c in "t 3".chars() {
+        app.update(Msg::Key(Action::Char(c)));
+    }
+    let cmds = app.update(Msg::Key(Action::Submit));
+    assert_eq!(app.screen, Screen::Ticket);
+    assert!(matches!(cmds.as_slice(), [Command::GetTicket { .. }]), "{cmds:?}");
+    assert_eq!(app.selected_ticket().unwrap().ticket.number, 3);
+
+    // Tab finishes a command's name when only one fits.
+    app.update(Msg::Key(Action::CommandPalette));
+    for c in "conv".chars() {
+        app.update(Msg::Key(Action::Char(c)));
+    }
+    app.update(Msg::Key(Action::NextField));
+    assert_eq!(app.palette.as_deref(), Some("convention "));
+    app.update(Msg::Key(Action::Cancel));
+
+    // ↑ brings back what was run.
+    app.update(Msg::Key(Action::CommandPalette));
+    app.update(Msg::Key(Action::Up));
+    assert_eq!(app.palette.as_deref(), Some("t 3"));
+    app.update(Msg::Key(Action::Down));
+    assert_eq!(app.palette.as_deref(), Some(""));
+}

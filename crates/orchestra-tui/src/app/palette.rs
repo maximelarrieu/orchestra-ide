@@ -8,6 +8,7 @@ impl App {
         let (verb, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         let rest = rest.trim();
         match verb {
+            "t" | "ticket" => self.open_ticket_number(rest),
             "project" | "projet" => {
                 let (sub, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
                 match sub {
@@ -148,5 +149,81 @@ impl App {
     pub(super) fn todo_at(&self, spec: &str) -> Option<&Todo> {
         let n: usize = spec.trim().parse().ok()?;
         n.checked_sub(1).and_then(|i| self.todos.get(i))
+    }
+
+    /// `:t 12`: open ticket #12 of what the board holds.
+    fn open_ticket_number(&mut self, rest: &str) {
+        let Ok(number) = rest.trim().trim_start_matches('#').parse::<i64>() else {
+            self.status = "usage : :t <numéro>".into();
+            return;
+        };
+        let found: Vec<usize> = (0..self.tickets.len())
+            .filter(|i| self.tickets[*i].ticket.number == number)
+            .collect();
+        let Some(&index) = found.first() else {
+            self.status = format!("pas de ticket #{number} sur ce tableau");
+            return;
+        };
+        let ticket_id = self.tickets[index].ticket.id;
+        self.ticket_selected = index;
+        self.agent_selected = 0;
+        self.agent_pinned = false;
+        self.outbox.push(Command::GetTicket { ticket_id });
+        self.go(Screen::Ticket);
+        if found.len() > 1 {
+            // Numbers repeat across projects: say which one this is.
+            self.status = format!(
+                "#{number} existe dans {} projets : ouvert celui de « {} »",
+                found.len(),
+                self.project_name(self.tickets[index].ticket.project_id).unwrap_or("?")
+            );
+        }
+    }
+
+    /// Tab: finish the command's name, as far as it is unambiguous.
+    pub(super) fn complete_palette(&mut self) {
+        let Some(buf) = self.palette.as_mut() else {
+            return;
+        };
+        if buf.contains(char::is_whitespace) {
+            return;
+        }
+        let mut verbs: Vec<&str> = crate::keys::PALETTE
+            .iter()
+            .filter_map(|(command, _)| command.trim_start_matches(':').split_whitespace().next())
+            .filter(|verb| verb.starts_with(buf.as_str()))
+            .collect();
+        verbs.sort_unstable();
+        verbs.dedup();
+        match verbs.as_slice() {
+            [] => {}
+            [one] => *buf = format!("{one} "),
+            several => {
+                let first = several[0];
+                let common = (0..=first.len())
+                    .rev()
+                    .find(|&n| first.is_char_boundary(n) && several.iter().all(|v| v.starts_with(&first[..n])))
+                    .unwrap_or(0);
+                *buf = first[..common].to_string();
+                self.status = several.join("  ");
+            }
+        }
+    }
+
+    /// ↑ / ↓: walk back through the lines run before.
+    pub(super) fn recall_palette(&mut self, direction: isize) {
+        if self.palette_history.is_empty() {
+            return;
+        }
+        let last = self.palette_history.len() - 1;
+        let at = match (self.palette_history_at, direction < 0) {
+            (None, true) => Some(last),
+            (None, false) => None,
+            (Some(i), true) => Some(i.saturating_sub(1)),
+            (Some(i), false) if i < last => Some(i + 1),
+            (Some(_), false) => None,
+        };
+        self.palette_history_at = at;
+        self.palette = Some(at.map(|i| self.palette_history[i].clone()).unwrap_or_default());
     }
 }

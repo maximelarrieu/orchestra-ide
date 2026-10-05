@@ -403,6 +403,14 @@ pub struct App {
     /// The activity strip folded away (`A`): on a short terminal it takes
     /// rows the screen itself needs.
     pub activity_hidden: bool,
+    /// Palette lines run before, oldest first, and where ↑/↓ stand in them.
+    pub palette_history: Vec<String>,
+    pub palette_history_at: Option<usize>,
+    /// What is being typed after `/` in the agent log, while it is.
+    pub log_search: Option<String>,
+    /// The watched agent was chosen with `[` / `]`: the screen no longer
+    /// jumps to whoever works.
+    pub agent_hand_picked: bool,
     /// The branch's diff, over whatever screen asked for it (`D`).
     pub diff_view: Option<DiffView>,
     /// The ticket screen shows its timeline instead of its brief (`T`).
@@ -467,6 +475,10 @@ impl Default for App {
             activity_hidden: false,
             ticket_timeline: false,
             diff_view: None,
+            log_search: None,
+            palette_history: Vec::new(),
+            palette_history_at: None,
+            agent_hand_picked: false,
             palette: None,
             should_quit: false,
             outbox: Vec::new(),
@@ -660,6 +672,7 @@ impl App {
         self.palette.is_some()
             || self.screen == Screen::NewTicket
             || self.steer.is_some()
+            || self.log_search.is_some()
             || (self.screen == Screen::Proposal && self.editor.is_editing())
     }
 }

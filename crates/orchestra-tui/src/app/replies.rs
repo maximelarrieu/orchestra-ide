@@ -200,7 +200,7 @@ impl App {
                 // out from under him there.
                 let may_follow = match self.screen {
                     Screen::Ticket => !self.agent_pinned,
-                    _ => true,
+                    _ => !self.agent_hand_picked,
                 };
                 if may_follow
                     && !self

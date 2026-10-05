@@ -9,6 +9,7 @@ impl App {
     /// row: the orchestrator sorts before the team and watching it while the
     /// real agent runs looks exactly like a frozen screen.
     pub(super) fn open_agent(&mut self) {
+        self.agent_hand_picked = false;
         self.select_liveliest_agent();
         let Some(agent_id) = self.watched_agent_id() else {
             self.status = "aucun agent sur ce ticket".into();
@@ -66,7 +67,27 @@ impl App {
         };
         let active = agent.agent.status.is_active();
         let agent_id = agent.agent.id;
+        let has_query = self.log.query.is_some();
+        let several = self.ticket.as_ref().is_some_and(|d| d.agents.len() > 1);
         match c {
+            '/' => self.log_search = Some(String::new()),
+            // Only once something was searched: the bar offers them then.
+            'n' | 'N' if has_query => {
+                if !self.log.find(c == 'n') {
+                    self.status = if c == 'n' {
+                        "pas d'occurrence plus ancienne".into()
+                    } else {
+                        "pas d'occurrence plus récente".into()
+                    };
+                }
+            }
+            'f' => {
+                let next = self.log.filter.next();
+                self.log.set_filter(next);
+                self.status = format!("journal : {}", next.label_fr());
+            }
+            '[' if several => self.watch_neighbor(-1),
+            ']' if several => self.watch_neighbor(1),
             'D' => self.request_diff(),
             'o' => {
                 self.outbox.push(Command::OpenPane { agent_id });
@@ -94,6 +115,62 @@ impl App {
                 );
             }
             _ => {}
+        }
+    }
+
+    /// Keys while a search is typed: Entrée looks for it, from the newest
+    /// line up; Échap gives it up.
+    pub(super) fn on_search_key(&mut self, action: Action) {
+        let Some(buffer) = self.log_search.as_mut() else {
+            return;
+        };
+        match action {
+            Action::Char(c) => buffer.push(c),
+            Action::Backspace => {
+                buffer.pop();
+            }
+            Action::Submit | Action::Accept => {
+                let query = self.log_search.take().unwrap_or_default();
+                if query.trim().is_empty() {
+                    self.log.query = None;
+                    return;
+                }
+                self.log.query = Some(query.clone());
+                self.log.follow();
+                // The newest match first: what just happened is what is looked for.
+                let found = self.log.window(1).first().is_some_and(|l| self.log.matches(l))
+                    || self.log.find(true);
+                self.status = if found {
+                    format!("« {query} » — n plus ancien, N plus récent")
+                } else {
+                    format!("« {query} » introuvable")
+                };
+            }
+            Action::Cancel => self.log_search = None,
+            Action::Quit => self.should_quit = true,
+            _ => {}
+        }
+    }
+
+    /// Watch the agent before or after this one in the ticket's team, and
+    /// stay on it: the screen no longer follows whoever works.
+    pub(super) fn watch_neighbor(&mut self, delta: isize) {
+        let Some(count) = self.ticket.as_ref().map(|d| d.agents.len()) else {
+            return;
+        };
+        let next = (self.agent_selected as isize + delta).clamp(0, count as isize - 1) as usize;
+        if next == self.agent_selected {
+            return;
+        }
+        self.agent_selected = next;
+        self.agent_hand_picked = true;
+        self.log.clear();
+        if let Some(agent_id) = self.watched_agent_id() {
+            self.outbox.push(Command::Subscribe {
+                filter: orchestra_core::events::EventFilter::for_agent(agent_id),
+                since_seq: None,
+                backlog: 500,
+            });
         }
     }
 }

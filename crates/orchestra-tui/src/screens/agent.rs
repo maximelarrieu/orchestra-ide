@@ -161,7 +161,12 @@ fn render_log(app: &App, frame: &mut Frame<'_>, area: Rect) {
             .window(height)
             .into_iter()
             .map(|line| {
-                let (marker, marker_style, text_style) = line_styles(line.kind);
+                let (marker, marker_style, mut text_style) = line_styles(line.kind);
+                // A match is underlined, not recoloured: the colour already
+                // says what kind of line it is.
+                if app.log.matches(line) {
+                    text_style = text_style.add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
+                }
                 Line::from(vec![
                     Span::styled(
                         format!("{:>8} ", line.stamp),
@@ -174,13 +179,21 @@ fn render_log(app: &App, frame: &mut Frame<'_>, area: Rect) {
             .collect()
     };
 
-    let title = match app.watched_agent() {
+    let mut title = match app.watched_agent() {
         Some(a) if a.agent.status.is_active() => {
             format!("En direct — {} ligne(s)", app.log.len())
         }
         Some(a) => format!("{} — {} ligne(s)", a.agent.status.label_fr(), app.log.len()),
         None => "Agent".to_string(),
     };
+    if app.log.filter != crate::widgets::live_log::LogFilter::All {
+        title.push_str(&format!(" · filtre : {}", app.log.filter.label_fr()));
+    }
+    match (&app.log_search, &app.log.query) {
+        (Some(typing), _) => title.push_str(&format!(" · /{typing}▏")),
+        (None, Some(query)) => title.push_str(&format!(" · « {query} »")),
+        _ => {}
+    }
     frame.render_widget(Paragraph::new(lines).block(pane_block(&title, true)), area);
 }
 

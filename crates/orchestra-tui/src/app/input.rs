@@ -16,11 +16,23 @@ impl App {
                 Action::Backspace => {
                     buf.pop();
                 }
-                Action::Cancel => self.palette = None,
+                Action::Cancel => {
+                    self.palette = None;
+                    self.palette_history_at = None;
+                }
                 Action::Submit => {
                     let line = self.palette.take().unwrap_or_default();
+                    self.palette_history_at = None;
+                    if !line.trim().is_empty()
+                        && self.palette_history.last().map(String::as_str) != Some(line.trim())
+                    {
+                        self.palette_history.push(line.trim().to_string());
+                    }
                     self.run_palette(&line);
                 }
+                Action::NextField => self.complete_palette(),
+                Action::Up => self.recall_palette(-1),
+                Action::Down => self.recall_palette(1),
                 Action::Quit => self.should_quit = true,
                 _ => {}
             }
@@ -49,6 +61,10 @@ impl App {
         }
         if self.steer.is_some() {
             self.on_steer_key(action);
+            return;
+        }
+        if self.log_search.is_some() {
+            self.on_search_key(action);
             return;
         }
 
@@ -98,6 +114,7 @@ impl App {
             }
             Screen::Proposal | Screen::Agent => {
                 self.screen = Screen::Ticket;
+                self.agent_hand_picked = false;
                 // Back to the whole ticket's events.
                 self.outbox.push(Command::Subscribe {
                     filter: orchestra_core::events::EventFilter::board(),

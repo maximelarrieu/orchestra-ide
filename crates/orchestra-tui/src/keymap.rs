@@ -95,6 +95,9 @@ pub fn map_input(key: KeyEvent) -> Option<Action> {
         (KeyCode::Tab, _) => Action::NextField,
         (KeyCode::Enter, _) => Action::Submit,
         (KeyCode::Backspace, _) => Action::Backspace,
+        // The palette's history; forms and fields ignore them.
+        (KeyCode::Up, _) => Action::Up,
+        (KeyCode::Down, _) => Action::Down,
         (KeyCode::Char(c), false) => Action::Char(c),
         _ => return None,
     })

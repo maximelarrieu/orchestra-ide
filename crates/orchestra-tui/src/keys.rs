@@ -157,6 +157,8 @@ pub fn strip(app: &App) -> Vec<Hint> {
     if app.palette.is_some() {
         return vec![
             Hint::screen("Entrée", "exécuter"),
+            Hint::screen("Tab", "compléter"),
+            Hint::screen("↑/↓", "historique"),
             Hint::global("Échap", "annuler"),
         ];
     }
@@ -186,6 +188,12 @@ fn typing_hints(app: &App) -> Option<Vec<Hint>> {
         };
         return Some(vec![
             Hint::screen("Ctrl-S", what),
+            Hint::global("Échap", "annuler"),
+        ]);
+    }
+    if app.log_search.is_some() {
+        return Some(vec![
+            Hint::screen("Entrée", "chercher"),
             Hint::global("Échap", "annuler"),
         ]);
     }
@@ -312,13 +320,24 @@ fn ticket_hints(app: &App) -> Vec<Hint> {
 
 fn agent_hints(app: &App) -> Vec<Hint> {
     let mut hints = Vec::new();
-    if app
+    let active = app
         .watched_agent()
-        .is_some_and(|a| a.agent.status.is_active())
-    {
+        .is_some_and(|a| a.agent.status.is_active());
+    // What acts on the agent comes first, so the bar keeps it when it
+    // trims; reading the log comes after.
+    if active {
         hints.push(Hint::screen("s", "consigne"));
         hints.push(Hint::screen("S", "rediriger"));
         hints.push(Hint::screen("x", "arrêter"));
+    }
+    if app.watched_agent().is_some() {
+        hints.push(Hint::screen("o", "son pane"));
+        if !active {
+            hints.push(Hint::screen("T", "reprendre la main"));
+        }
+        if app.ticket.as_ref().is_some_and(|d| d.ticket.branch.is_some()) {
+            hints.push(Hint::screen("D", "diff"));
+        }
     }
     // Going back to the live tail only means something once you have left
     // it; offering it always would drown the keys that change something.
@@ -327,17 +346,16 @@ fn agent_hints(app: &App) -> Vec<Hint> {
     } else {
         hints.push(Hint::screen("G", "revenir au direct"));
     }
-    if app.watched_agent().is_some() {
-        hints.push(Hint::screen("o", "son pane"));
-        if app.ticket.as_ref().is_some_and(|d| d.ticket.branch.is_some()) {
-            hints.push(Hint::screen("D", "diff"));
-        }
-        if !app
-            .watched_agent()
-            .is_some_and(|a| a.agent.status.is_active())
-        {
-            hints.push(Hint::screen("T", "reprendre la main"));
-        }
+    hints.push(Hint::screen("/", "chercher"));
+    if app.log.query.is_some() {
+        hints.push(Hint::screen("n/N", "occurrence"));
+    }
+    hints.push(Hint::screen(
+        "f",
+        format!("filtre : {}", app.log.filter.label_fr()),
+    ));
+    if app.ticket.as_ref().is_some_and(|d| d.agents.len() > 1) {
+        hints.push(Hint::screen("[/]", "agent voisin"));
     }
     hints
 }
@@ -455,6 +473,7 @@ pub const PARTOUT: &[(&str, &str)] = &[
 /// What the palette takes. Written as one types it, brackets left off: a
 /// command is not a key.
 pub const PALETTE: &[(&str, &str)] = &[
+    (":t <n>", "ouvrir le ticket n°"),
     (":project add <chemin>", "ajouter un projet"),
     (":project forget <nom>", "oublier un projet"),
     (":todo add <titre>", "ajouter un todo"),

@@ -44,6 +44,51 @@ impl LineKind {
     ];
 }
 
+/// Which lines the log shows (`f` cycles through them).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LogFilter {
+    #[default]
+    All,
+    /// Failed tools and refusals of the guard: what went wrong.
+    Problems,
+    /// Every tool call, without the prose.
+    Tools,
+    /// What the user said to the agent.
+    Steers,
+}
+
+impl LogFilter {
+    pub fn keeps(self, kind: LineKind) -> bool {
+        match self {
+            LogFilter::All => true,
+            LogFilter::Problems => matches!(kind, LineKind::ToolFailed | LineKind::Blocked),
+            LogFilter::Tools => matches!(
+                kind,
+                LineKind::ToolRunning | LineKind::ToolOk | LineKind::ToolFailed | LineKind::Blocked
+            ),
+            LogFilter::Steers => kind == LineKind::Steer,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            LogFilter::All => LogFilter::Problems,
+            LogFilter::Problems => LogFilter::Tools,
+            LogFilter::Tools => LogFilter::Steers,
+            LogFilter::Steers => LogFilter::All,
+        }
+    }
+
+    pub fn label_fr(self) -> &'static str {
+        match self {
+            LogFilter::All => "tout",
+            LogFilter::Problems => "échecs et refus",
+            LogFilter::Tools => "outils",
+            LogFilter::Steers => "consignes",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LogLine {
     pub kind: LineKind,
@@ -65,8 +110,12 @@ pub struct LiveLog {
     pub thinking_chars: usize,
     /// True once the run has ended.
     pub finished: bool,
-    /// Scroll offset from the bottom; zero means following.
+    /// Scroll offset from the bottom, in lines the filter shows; zero means
+    /// following.
     pub scroll: usize,
+    pub filter: LogFilter,
+    /// What `/` looked for, kept for `n` and `N`.
+    pub query: Option<String>,
 }
 
 impl LiveLog {
@@ -77,6 +126,7 @@ impl LiveLog {
         self.thinking_chars = 0;
         self.finished = false;
         self.scroll = 0;
+        self.query = None;
     }
 
     pub fn len(&self) -> usize {
@@ -91,17 +141,63 @@ impl LiveLog {
         self.scroll == 0
     }
 
+    /// The lines the filter lets through, oldest first.
+    fn visible(&self) -> Vec<&LogLine> {
+        self.lines
+            .iter()
+            .filter(|l| self.filter.keeps(l.kind))
+            .collect()
+    }
+
     /// Lines to draw for a window `height` tall, oldest first.
     pub fn window(&self, height: usize) -> Vec<&LogLine> {
-        let total = self.lines.len();
-        let end = total.saturating_sub(self.scroll);
+        let visible = self.visible();
+        let end = visible.len().saturating_sub(self.scroll);
         let start = end.saturating_sub(height);
-        self.lines.range(start..end).collect()
+        visible[start..end].to_vec()
     }
 
     pub fn scroll_up(&mut self, amount: usize, height: usize) {
-        let max = self.lines.len().saturating_sub(height);
+        let max = self.visible().len().saturating_sub(height);
         self.scroll = (self.scroll + amount).min(max);
+    }
+
+    /// Show other lines; back to the live tail, since the old place may not
+    /// exist among them.
+    pub fn set_filter(&mut self, filter: LogFilter) {
+        self.filter = filter;
+        self.scroll = 0;
+    }
+
+    /// Whether `line` holds what was searched for, case aside.
+    pub fn matches(&self, line: &LogLine) -> bool {
+        self.query
+            .as_deref()
+            .is_some_and(|q| !q.is_empty() && line.text.to_lowercase().contains(&q.to_lowercase()))
+    }
+
+    /// Bring the next match into view, at the bottom of the window: older
+    /// than the one shown there with `older`, newer otherwise. False when
+    /// there is none that way.
+    pub fn find(&mut self, older: bool) -> bool {
+        let visible = self.visible();
+        let len = visible.len();
+        if len == 0 {
+            return false;
+        }
+        let current = len - 1 - self.scroll.min(len - 1);
+        let hit = if older {
+            (0..current).rev().find(|i| self.matches(visible[*i]))
+        } else {
+            (current + 1..len).find(|i| self.matches(visible[*i]))
+        };
+        match hit {
+            Some(i) => {
+                self.scroll = len - 1 - i;
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn scroll_down(&mut self, amount: usize) {
@@ -256,8 +352,9 @@ impl LiveLog {
     }
 
     fn push(&mut self, line: LogLine) {
-        // Following stays following; a reader who scrolled up keeps their place.
-        if !self.is_following() {
+        // Following stays following; a reader who scrolled up keeps their
+        // place — counted in the lines the filter shows.
+        if !self.is_following() && self.filter.keeps(line.kind) {
             self.scroll += 1;
         }
         self.lines.push_back(line);
@@ -267,6 +364,50 @@ impl LiveLog {
                 self.scroll -= 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn line(kind: LineKind, text: &str) -> LogLine {
+        LogLine { kind, text: text.into(), stamp: String::new(), tool_use_id: None }
+    }
+
+    fn log() -> LiveLog {
+        let mut log = LiveLog::default();
+        for i in 0..30 {
+            log.push(line(LineKind::Text, &format!("pensée {i}")));
+            if i % 10 == 0 {
+                log.push(line(LineKind::ToolFailed, &format!("cargo test échoue ({i})")));
+            }
+        }
+        log
+    }
+
+    #[test]
+    fn the_filter_keeps_only_what_it_names_and_returns_to_the_tail() {
+        let mut log = log();
+        log.scroll_up(5, 4);
+        log.set_filter(LogFilter::Problems);
+        assert!(log.is_following());
+        let shown = log.window(10);
+        assert_eq!(shown.len(), 3);
+        assert!(shown.iter().all(|l| l.kind == LineKind::ToolFailed));
+    }
+
+    #[test]
+    fn search_walks_older_then_newer_matches() {
+        let mut log = log();
+        log.query = Some("ÉCHOUE".into());
+        assert!(log.find(true));
+        assert!(log.window(1)[0].text.contains("(20)"), "la plus récente d'abord, en remontant");
+        assert!(log.find(true));
+        assert!(log.window(1)[0].text.contains("(10)"));
+        assert!(log.find(false));
+        assert!(log.window(1)[0].text.contains("(20)"));
+        assert!(!log.find(false), "rien de plus récent");
     }
 }
 
