@@ -146,6 +146,14 @@ pub fn strip(app: &App) -> Vec<Hint> {
     if app.show_help {
         return vec![Hint::global("Échap", "fermer l'aide")];
     }
+    if app.diff_view.is_some() {
+        return vec![
+            Hint::screen("j/k", "défiler"),
+            Hint::screen("PgUp/PgDn", "page"),
+            Hint::screen("g/G", "début / fin"),
+            Hint::global("q", "fermer le diff"),
+        ];
+    }
     if app.palette.is_some() {
         return vec![
             Hint::screen("Entrée", "exécuter"),
@@ -292,6 +300,9 @@ fn ticket_hints(app: &App) -> Vec<Hint> {
         hints.push(Hint::screen("Entrée", "suivre l'agent"));
     }
     hints.push(Hint::screen("n", "nouveau ticket"));
+    if detail.ticket.branch.is_some() {
+        hints.push(Hint::screen("D", "diff"));
+    }
     hints.push(Hint::screen(
         "T",
         if app.ticket_timeline { "le brief" } else { "chronologie" },
@@ -318,6 +329,9 @@ fn agent_hints(app: &App) -> Vec<Hint> {
     }
     if app.watched_agent().is_some() {
         hints.push(Hint::screen("o", "son pane"));
+        if app.ticket.as_ref().is_some_and(|d| d.ticket.branch.is_some()) {
+            hints.push(Hint::screen("D", "diff"));
+        }
         if !app
             .watched_agent()
             .is_some_and(|a| a.agent.status.is_active())

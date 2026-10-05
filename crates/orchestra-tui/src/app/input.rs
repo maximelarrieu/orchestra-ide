@@ -26,6 +26,10 @@ impl App {
             }
             return;
         }
+        if self.diff_view.is_some() {
+            self.on_diff_key(action);
+            return;
+        }
         if self.show_help {
             // Any key closes the help overlay, except quitting outright.
             match action {

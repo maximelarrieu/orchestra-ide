@@ -272,6 +272,7 @@ impl Daemon {
                 self.list_tickets(project_id, status).await
             }
             Command::GetTicket { ticket_id } => self.get_ticket(ticket_id).await,
+            Command::GetDiff { ticket_id } => self.get_diff(ticket_id).await,
             Command::CreateTicket {
                 project_id,
                 title,
@@ -544,6 +545,33 @@ impl Daemon {
         let agents = self.store.agents_of_ticket(ticket.id).await?;
         let cost = self.ledger.ticket_cost(ticket.id).await?;
         Ok(summarise(ticket, &agents, cost))
+    }
+
+    /// The ticket's branch against the default branch. Read from the main
+    /// repository, which shares the branch with the worktree: the diff is
+    /// there even once the worktree is gone.
+    async fn get_diff(&self, ticket_id: TicketId) -> Result<Reply, ApiError> {
+        let ticket = self
+            .store
+            .ticket(ticket_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("ticket"))?;
+        let branch = ticket
+            .branch
+            .ok_or_else(|| ApiError::invalid("ce ticket n'a pas encore de branche : lance-le d'abord"))?;
+        let project = self
+            .store
+            .project(ticket.project_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("projet du ticket"))?;
+        let diff = crate::worktree::off_runtime(move || crate::worktree::diff(&project, &branch))
+            .await
+            .map_err(|e| ApiError::conflict(format!("diff illisible : {e:#}")))?;
+        Ok(Reply::Diff {
+            diff: Box::new(diff),
+        })
     }
 
     async fn get_ticket(&self, ticket_id: Uuid) -> Result<Reply, ApiError> {

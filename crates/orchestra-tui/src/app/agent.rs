@@ -67,6 +67,7 @@ impl App {
         let active = agent.agent.status.is_active();
         let agent_id = agent.agent.id;
         match c {
+            'D' => self.request_diff(),
             'o' => {
                 self.outbox.push(Command::OpenPane { agent_id });
                 self.status = "ouverture du pane…".into();

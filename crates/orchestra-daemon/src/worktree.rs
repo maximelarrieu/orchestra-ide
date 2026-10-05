@@ -262,6 +262,54 @@ pub fn push_branch(repo: &Path, branch: &str) -> Result<Option<String>> {
     Ok(Some(remote))
 }
 
+/// What `branch` changes against the project's default branch, from where it
+/// left it (`base...branch`).
+pub fn diff(project: &Project, branch: &str) -> Result<orchestra_core::protocol::TicketDiff> {
+    let range = format!("{}...{branch}", project.default_branch);
+    let numstat = git(&project.path, &["diff".into(), "--numstat".into(), range.clone()])?;
+    let patch = git(&project.path, &["diff".into(), range])?;
+    let (patch, truncated) = cap_patch(patch, orchestra_core::protocol::DIFF_PATCH_MAX);
+    Ok(orchestra_core::protocol::TicketDiff {
+        branch: branch.to_string(),
+        base: project.default_branch.clone(),
+        files: parse_numstat(&numstat),
+        patch,
+        truncated,
+    })
+}
+
+/// `12\t3\tpath` per file; `-\t-\tpath` for a binary one.
+pub fn parse_numstat(text: &str) -> Vec<orchestra_core::protocol::DiffFile> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let added = parts.next()?;
+            let removed = parts.next()?;
+            let path = parts.next()?.trim();
+            (!path.is_empty()).then(|| orchestra_core::protocol::DiffFile {
+                path: path.to_string(),
+                added: added.parse().ok(),
+                removed: removed.parse().ok(),
+            })
+        })
+        .collect()
+}
+
+/// At most `max` bytes, cut at the end of a line so no line arrives halved —
+/// and so never inside a character, a newline being one byte.
+pub fn cap_patch(patch: String, max: usize) -> (String, bool) {
+    if patch.len() <= max {
+        return (patch, false);
+    }
+    // Searched in bytes: `max` itself may fall inside a character.
+    let cut = patch.as_bytes()[..max]
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    (patch[..cut].to_string(), true)
+}
+
 /// Tracked files changed but not committed. Untracked files are left out on
 /// purpose: they are the user's own business, not a reason to refuse a merge.
 pub fn tracked_changes(repo: &Path) -> Vec<String> {
@@ -419,6 +467,25 @@ fn git(cwd: &Path, args: &[String]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numstat_reads_text_and_binary_files() {
+        let files = parse_numstat("12\t3\tsrc/a.rs\n-\t-\tlogo.png\n0\t7\tdocs/vieux nom.md\n");
+        assert_eq!(files.len(), 3);
+        assert_eq!((files[0].added, files[0].removed), (Some(12), Some(3)));
+        assert_eq!((files[1].added, files[1].removed), (None, None), "binaire");
+        assert_eq!(files[2].path, "docs/vieux nom.md", "un espace reste dans le chemin");
+    }
+
+    #[test]
+    fn a_long_patch_is_cut_at_a_line_end() {
+        let patch = "+é\n".repeat(100);
+        let (cut, truncated) = cap_patch(patch.clone(), 50);
+        assert!(truncated);
+        assert!(cut.len() <= 50 && cut.ends_with('\n'));
+        assert!(cut.lines().all(|l| l == "+é"), "aucune ligne coupée");
+        assert_eq!(cap_patch(patch.clone(), patch.len()), (patch, false));
+    }
     use orchestra_core::model::{ProjectKind, TicketStatus};
     use uuid::Uuid;
 
@@ -539,6 +606,25 @@ mod tests {
                 .output()
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn the_diff_shows_what_the_branch_brings_and_not_what_main_did_since() {
+        let f = fixture();
+        let plan = plan_for(&f.project, &ticket(1, "cache"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        commit(&wt.path, "cache.rs", "ligne 1\nligne 2\n");
+        // The default branch moves on meanwhile: not the ticket's doing.
+        commit(&f.project.path, "ailleurs.txt", "autre travail\n");
+
+        let d = diff(&f.project, &wt.branch).unwrap();
+        assert_eq!(d.base, "main");
+        assert_eq!(d.files.len(), 1, "{:?}", d.files);
+        assert_eq!(d.files[0].path, "cache.rs");
+        assert_eq!(d.files[0].added, Some(2));
+        assert!(d.patch.contains("+ligne 2"));
+        assert!(!d.patch.contains("ailleurs"), "base...branche, pas base..branche");
+        assert!(!d.truncated);
     }
 
     #[test]

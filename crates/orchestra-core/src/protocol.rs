@@ -53,6 +53,10 @@ pub enum Command {
     GetTicket {
         ticket_id: TicketId,
     },
+    /// What the ticket's branch changes against the default branch.
+    GetDiff {
+        ticket_id: TicketId,
+    },
     CreateTicket {
         project_id: ProjectId,
         title: String,
@@ -260,6 +264,9 @@ pub enum Reply {
     Ticket {
         detail: Box<TicketDetail>,
     },
+    Diff {
+        diff: Box<TicketDiff>,
+    },
     Roles {
         /// `git` is always resolved in this reply: what an agent of the role
         /// will get, declared or not.
@@ -446,6 +453,34 @@ pub struct TicketSummary {
     #[serde(default)]
     pub attention: Option<crate::attention::Attention>,
 }
+
+/// One file a branch touches. `None` counts for a binary file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffFile {
+    pub path: String,
+    #[serde(default)]
+    pub added: Option<u32>,
+    #[serde(default)]
+    pub removed: Option<u32>,
+}
+
+/// What a ticket's branch changes, from where it left the default branch
+/// (`base...branch`): what the merge would bring in, nothing the default
+/// branch did since.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketDiff {
+    pub branch: String,
+    pub base: String,
+    pub files: Vec<DiffFile>,
+    /// The unified patch, cut at `DIFF_PATCH_MAX` bytes on a line boundary.
+    pub patch: String,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// The most of a patch sent over the socket: a frame is one line of at most
+/// 4 MiB, and nobody reads more than this in a terminal.
+pub const DIFF_PATCH_MAX: usize = 200 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TicketDetail {
@@ -695,6 +730,9 @@ mod tests {
                 title: "t".into(),
                 brief: "brief\navec\nsauts".into(),
             },
+            Command::GetDiff {
+                ticket_id: Uuid::new_v4(),
+            },
             Command::SteerAgent {
                 agent_id: Uuid::new_v4(),
                 text: "vas-y".into(),
@@ -826,6 +864,15 @@ mod tests {
             Reply::Ack,
             Reply::Projects { projects: vec![] },
             Reply::Tickets { tickets: vec![] },
+            Reply::Diff {
+                diff: Box::new(TicketDiff {
+                    branch: "orch/1-x".into(),
+                    base: "main".into(),
+                    files: vec![DiffFile { path: "a.rs".into(), added: Some(3), removed: None }],
+                    patch: "+ligne\n".into(),
+                    truncated: false,
+                }),
+            },
             Reply::Todos { todos: vec![] },
             Reply::Roles {
                 roles: vec![],

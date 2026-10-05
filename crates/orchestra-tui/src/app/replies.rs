@@ -136,6 +136,17 @@ impl App {
                         .min(self.cost.rows.len().saturating_sub(1));
                 }
             }
+            Reply::Diff { diff } => {
+                self.status = format!(
+                    "{} fichier(s) — j/k pour lire, q pour fermer",
+                    diff.files.len()
+                );
+                self.diff_view = Some(DiffView {
+                    diff,
+                    scroll: 0,
+                    height: std::cell::Cell::new(20),
+                });
+            }
             Reply::Ticket { detail } => {
                 let previous = self.watched_agent_id();
                 self.ticket = Some(detail);

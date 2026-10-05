@@ -244,4 +244,33 @@ impl App {
         };
         self.move_selection(direction * rows as isize);
     }
+
+    /// Ask for the open ticket's diff; it opens when it arrives.
+    pub(super) fn request_diff(&mut self) {
+        // Without a branch there is nothing to compare, and the key is not
+        // offered: like every key the bar does not show, it does nothing.
+        if let Some(d) = self.ticket.as_ref().filter(|d| d.ticket.branch.is_some()) {
+            self.outbox.push(Command::GetDiff { ticket_id: d.ticket.id });
+            self.status = "lecture du diff…".into();
+        }
+    }
+
+    /// Keys while a diff is open: it scrolls, and `q` or Échap closes it.
+    pub(super) fn on_diff_key(&mut self, action: Action) {
+        let Some(view) = self.diff_view.as_mut() else {
+            return;
+        };
+        let page = view.height.get().saturating_sub(1).max(1);
+        match action {
+            Action::Down => view.scroll += 1,
+            Action::Up => view.scroll = view.scroll.saturating_sub(1),
+            Action::PageDown => view.scroll += page,
+            Action::PageUp => view.scroll = view.scroll.saturating_sub(page),
+            Action::Top => view.scroll = 0,
+            Action::Bottom => view.scroll = usize::MAX,
+            Action::Back | Action::Cancel => self.diff_view = None,
+            Action::Quit => self.should_quit = true,
+            _ => {}
+        }
+    }
 }

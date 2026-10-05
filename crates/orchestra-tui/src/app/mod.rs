@@ -317,6 +317,16 @@ impl CostView {
     }
 }
 
+/// A diff on screen: what came back, and how far down it is read.
+#[derive(Debug, Clone)]
+pub struct DiffView {
+    pub diff: Box<orchestra_core::protocol::TicketDiff>,
+    /// First line shown.
+    pub scroll: usize,
+    /// Rows the diff had at the last frame, kept by the renderer.
+    pub height: std::cell::Cell<usize>,
+}
+
 pub struct App {
     /// Rows the agent log had at the last frame, kept by the renderer so a
     /// page is a page and not a guess.
@@ -393,6 +403,8 @@ pub struct App {
     /// The activity strip folded away (`A`): on a short terminal it takes
     /// rows the screen itself needs.
     pub activity_hidden: bool,
+    /// The branch's diff, over whatever screen asked for it (`D`).
+    pub diff_view: Option<DiffView>,
     /// The ticket screen shows its timeline instead of its brief (`T`).
     pub ticket_timeline: bool,
     /// Text being typed in the command palette, if open.
@@ -454,6 +466,7 @@ impl Default for App {
             show_help: false,
             activity_hidden: false,
             ticket_timeline: false,
+            diff_view: None,
             palette: None,
             should_quit: false,
             outbox: Vec::new(),

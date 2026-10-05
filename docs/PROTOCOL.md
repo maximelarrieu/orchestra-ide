@@ -83,6 +83,12 @@ worktree se prépare ensuite, hors de la boucle du daemon : la suite arrive en
 événements (`worktree_created`, `ticket_status_changed`, ou un `warning` si le
 worktree n'a pas pu être préparé, le ticket restant alors prêt à lancer).
 
+`get_diff` (`ticket_id`) répond `{"reply":"diff","diff":{branch, base, files:[{path,
+added, removed}], patch, truncated}}` : ce que la branche du ticket apporte depuis
+qu'elle a quitté la branche par défaut (`base...branche`), lu dans le dépôt
+principal. `added` et `removed` valent `null` pour un fichier binaire ; le patch
+est coupé en fin de ligne à 200 Kio (`truncated`).
+
 `agent_stalled` (`silent_secs`) signale un agent muet depuis `daemon.stall_secs`
 secondes. Il n'est pas arrêté ; il redevient normal au premier mot.
 

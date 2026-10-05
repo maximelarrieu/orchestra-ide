@@ -60,6 +60,9 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
     render_keys(app, frame, chunks[3]);
     render_status(app, frame, chunks[4]);
 
+    if let Some(view) = &app.diff_view {
+        super::diff::render(view, frame, chunks[1]);
+    }
     if app.show_help {
         render_help(app, frame, area);
     }

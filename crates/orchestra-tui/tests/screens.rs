@@ -1991,3 +1991,44 @@ fn the_ticket_tells_its_story_on_demand() {
     app.update(Msg::Key(Action::Char('T')));
     assert!(!draw(&app, 120, 30).contains("Chronologie"));
 }
+
+#[test]
+fn the_diff_opens_over_the_ticket_scrolls_and_closes() {
+    use orchestra_core::protocol::{DiffFile, TicketDiff};
+    let mut app = app_on_ticket(false, true);
+    // No branch yet: nothing to compare, nothing offered, nothing asked.
+    assert!(!orchestra_tui::keys::screen_hints(&app).iter().any(|h| h.key == "D"));
+    assert!(app.update(Msg::Key(Action::Char('D'))).is_empty());
+
+    app.ticket.as_mut().unwrap().ticket.branch = Some("orch/12-cache".into());
+    assert!(orchestra_tui::keys::screen_hints(&app).iter().any(|h| h.key == "D"));
+    let cmds = app.update(Msg::Key(Action::Char('D')));
+    assert!(matches!(cmds.as_slice(), [Command::GetDiff { .. }]), "{cmds:?}");
+
+    let patch: String = (0..80).map(|i| format!("+ligne {i}\n")).collect();
+    app.update(Msg::Reply(Box::new(Reply::Diff {
+        diff: Box::new(TicketDiff {
+            branch: "orch/12-cache".into(),
+            base: "main".into(),
+            files: vec![
+                DiffFile { path: "src/cache.rs".into(), added: Some(80), removed: Some(0) },
+                DiffFile { path: "logo.png".into(), added: None, removed: None },
+            ],
+            patch,
+            truncated: false,
+        }),
+    })));
+    let out = draw(&app, 100, 30);
+    assert!(out.contains("Diff — main ← orch/12-cache · 2 fichier(s), +80 -0"), "{out}");
+    assert!(out.contains("src/cache.rs") && out.contains("binaire"));
+    assert!(out.contains("+ligne 0"));
+    assert!(out.contains("[q] fermer le diff"));
+
+    app.update(Msg::Key(Action::PageDown));
+    let later = draw(&app, 100, 30);
+    assert!(!later.contains("+ligne 0 "), "une page plus bas");
+
+    app.update(Msg::Key(Action::Back));
+    assert!(app.diff_view.is_none());
+    assert_eq!(app.screen, Screen::Ticket, "q ferme le diff, pas l'écran");
+}

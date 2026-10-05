@@ -256,6 +256,25 @@ pub fn attention(a: Attention) -> Badge {
     }
 }
 
+/// How one line of a unified diff is drawn. Its first character already
+/// says what it is; added lines take cyan and removed ones yellow, never the
+/// red / green pair.
+pub fn diff_line(line: &str) -> Style {
+    if line.starts_with("diff --git") {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else if line.starts_with("+++") || line.starts_with("---") || line.starts_with("index ") {
+        Style::default().add_modifier(Modifier::DIM)
+    } else if line.starts_with("@@") {
+        Style::default().fg(Color::Magenta)
+    } else if line.starts_with('+') {
+        Style::default().fg(Color::Cyan)
+    } else if line.starts_with('-') {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    }
+}
+
 pub fn merge_waiting() -> Badge {
     Badge {
         symbol: "⏸",
@@ -444,6 +463,10 @@ mod tests {
         let problem = attention(Attention::MergeBlocked).symbol;
         let step = attention(Attention::ReadyToIntegrate).symbol;
         assert_ne!(problem, step);
+        for line in ["+ajout", "-retrait", "@@ -1 +1 @@", " contexte"] {
+            let fg = diff_line(line).fg;
+            assert!(fg != Some(Color::Red) && fg != Some(Color::Green), "{line}");
+        }
         assert_ne!(urgent().color, Color::Red);
         assert_ne!(urgent().color, Color::Green);
     }
