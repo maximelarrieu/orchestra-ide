@@ -65,6 +65,7 @@ impl Daemon {
             .await
             .map_err(internal)?
             .ok_or_else(|| ApiError::not_found("projet de l'épopée"))?;
+        super::ensure_project_dir(&project)?;
 
         self.planning.insert(epic_id);
         let (bus, store, cfg) = (self.bus.clone(), self.store.clone(), Arc::clone(&self.cfg));

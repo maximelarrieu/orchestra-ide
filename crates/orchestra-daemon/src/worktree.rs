@@ -310,6 +310,12 @@ pub fn cap_patch(patch: String, max: usize) -> (String, bool) {
     (patch[..cut].to_string(), true)
 }
 
+/// After the main repository moved: let its worktrees find it again. They
+/// keep a pointer to the repository's `.git`, which `repair` rewrites.
+pub fn repair(repo: &Path) -> Result<()> {
+    git(repo, &["worktree".into(), "repair".into()]).map(|_| ())
+}
+
 /// Tracked files changed but not committed. Untracked files are left out on
 /// purpose: they are the user's own business, not a reason to refuse a merge.
 pub fn tracked_changes(repo: &Path) -> Vec<String> {

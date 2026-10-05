@@ -44,6 +44,11 @@ pub enum Command {
     ForgetProject {
         project_id: ProjectId,
     },
+    /// Point a project at the place its repository was moved to.
+    MoveProject {
+        project_id: ProjectId,
+        path: PathBuf,
+    },
     ListTickets {
         #[serde(default)]
         project_id: Option<ProjectId>,

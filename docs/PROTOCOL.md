@@ -83,6 +83,13 @@ worktree se prépare ensuite, hors de la boucle du daemon : la suite arrive en
 événements (`worktree_created`, `ticket_status_changed`, ou un `warning` si le
 worktree n'a pas pu être préparé, le ticket restant alors prêt à lancer).
 
+`move_project` (`project_id`, `path`) fait suivre à un projet son dépôt déplacé :
+tickets, coûts et épopées restent attachés, les worktrees sont réparés (`git
+worktree repair`), et l'événement `project_moved` (`name`, `from`, `to`) suit. Refusé
+si le chemin n'est pas un dossier, si un autre projet le suit déjà, ou si un ticket
+du projet tourne. Planifier ou lancer dans un projet dont le dossier a disparu est
+refusé d'emblée, chemin à l'appui.
+
 `get_diff` (`ticket_id`) répond `{"reply":"diff","diff":{branch, base, files:[{path,
 added, removed}], patch, truncated}}` : ce que la branche du ticket apporte depuis
 qu'elle a quitté la branche par défaut (`base...branche`), lu dans le dépôt

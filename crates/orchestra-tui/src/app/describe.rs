@@ -77,6 +77,9 @@ pub fn describe(e: &Event) -> Option<String> {
         EventKind::EpicFinished { .. } => "✓ épopée terminée : tous ses tickets sont fusionnés".into(),
         EventKind::ProjectAdded { name, .. } => format!("projet « {name} » ajouté"),
         EventKind::ProjectForgotten { name } => format!("projet « {name} » oublié"),
+        EventKind::ProjectMoved { name, to, .. } => {
+            format!("projet « {name} » déplacé vers {}", to.display())
+        }
         EventKind::TicketCreated { number, title } => format!("ticket #{number} « {title} » créé"),
         EventKind::TicketStatusChanged { from, to } => {
             format!("ticket {} → {}", from.label_fr(), to.label_fr())

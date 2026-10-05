@@ -522,6 +522,7 @@ pub const PALETTE: &[(&str, &str)] = &[
     (":epic new <titre>", "écrire une épopée à découper"),
     (":project add <chemin>", "ajouter un projet"),
     (":project forget <nom>", "oublier un projet"),
+    (":project move <nom> <chemin>", "suivre un dépôt déplacé"),
     (":todo add <titre>", "ajouter un todo"),
     (":todo urgent <n>", "basculer l'urgence"),
     (":todo due <n> <AAAA-MM-JJ>", "fixer l'échéance"),

@@ -38,9 +38,27 @@ impl App {
                             }
                         }
                     }
+                    "move" | "deplace" | "déplace" if !arg.is_empty() => {
+                        let (name, path) = arg.split_once(char::is_whitespace).unwrap_or((arg, ""));
+                        let found = self.find_project(name).map(|p| (p.id, p.name.clone()));
+                        match (found, path.trim()) {
+                            (Some((project_id, project)), path) if !path.is_empty() => {
+                                self.outbox.push(Command::MoveProject {
+                                    project_id,
+                                    path: path.into(),
+                                });
+                                self.status = format!("déplacement de « {project} »…");
+                            }
+                            (None, _) => {
+                                self.status = format!("aucun projet ne correspond à « {name} »")
+                            }
+                            _ => self.status = "usage : :project move <nom> <chemin>".into(),
+                        }
+                    }
                     _ => {
-                        self.status =
-                            "usage : :project add <chemin> | :project forget <nom>".into()
+                        self.status = "usage : :project add <chemin> | :project forget <nom> \
+                                       | :project move <nom> <chemin>"
+                            .into()
                     }
                 }
             }

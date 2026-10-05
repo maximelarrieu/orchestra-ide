@@ -242,6 +242,8 @@ enum ProjectAction {
     List,
     /// Oublie un projet découvert. Ses tokens restent comptés, sans projet.
     Forget { project: String },
+    /// Suit un dépôt déplacé : tickets, coûts et épopées restent au projet.
+    Move { project: String, path: PathBuf },
     /// Oublie tous les projets découverts dont le dossier a disparu.
     Prune {
         /// Montre ce qui serait oublié sans rien changer.
@@ -363,6 +365,19 @@ impl Cli {
                                     project.path.display(),
                                     project.default_branch
                                 );
+                                Ok(())
+                            }
+                            other => bail!("réponse inattendue : {other:?}"),
+                        }
+                    }
+                    ProjectAction::Move { project, path } => {
+                        let p = resolve_project(&mut client, &project).await?;
+                        match client
+                            .call(Cmd::MoveProject { project_id: p.id, path })
+                            .await?
+                        {
+                            Reply::Project { project } => {
+                                println!("projet « {} » désormais à {}", project.name, project.path.display());
                                 Ok(())
                             }
                             other => bail!("réponse inattendue : {other:?}"),

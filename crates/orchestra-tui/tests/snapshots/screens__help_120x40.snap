@@ -25,6 +25,7 @@ expression: "draw(&app, 120, 40)"
 │ │       [g G] début / fin          :epic new <titre>               écrire une épopée à découper                    │ │
 │ │ [PgUp PgDn] page haut / bas      :project add <chemin>           ajouter un projet                               │ │
 │ │    [Entrée] ouvrir               :project forget <nom>           oublier un projet                               │ │
+│ │                                  :project move <nom> <chemin>    suivre un dépôt déplacé                         │ │
 │ │                                  :todo add <titre>               ajouter un todo                                 │ │
 │ │                                  :todo urgent <n>                basculer l'urgence                              │ │
 │ │                                  :todo due <n> <AAAA-MM-JJ>      fixer l'échéance                                │ │
@@ -32,11 +33,10 @@ expression: "draw(&app, 120, 40)"
 │ │                                  :convention add <titre>         écrire une convention                           │ │
 │ │                                  :adr add <titre>                écrire une décision du projet                   │ │
 │ │                                  :role add <nom>                 créer un rôle (projet sélectionné, sinon global)│ │
-│ │                                  :regles                         les rôles, conventions et ADR                   │ │
-└─│                                  :usage                          les coûts                                       │─┘
-┌ │                                  :refresh                        tout relire                                     │─┐
-│e└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                                                      │
+└─│                                  :regles                         les rôles, conventions et ADR                   │─┘
+┌ │                                  :usage                          les coûts                                       │─┐
+│e│                                  :refresh                        tout relire                                     │ │
+│ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

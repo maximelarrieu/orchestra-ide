@@ -255,6 +255,13 @@ impl ClaudeProcess {
     /// prompt on stdin the process waits for it before doing anything, and
     /// blocking on that write from inside the runtime would risk a deadlock.
     pub async fn spawn(cmd: &ClaudeCommand) -> Result<(Self, mpsc::Receiver<ProcessEvent>)> {
+        // A missing working directory fails the spawn with the same ENOENT as
+        // a missing binary, and the message then blames the wrong one.
+        anyhow::ensure!(
+            cmd.cwd.is_dir(),
+            "le dossier {} n'existe pas : le projet a-t-il été déplacé ?",
+            cmd.cwd.display()
+        );
         let mut child = cmd
             .to_tokio()
             .spawn()
@@ -512,6 +519,17 @@ mod tests {
         let mut c = cmd();
         c.name = Some("é".repeat(80));
         assert!(c.display().contains('…'));
+    }
+
+    #[tokio::test]
+    async fn a_missing_directory_is_named_rather_than_the_binary() {
+        let c = ClaudeCommand::new("claude", "/nulle/part/minesweeper", "salut");
+        let Err(err) = ClaudeProcess::spawn(&c).await else {
+            panic!("un dossier absent doit être refusé");
+        };
+        let err = err.to_string();
+        assert!(err.contains("/nulle/part/minesweeper"), "{err}");
+        assert!(!err.contains("lancement de « claude »"), "{err}");
     }
 
     #[tokio::test]

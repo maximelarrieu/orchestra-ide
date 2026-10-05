@@ -118,6 +118,7 @@ impl Event {
 pub enum EventTag {
     ProjectAdded,
     ProjectForgotten,
+    ProjectMoved,
     TicketCreated,
     TicketStatusChanged,
     ProposalReady,
@@ -170,9 +171,10 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 51] = [
+    pub const ALL: [EventTag; 52] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
+        EventTag::ProjectMoved,
         EventTag::TicketCreated,
         EventTag::TicketStatusChanged,
         EventTag::ProposalReady,
@@ -228,6 +230,7 @@ impl EventTag {
         match self {
             EventTag::ProjectAdded => "project_added",
             EventTag::ProjectForgotten => "project_forgotten",
+            EventTag::ProjectMoved => "project_moved",
             EventTag::TicketCreated => "ticket_created",
             EventTag::TicketStatusChanged => "ticket_status_changed",
             EventTag::ProposalReady => "proposal_ready",
@@ -308,6 +311,13 @@ pub enum EventKind {
     /// attached to no project.
     ProjectForgotten {
         name: String,
+    },
+    /// The project's repository now lives elsewhere; its tickets, costs
+    /// and epics follow it.
+    ProjectMoved {
+        name: String,
+        from: PathBuf,
+        to: PathBuf,
     },
     TicketCreated {
         number: i64,
@@ -579,6 +589,7 @@ impl EventKind {
         match self {
             EventKind::ProjectAdded { .. } => EventTag::ProjectAdded,
             EventKind::ProjectForgotten { .. } => EventTag::ProjectForgotten,
+            EventKind::ProjectMoved { .. } => EventTag::ProjectMoved,
             EventKind::TicketCreated { .. } => EventTag::TicketCreated,
             EventKind::TicketStatusChanged { .. } => EventTag::TicketStatusChanged,
             EventKind::ProposalReady { .. } => EventTag::ProposalReady,

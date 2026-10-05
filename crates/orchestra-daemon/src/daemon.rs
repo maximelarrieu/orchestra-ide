@@ -248,6 +248,7 @@ impl Daemon {
             Command::Status => self.status().await,
             Command::ListProjects => self.list_projects().await,
             Command::AddProject { path, name } => self.add_project(path, name).await,
+            Command::MoveProject { project_id, path } => self.move_project(project_id, path).await,
             Command::ForgetProject { project_id } => {
                 let project = self
                     .store
@@ -423,6 +424,67 @@ impl Daemon {
     async fn list_projects(&self) -> Result<Reply, ApiError> {
         let projects = self.store.list_projects().await.map_err(internal)?;
         Ok(Reply::Projects { projects })
+    }
+
+    /// The repository was moved: point the project at its new place. Its
+    /// tickets, costs and epics are rows keyed by the project, so they follow.
+    async fn move_project(&self, project_id: ProjectId, path: PathBuf) -> Result<Reply, ApiError> {
+        let mut project = self
+            .store
+            .project(project_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("projet"))?;
+        let path = canonical(&path)
+            .map_err(|e| ApiError::invalid(format!("chemin inutilisable : {e}")))?;
+        if !path.is_dir() {
+            return Err(ApiError::invalid(format!("{} n'est pas un dossier", path.display())));
+        }
+        if path == project.path {
+            return Err(ApiError::invalid("le projet est déjà à cet endroit"));
+        }
+        if let Some(other) = self.store.project_by_path(path.clone()).await.map_err(internal)? {
+            return Err(ApiError::conflict(format!(
+                "le projet « {} » suit déjà ce chemin",
+                other.name
+            )));
+        }
+        // An agent at work holds paths into the old place; let it finish.
+        let active = self
+            .store
+            .list_tickets(Some(project_id), Some(vec![TicketStatus::Running]))
+            .await
+            .map_err(internal)?;
+        if !active.is_empty() {
+            return Err(ApiError::conflict(
+                "un ticket de ce projet tourne : attends qu'il ait fini pour déplacer le projet",
+            ));
+        }
+
+        let from = std::mem::replace(&mut project.path, path.clone());
+        self.store
+            .set_project_path(project_id, path.clone())
+            .await
+            .map_err(internal)?;
+        // Best effort: a repository without worktrees has nothing to repair.
+        let repo = path.clone();
+        if let Err(e) = crate::worktree::off_runtime(move || crate::worktree::repair(&repo)).await {
+            self.bus.warn(format!("worktrees non réparés : {e:#}")).await;
+        }
+        self.bus
+            .publish(
+                NewEvent::new(EventKind::ProjectMoved {
+                    name: project.name.clone(),
+                    from,
+                    to: path,
+                })
+                .project(project_id),
+            )
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Project {
+            project: Box::new(project),
+        })
     }
 
     async fn add_project(&self, path: PathBuf, name: Option<String>) -> Result<Reply, ApiError> {
@@ -1182,6 +1244,7 @@ impl Daemon {
             .await
             .map_err(internal)?
             .ok_or_else(|| ApiError::not_found("projet du ticket"))?;
+        ensure_project_dir(&project)?;
         let catalog = self.catalog_for(Some(&project));
         if catalog.is_empty() {
             return Err(ApiError::invalid(
@@ -1308,6 +1371,7 @@ impl Daemon {
             .await
             .map_err(internal)?
             .ok_or_else(|| ApiError::not_found("projet du ticket"))?;
+        ensure_project_dir(&project)?;
         let catalog = self.catalog_for(Some(&project));
 
         self.supervisor
@@ -1718,6 +1782,20 @@ pub fn ensure_transition(from: TicketStatus, to: TicketStatus) -> Result<(), Api
     }
 }
 
+/// Refuse, with its path, a project whose directory is gone: every agent
+/// would fail on it, one after the other, with an error naming `claude`.
+fn ensure_project_dir(project: &Project) -> Result<(), ApiError> {
+    if project.path.is_dir() {
+        Ok(())
+    } else {
+        Err(ApiError::invalid(format!(
+            "le dossier du projet « {} » est introuvable ({}) : a-t-il été déplacé ?",
+            project.name,
+            project.path.display()
+        )))
+    }
+}
+
 /// A board card: the ticket, how its team is doing, what it cost.
 fn summarise(ticket: Ticket, agents: &[Agent], cost: AgentCost) -> TicketSummary {
     TicketSummary {
@@ -1946,6 +2024,53 @@ mod tests {
         daemon.store.update_ticket(ready).await.unwrap();
         let err = daemon.launch_ticket(api.id, false).await.unwrap_err();
         assert!(err.message.contains("dépend de #2 « schéma »"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn a_moved_repository_is_followed_with_everything_on_it() {
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Done).await;
+        let dir = tempfile::tempdir().unwrap();
+        let moved = dir.path().join("perso/depot");
+        std::fs::create_dir_all(&moved).unwrap();
+        std::process::Command::new("git").arg("-C").arg(&moved).args(["init", "-q"]).output().unwrap();
+
+        // Somewhere that is not a directory: refused, nothing changes.
+        let err = daemon
+            .move_project(ticket.project_id, dir.path().join("nulle-part"))
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("inutilisable") || err.message.contains("dossier"), "{}", err.message);
+
+        let Reply::Project { project } = daemon.move_project(ticket.project_id, moved.clone()).await.unwrap() else {
+            panic!("réponse inattendue");
+        };
+        assert_eq!(project.path, moved.canonicalize().unwrap());
+        let stored = daemon.store.project(ticket.project_id).await.unwrap().unwrap();
+        assert_eq!(stored.path, project.path);
+        // The ticket is still the project's.
+        let tickets = daemon.store.list_tickets(Some(ticket.project_id), None).await.unwrap();
+        assert_eq!(tickets.len(), 1);
+        // Moving it onto itself, or onto another project's path, is refused.
+        assert!(daemon.move_project(ticket.project_id, moved.clone()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_project_with_a_running_ticket_does_not_move() {
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Running).await;
+        let dir = tempfile::tempdir().unwrap();
+        let err = daemon
+            .move_project(ticket.project_id, dir.path().to_path_buf())
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("tourne"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn planning_in_a_project_whose_directory_is_gone_says_so() {
+        let (mut daemon, ticket) = daemon_with_ticket(TicketStatus::Draft).await;
+        // The fixture's project lives at /tmp/depot, which does not exist.
+        let err = daemon.plan_ticket(ticket.id).await.unwrap_err();
+        assert!(err.message.contains("introuvable") && err.message.contains("/tmp/depot"), "{}", err.message);
     }
 
     async fn record_verdict(daemon: &Daemon, ticket: &Ticket, verdict: Verdict) {
