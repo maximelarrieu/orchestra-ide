@@ -73,6 +73,9 @@ toucher au disque ni au réseau.
   est négligeable, et cela évite les limites de surveillance sur un dossier qui grossit
   à chaque session, ainsi qu'une dépendance encore en préversion. Pour un agent piloté,
   le chemin rapide reste sa propre sortie standard ; ce surveillant est le filet.
+  **Il ne crée jamais de projet** : une session est rattachée à un projet que
+  l'utilisateur a ajouté (par la racine git d'abord, puis par le chemin), et sinon
+  comptée sans projet.
 - `ledger.rs` — agrège et tarifie. L'agrégat SQL est toujours découpé par modèle,
   même quand l'affichage ne l'est pas : une ligne couvrant deux modèles coûte la somme
   de ses parties, jamais la moyenne de leurs tarifs. C'est ce qui fait que les lignes

@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::bus::EventBus;
 use crate::ledger::UsageLedger;
-use crate::store::{discovered_project, SessionRow, Store};
+use crate::store::{SessionRow, Store};
 
 /// How often the transcript tree is rescanned.
 const POLL: Duration = Duration::from_millis(1000);
@@ -371,63 +371,26 @@ impl TranscriptWatcher {
         attribution
     }
 
-    /// The project a working directory belongs to.
+    /// The project a working directory belongs to, among those the user
+    /// added. Never a new one: a session elsewhere is counted all the same,
+    /// it simply belongs to no project.
     ///
-    /// A git repository is the strongest signal, and it is consulted **before**
-    /// any path-prefix match: without that, a single session started in the
-    /// home directory creates a project there, and every later session then
-    /// matches it by prefix and every repository disappears into one row.
+    /// The git root is tried before any path-prefix match: a project at a
+    /// parent directory must not swallow a repository nested inside it.
     async fn project_for(&self, cwd: &Path) -> Option<ProjectId> {
         let probe = cwd.to_path_buf();
         if let Some(root) = crate::worktree::off_runtime(move || git_toplevel(&probe)).await {
-            if let Ok(Some(p)) = self.store.project_by_path(root.clone()).await {
+            if let Ok(Some(p)) = self.store.project_by_path(root).await {
                 return Some(p.id);
             }
-            return self.create_discovered(&root).await;
         }
-        // Outside a repository, an existing project that contains it will do.
-        if let Ok(Some(p)) = self.store.project_containing(cwd.to_path_buf()).await {
-            return Some(p.id);
-        }
-        // A home or system directory is not a project; its sessions are real
-        // and counted, they simply belong to no repository.
-        if is_too_broad(cwd, home_dir().as_deref()) {
-            return None;
-        }
-        self.create_discovered(cwd).await
-    }
-
-    async fn create_discovered(&self, path: &Path) -> Option<ProjectId> {
-        let project = discovered_project(path, orchestra_core::now());
-        let id = project.id;
-        match self.store.insert_project(project).await {
-            Ok(()) => Some(id),
-            // Another pass created it first.
-            Err(_) => self
-                .store
-                .project_by_path(path.to_path_buf())
-                .await
-                .ok()
-                .flatten()
-                .map(|p| p.id),
+        match self.store.project_containing(cwd.to_path_buf()).await {
+            Ok(Some(p)) => Some(p.id),
+            _ => None,
         }
     }
 }
 
-/// Directories that must never become a project, because everything else lives
-/// underneath them. A session there is still counted; it simply belongs to no
-/// repository.
-fn is_too_broad(path: &Path, home: Option<&Path>) -> bool {
-    // `/`, `/tmp`, `/home` and the like.
-    if path.components().count() <= 2 {
-        return true;
-    }
-    home.is_some_and(|h| path == h)
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
 
 /// Every `*.jsonl` under the root, sub-agent directories included.
 fn list_transcripts(root: &Path) -> Result<Vec<PathBuf>> {
@@ -728,7 +691,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unknown_working_directory_becomes_a_discovered_project() {
+    async fn an_unknown_working_directory_never_becomes_a_project() {
+        // Projects are the ones the user adds. A session anywhere else is
+        // still counted, without a project.
         let h = harness();
         let session = Uuid::new_v4();
         let cwd = h._dir.path().join("mon-depot");
@@ -740,19 +705,9 @@ mod tests {
         let mut w = h.watcher();
         w.scan_all().await;
 
-        let projects = h.store.list_projects().await.unwrap();
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].name, "mon-depot");
-        assert_eq!(
-            projects[0].kind,
-            orchestra_core::model::ProjectKind::Discovered
-        );
-        // And the cost is attributed to it.
-        let q = UsageQuery {
-            project_id: Some(projects[0].id),
-            ..Default::default()
-        };
-        assert_eq!(h.ledger.rollup(q).await.unwrap().1.messages, 1);
+        assert!(h.store.list_projects().await.unwrap().is_empty(), "aucun projet créé");
+        let (_, totals) = h.ledger.rollup(UsageQuery::default()).await.unwrap();
+        assert_eq!(totals.messages, 1, "la session est comptée quand même");
     }
 
     #[tokio::test]
@@ -838,10 +793,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_in_the_home_directory_does_not_swallow_every_repository() {
-        // Regression: a single session started in $HOME created a project
-        // there, and every later session matched it by prefix, so all the real
-        // repositories collapsed into one row.
+    async fn a_project_at_a_parent_directory_does_not_swallow_a_nested_repository() {
+        // Regression: a project at $HOME matched every later session by
+        // prefix, so all the real repositories collapsed into one row. The
+        // git root is consulted first.
         let h = harness();
         let home = h._dir.path().join("faux-home");
         let repo = home.join("dev/mon-depot");
@@ -855,6 +810,9 @@ mod tests {
 
         let home_str = home.to_string_lossy().to_string();
         let repo_str = repo.to_string_lossy().to_string();
+        // Both added by the user: the broad one and the repository inside it.
+        add_project(&h, "faux-home", &home).await;
+        add_project(&h, "mon-depot", &repo).await;
 
         // A session in the home directory comes first, as it did in practice.
         let s1 = Uuid::new_v4();
@@ -872,7 +830,8 @@ mod tests {
         let repo_project = projects
             .iter()
             .find(|p| p.name == "mon-depot")
-            .expect("le dépôt doit être son propre projet");
+            .expect("le dépôt ajouté");
+        assert_eq!(projects.len(), 2, "aucun projet de plus");
 
         // The point of the fix: the repository's tokens belong to the
         // repository, not to the directory that happens to contain it.
@@ -902,18 +861,34 @@ mod tests {
             .unwrap();
 
         let sub_str = sub.to_string_lossy().to_string();
+        let added = add_project(&h, "depot", &repo).await;
         let session = Uuid::new_v4();
         let path = h.session_file(&sub_str, session);
         append(&path, &assistant_line(session, &sub_str, "msg_1", 0, 10));
 
         let mut w = h.watcher();
         w.scan_all().await;
-        let projects = h.store.list_projects().await.unwrap();
-        assert_eq!(projects.len(), 1);
-        assert_eq!(
-            projects[0].name, "depot",
-            "la racine du dépôt, pas le sous-dossier"
-        );
+        assert_eq!(h.store.list_projects().await.unwrap().len(), 1, "pas de projet pour le sous-dossier");
+        let q = UsageQuery {
+            project_id: Some(added),
+            ..Default::default()
+        };
+        assert_eq!(h.ledger.rollup(q).await.unwrap().1.messages, 1, "compté sur le dépôt");
+    }
+
+    /// A project as the user adds it.
+    async fn add_project(h: &Harness, name: &str, path: &Path) -> ProjectId {
+        let project = orchestra_core::model::Project {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            path: path.to_path_buf(),
+            default_branch: "main".into(),
+            zellij_tab: None,
+            kind: orchestra_core::model::ProjectKind::Managed,
+            created_at: orchestra_core::now(),
+        };
+        h.store.insert_project(project.clone()).await.unwrap();
+        project.id
     }
 
     #[tokio::test]
@@ -944,26 +919,6 @@ mod tests {
             (row_cost - totals.cost_usd.unwrap()).abs() < 1e-6,
             "les lignes doivent totaliser le total"
         );
-    }
-
-    #[test]
-    fn broad_directories_never_become_projects() {
-        let home = Path::new("/home/moi");
-        assert!(is_too_broad(Path::new("/"), Some(home)));
-        assert!(is_too_broad(Path::new("/tmp"), Some(home)));
-        assert!(is_too_broad(Path::new("/home"), Some(home)));
-        assert!(
-            is_too_broad(home, Some(home)),
-            "le dossier personnel non plus"
-        );
-        assert!(!is_too_broad(
-            Path::new("/home/moi/projets/app"),
-            Some(home)
-        ));
-        assert!(!is_too_broad(Path::new("/srv/app"), Some(home)));
-        // Without a home directory the rule still holds for the shallow ones.
-        assert!(is_too_broad(Path::new("/tmp"), None));
-        assert!(!is_too_broad(Path::new("/home/moi"), None));
     }
 
     #[tokio::test]

@@ -14,12 +14,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use orchestra_core::events::{Event, EventFilter, EventKind, NewEvent};
 use orchestra_core::model::{
-    Agent, AgentId, AgentStatus, Project, ProjectId, ProjectKind, Ticket, TicketId, TicketStatus,
+    Agent, AgentId, AgentStatus, Project, ProjectId, Ticket, TicketId, TicketStatus,
     Todo, TodoId, Tokens, UsageSample,
 };
 use orchestra_core::protocol::{GroupBy, UsageQuery};
 use rusqlite::{Connection, OpenFlags};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 pub use rows::{KeyedUsage, Recorded, SessionRow, UsageBreakdown};
@@ -398,23 +397,6 @@ impl Store {
     }
 }
 
-/// Convenience: build the `Project` a discovered cwd maps to.
-pub fn discovered_project(path: &Path, now: OffsetDateTime) -> Project {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string_lossy().to_string());
-    Project {
-        id: Uuid::new_v4(),
-        name,
-        path: path.to_path_buf(),
-        default_branch: "main".into(),
-        zellij_tab: None,
-        kind: ProjectKind::Discovered,
-        created_at: now,
-    }
-}
-
 /// Group key helpers shared by the rollup and the CLI.
 pub fn group_key_label(g: GroupBy) -> &'static str {
     g.as_str()
@@ -437,7 +419,7 @@ pub fn usage_event(sample: UsageSample) -> NewEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orchestra_core::model::{Tokens, UsageSource};
+    use orchestra_core::model::{ProjectKind, Tokens, UsageSource};
 
     async fn store_with_project() -> (Store, Project) {
         let store = Store::open_memory().unwrap();
