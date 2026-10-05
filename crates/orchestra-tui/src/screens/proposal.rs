@@ -27,12 +27,19 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
         return;
     }
 
+    // The detail grows with the criteria it lists, within reason: the team
+    // table above is what the screen is for.
+    let criteria = editor
+        .selected_member()
+        .map(|m| m.acceptance.len())
+        .unwrap_or(0);
+    let detail = if criteria == 0 { 4 } else { (5 + criteria as u16).min(10) };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(4),
             Constraint::Min(5),
-            Constraint::Length(4),
+            Constraint::Length(detail),
         ])
         .split(area);
 
@@ -132,13 +139,21 @@ fn render_members(app: &App, frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_detail(app: &App, frame: &mut Frame<'_>, area: Rect) {
-    let text = app
-        .editor
-        .selected_member()
-        .map(|m| m.objective.clone())
-        .unwrap_or_default();
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(m) = app.editor.selected_member() {
+        lines.push(Line::from(m.objective.clone()));
+        if !m.acceptance.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "fini quand :",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            for criterion in &m.acceptance {
+                lines.push(Line::from(format!("  ☐ {criterion}")));
+            }
+        }
+    }
     frame.render_widget(
-        Paragraph::new(text)
+        Paragraph::new(lines)
             .block(pane_block("Objectif — « o » pour le réécrire", false))
             .wrap(Wrap { trim: true }),
         area,

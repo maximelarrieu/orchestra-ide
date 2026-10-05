@@ -64,6 +64,7 @@ fn member(name: &str, deps: &[&str]) -> TeamMember {
         model: None,
         effort: None,
         max_budget_usd: None,
+        acceptance: Vec::new(),
         parallel_ok: false,
     }
 }
@@ -550,6 +551,33 @@ fn escaping_the_form_keeps_nothing_and_goes_back() {
     app.update(Msg::Key(Action::Cancel));
     assert_eq!(app.screen, Screen::Board);
     assert!(app.form.title.is_empty());
+}
+
+#[test]
+fn the_team_editor_shows_what_done_means_for_each_member() {
+    let mut d = detail(true, false);
+    let proposal = d.ticket.proposal.as_mut().unwrap();
+    proposal.members[0].acceptance = vec![
+        "docs/cache.md décrit l'invalidation".into(),
+        "le plan nomme les fichiers touchés".into(),
+    ];
+    let mut app = App::new();
+    app.connected = true;
+    app.update(Msg::Reply(Box::new(Reply::Ticket { detail: Box::new(d) })));
+    app.screen = Screen::Ticket;
+    app.update(Msg::Reply(Box::new(Reply::Roles {
+        roles: vec![role("architect"), role("backend")],
+        errors: vec![],
+    })));
+    app.update(Msg::Key(Action::Char('a')));
+    assert_eq!(app.screen, Screen::Proposal);
+
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("fini quand :"), "{out}");
+    assert!(out.contains("☐ docs/cache.md décrit l'invalidation"));
+    assert!(out.contains("☐ le plan nomme les fichiers touchés"));
+    // A small terminal still draws without panicking.
+    draw(&app, 50, 16);
 }
 
 #[test]

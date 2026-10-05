@@ -340,6 +340,7 @@ impl Supervisor {
             model: None,
             effort: None,
             max_budget_usd: None,
+            acceptance: Vec::new(),
             parallel_ok: false,
         };
 
@@ -1657,7 +1658,7 @@ impl Supervisor {
         self.store.insert_agent(agent.clone()).await?;
         let label = crate::zellij::pane_name(&project.name, &member.role, ticket.number);
 
-        let prompt = build_prompt(
+        let mut prompt = build_prompt(
             ticket,
             member,
             worktree_path,
@@ -1665,6 +1666,9 @@ impl Supervisor {
             blocking,
             blocked_by,
         );
+        if member.role == self.cfg.review.role {
+            prompt.push_str(&team_criteria(ticket, &member.role));
+        }
         let rules = crate::rules::book(&self.conventions_dir, Some(project))
             .prompt_section(&role.name, self.cfg.integration.mode.is_pr());
         // One file per agent: the rules depend on the project, and a resume
@@ -1786,6 +1790,12 @@ impl Supervisor {
             .chain(hooks::always_disallowed(git))
             .collect();
         cmd.max_budget_usd = budget;
+        cmd.max_turns = self.cfg.defaults.max_turns;
+        if role.name == self.cfg.review.role {
+            // The verdict is read by the machine: the CLI holds the final
+            // message to a schema instead of trusting a text format.
+            cmd.json_schema = Some(orchestra_core::review::verdict_schema().to_string());
+        }
         cmd.settings_json = Some(hooks::settings_json(&hooks::hook_binary()));
         cmd.agents_json = role
             .subagents
@@ -1839,6 +1849,7 @@ impl Supervisor {
         }
 
         let mut result_line: Option<(String, bool, Option<String>)> = None;
+        let mut structured: Option<serde_json::Value> = None;
         let mut cancelled = false;
         let mut interrupted = false;
         let mut stderr_tail: Vec<String> = Vec::new();
@@ -1855,6 +1866,7 @@ impl Supervisor {
                                     r.is_error,
                                     r.result.clone(),
                                 ));
+                                structured = r.structured_output.clone();
                             }
                             self.publish_line(agent, &scope, &line).await;
                             if result_line.is_some() {
@@ -1939,7 +1951,7 @@ impl Supervisor {
         match result_line {
             Some((subtype, is_error, text)) => {
                 let reason = translate::exit_reason(&subtype, is_error);
-                let handoff = text.unwrap_or_default();
+                let handoff = handoff_text(structured, text);
                 agent.handoff = Some(handoff.clone());
                 if reason.is_success() {
                     self.set_status(agent, AgentStatus::Done, Some(reason))
@@ -2461,6 +2473,24 @@ pub fn resume_prompt(member: &orchestra_core::model::TeamMember, worktree: &Path
     )
 }
 
+/// What an agent hands over, from its `result` line.
+///
+/// A structured verdict is kept in its text form, the one every reader of a
+/// handoff already knows (see `review::structured_to_text`). Without
+/// `structured_output`, `result` holds the same JSON as a string; prose stays
+/// prose.
+fn handoff_text(structured: Option<serde_json::Value>, text: Option<String>) -> String {
+    let structured = structured.or_else(|| {
+        text.as_deref()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(t.trim()).ok())
+    });
+    structured
+        .as_ref()
+        .and_then(orchestra_core::review::structured_to_text)
+        .or(text)
+        .unwrap_or_default()
+}
+
 enum AgentOutcome {
     Done { handoff: String },
     Failed { reason: String },
@@ -2542,6 +2572,26 @@ pub fn build_prompt(
         member.role,
         member.objective.trim()
     ));
+    if !member.acceptance.is_empty() {
+        out.push_str(
+            "\n### Critères d'acceptation\n\nTon travail est fini quand chacun est vrai, \
+             et constaté — pas supposé. Le relecteur les vérifiera un par un.\n\n",
+        );
+        for criterion in &member.acceptance {
+            out.push_str(&format!("- {}\n", criterion.trim()));
+        }
+    }
+    let risks = ticket
+        .proposal
+        .as_ref()
+        .map(|p| p.risks.as_slice())
+        .unwrap_or_default();
+    if !risks.is_empty() {
+        out.push_str("\n## Points d'attention repérés dans le dépôt\n\n");
+        for risk in risks {
+            out.push_str(&format!("- {}\n", risk.trim()));
+        }
+    }
 
     if !handoffs.is_empty() {
         out.push_str("\n## Ce que l'équipe a déjà fait\n");
@@ -2572,6 +2622,35 @@ pub fn build_prompt(
          ticket : tout ce que tu écris doit y rester.\n",
         worktree.display()
     ));
+    out
+}
+
+/// For the reviewer: what each member of the team was asked to make true.
+///
+/// A review against stated criteria finds what is missing; a review against
+/// an impression finds what is ugly. Empty when no member has any.
+fn team_criteria(ticket: &Ticket, reviewer: &str) -> String {
+    let Some(team) = ticket.team.as_ref() else {
+        return String::new();
+    };
+    let members: Vec<_> = team
+        .members
+        .iter()
+        .filter(|m| m.role != reviewer && !m.acceptance.is_empty())
+        .collect();
+    if members.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\n## Les critères d'acceptation de l'équipe\n\nVérifie chacun. Un critère non \
+         tenu est un point bloquant, attribué au rôle qui en avait la charge.\n",
+    );
+    for m in members {
+        out.push_str(&format!("\n### {}\n\n", m.role));
+        for criterion in &m.acceptance {
+            out.push_str(&format!("- {}\n", criterion.trim()));
+        }
+    }
     out
 }
 
@@ -2606,6 +2685,7 @@ mod tests {
             model: None,
             effort: None,
             max_budget_usd: None,
+            acceptance: Vec::new(),
             parallel_ok: false,
         }
     }
@@ -2838,6 +2918,66 @@ mod tests {
             blocking_for(&review, "backend", &alone),
             vec!["ça casse au bord"]
         );
+    }
+
+    #[test]
+    fn an_agent_is_told_its_criteria_and_the_risks_spotted() {
+        let mut t = ticket();
+        t.proposal = Some(orchestra_core::model::TeamProposal {
+            summary: "s".into(),
+            members: vec![],
+            risks: vec!["`rows.rs` est appelé depuis deux threads".into()],
+            estimated_size: orchestra_core::model::Size::S,
+        });
+        let mut m = member("backend");
+        m.acceptance = vec!["`cargo test cache` passe".into()];
+        let prompt = build_prompt(&t, &m, Path::new("/wt"), &[], &[], Blocked::Review);
+        assert!(prompt.contains("Critères d'acceptation"));
+        assert!(prompt.contains("- `cargo test cache` passe"));
+        assert!(prompt.contains("deux threads"), "les risques suivent : {prompt}");
+        // Without any, nothing is announced.
+        let bare = build_prompt(&ticket(), &member("backend"), Path::new("/wt"), &[], &[], Blocked::Review);
+        assert!(!bare.contains("Critères"));
+        assert!(!bare.contains("Points d'attention"));
+    }
+
+    #[test]
+    fn the_reviewer_reads_every_members_criteria_but_its_own() {
+        let mut backend = member("backend");
+        backend.acceptance = vec!["l'écriture invalide le cache".into()];
+        let mut reviewer = member("reviewer");
+        reviewer.acceptance = vec!["ne pas lister".into()];
+        let docs = member("docs");
+        let mut t = ticket();
+        t.team = Some(orchestra_core::model::Team {
+            members: vec![backend, docs, reviewer],
+            stages: vec![],
+        });
+        let section = team_criteria(&t, "reviewer");
+        assert!(section.contains("### backend"));
+        assert!(section.contains("l'écriture invalide le cache"));
+        assert!(!section.contains("### docs"), "un rôle sans critère n'a pas de titre vide");
+        assert!(!section.contains("ne pas lister"));
+        assert!(team_criteria(&ticket(), "reviewer").is_empty());
+    }
+
+    #[test]
+    fn a_structured_verdict_is_handed_over_as_text() {
+        let json = r#"{"verdict":"changes","summary":"Un défaut.","changes":[{"role":"backend","detail":"la boucle"}]}"#;
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        for handoff in [
+            handoff_text(Some(value), Some(json.into())),
+            // Without the structured copy, the string is read the same way.
+            handoff_text(None, Some(json.into())),
+        ] {
+            let review = orchestra_core::review::parse_review(&handoff).unwrap();
+            assert_eq!(review.roles_to_fix(&["backend"]), vec!["backend"]);
+            assert!(handoff.starts_with("Un défaut."));
+        }
+        // An ordinary agent's summary is left alone.
+        assert_eq!(handoff_text(None, Some("fait".into())), "fait");
+        assert_eq!(handoff_text(None, Some("[1, 2]".into())), "[1, 2]");
+        assert_eq!(handoff_text(None, None), "");
     }
 
     #[test]

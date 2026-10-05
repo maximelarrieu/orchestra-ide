@@ -16,6 +16,11 @@ use crate::model::TeamProposal;
 /// committee. Also the value quoted in the prompt.
 pub const MAX_TEAM: usize = 6;
 
+/// The model aliases the orchestrator may pick for a member. Aliases, not
+/// ids: the CLI resolves them, and the cost is priced from the model the
+/// samples report (rule 8), never from this name.
+pub const MODEL_TIERS: [&str; 3] = ["haiku", "sonnet", "opus"];
+
 /// Build the schema for a proposal limited to `roles`.
 pub fn team_proposal_schema(roles: &[String]) -> Value {
     let role_field = if roles.is_empty() {
@@ -51,12 +56,23 @@ pub fn team_proposal_schema(roles: &[String]) -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["role", "objective"],
+                    "required": ["role", "objective", "acceptance"],
                     "properties": {
                         "role": role_field,
                         "objective": {
                             "type": "string",
                             "description": "Ce que ce rôle doit accomplir pour CE ticket, concrètement."
+                        },
+                        "acceptance": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string" },
+                            "description": "Ce qui doit être vrai quand ce rôle a fini : des faits qu'un relecteur peut vérifier (un test qui passe, un fichier qui existe, un comportement observable), pas des intentions."
+                        },
+                        "model": {
+                            "type": "string",
+                            "enum": MODEL_TIERS,
+                            "description": "À omettre pour garder le modèle du rôle. haiku pour une tâche mécanique et bien bornée, opus pour une tâche délicate ou risquée."
                         },
                         "depends_on": {
                             "type": "array",
@@ -151,6 +167,36 @@ mod tests {
         );
         assert_eq!(schema["properties"]["members"]["maxItems"], json!(MAX_TEAM));
         assert_eq!(schema["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn every_member_comes_with_checkable_acceptance_criteria() {
+        let schema = team_proposal_schema(&roles());
+        let member = &schema["properties"]["members"]["items"];
+        assert!(member["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("acceptance")));
+        assert_eq!(member["properties"]["acceptance"]["minItems"], json!(1));
+        // The model is optional and limited to aliases the CLI knows.
+        assert!(!member["required"].as_array().unwrap().contains(&json!("model")));
+        assert_eq!(member["properties"]["model"]["enum"], json!(MODEL_TIERS));
+    }
+
+    #[test]
+    fn criteria_and_model_reach_the_proposal() {
+        let value = json!({
+            "summary": "s",
+            "members": [{
+                "role": "backend",
+                "objective": "o",
+                "acceptance": ["`cargo test cache` passe"],
+                "model": "haiku"
+            }]
+        });
+        let p = proposal_from_result(Some(&value), None).unwrap();
+        assert_eq!(p.members[0].acceptance, vec!["`cargo test cache` passe".to_string()]);
+        assert_eq!(p.members[0].model.as_deref(), Some("haiku"));
     }
 
     #[test]

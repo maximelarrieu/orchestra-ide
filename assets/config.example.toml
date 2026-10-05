@@ -20,15 +20,21 @@ max_attempts = 2
 claude_bin = "claude"
 branch_prefix = "orch/"
 
+# Le modèle d'un agent vient d'abord de la proposition, puis de l'entête de son
+# rôle (`model:`), enfin d'ici. « default » ne passe pas `--model`.
 [defaults]
 model = "default"
 effort = "medium"
 max_budget_usd = 5.0
+# Un agent qui tourne en rond s'arrête sur ce nombre de tours, pas seulement
+# sur son budget. À retirer pour ne passer aucune limite.
+max_turns = 200
 
 [orchestrator]
 model = "default"
 effort = "medium"
 max_budget_usd = 2.0
+max_turns = 60
 
 # Chaque ticket se termine par une relecture. Le rôle est ajouté d'office à la
 # fin de chaque proposition d'équipe, où tu peux encore l'enlever avant

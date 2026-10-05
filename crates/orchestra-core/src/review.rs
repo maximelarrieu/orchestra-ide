@@ -157,6 +157,7 @@ pub fn append_reviewer(
                 model: None,
                 effort: None,
                 max_budget_usd: None,
+                acceptance: Vec::new(),
                 parallel_ok: false,
             });
             true
@@ -279,9 +280,170 @@ pub fn parse_review(text: &str) -> Option<Review> {
     Some(Review { verdict, changes })
 }
 
+/// The schema handed to the reviewer with `--json-schema`.
+///
+/// The CLI then holds the final message to it, so the verdict no longer
+/// depends on a model remembering a text format at the end of a long run.
+/// The text block stays the fallback for a result without a structured part.
+pub fn verdict_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["verdict", "summary", "changes"],
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": ["ready", "changes"],
+                "description": "ready : rien ne bloque. changes : au moins un point bloquant."
+            },
+            "summary": {
+                "type": "string",
+                "description": "Deux ou trois phrases : l'état des vérifications et ce que tu retiens. Le détail est dans REVIEW.md."
+            },
+            "changes": {
+                "type": "array",
+                "description": "Les seuls points bloquants, vide si le verdict est ready. Chaque point coûte un tour d'agent.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["role", "detail"],
+                    "properties": {
+                        "role": {
+                            "type": "string",
+                            "description": "Le rôle de l'équipe qui doit corriger, tel qu'il est nommé dans l'équipe."
+                        },
+                        "detail": {
+                            "type": "string",
+                            "description": "Fichier, ligne, et en quoi ça casse : un scénario concret."
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// A structured verdict, rewritten as the text block plus its summary.
+///
+/// Everything downstream — the handoff kept on the agent, the loop that reads
+/// it back after a restart — knows the text form. Rewriting once, here, keeps
+/// a single reader, and `parse_review` reads the result back unchanged.
+/// `None` when the value is not a verdict: silence is not an approval.
+pub fn structured_to_text(value: &serde_json::Value) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Structured {
+        verdict: Verdict,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        changes: Vec<StructuredChange>,
+    }
+    #[derive(Deserialize)]
+    struct StructuredChange {
+        #[serde(default)]
+        role: String,
+        detail: String,
+    }
+    let s: Structured = serde_json::from_value(value.clone()).ok()?;
+    let review = Review {
+        verdict: s.verdict,
+        changes: s
+            .changes
+            .into_iter()
+            .map(|c| ChangeRequest {
+                role: Some(c.role.trim().to_string()).filter(|r| !r.is_empty()),
+                detail: one_line(&c.detail),
+            })
+            .filter(|c| !c.detail.is_empty())
+            .collect(),
+    };
+    let summary = s.summary.trim();
+    Some(if summary.is_empty() {
+        review.to_block()
+    } else {
+        format!("{summary}\n\n{}", review.to_block())
+    })
+}
+
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+impl Review {
+    /// The block as the reviewer's instructions spell it.
+    pub fn to_block(&self) -> String {
+        let mut out = String::from(match self.verdict {
+            Verdict::Ready => "VERDICT: prêt",
+            Verdict::Changes => "VERDICT: corrections",
+        });
+        for change in &self.changes {
+            out.push_str("\n- ");
+            if let Some(role) = &change.role {
+                out.push_str(role);
+                out.push_str(": ");
+            }
+            out.push_str(&change.detail);
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_structured_verdict_reads_back_as_the_same_review() {
+        let value = serde_json::json!({
+            "verdict": "changes",
+            "summary": "Tests verts.\nUn défaut réel.",
+            "changes": [
+                {"role": "backend", "detail": "`store/rows.rs:88` boucle\nquand offset dépasse le total"},
+                {"role": "", "detail": "il manque un test de la liste vide"}
+            ]
+        });
+        let text = structured_to_text(&value).unwrap();
+        assert!(text.starts_with("Tests verts."), "le résumé d'abord : {text}");
+        let r = parse_review(&text).unwrap();
+        assert_eq!(r.verdict, Verdict::Changes);
+        assert_eq!(r.changes.len(), 2);
+        assert_eq!(r.changes[0].role.as_deref(), Some("backend"));
+        assert_eq!(
+            r.changes[0].detail,
+            "`store/rows.rs:88` boucle quand offset dépasse le total",
+            "un détail tient sur une ligne, sinon le bloc se coupe"
+        );
+        assert_eq!(r.changes[1].role, None);
+    }
+
+    #[test]
+    fn a_ready_structured_verdict_is_ready() {
+        let value = serde_json::json!({"verdict": "ready", "summary": "", "changes": []});
+        let r = parse_review(&structured_to_text(&value).unwrap()).unwrap();
+        assert!(r.verdict.is_ready());
+        assert!(r.changes.is_empty());
+    }
+
+    #[test]
+    fn something_that_is_not_a_verdict_is_not_read_as_one() {
+        assert!(structured_to_text(&serde_json::json!({"summary": "ok"})).is_none());
+        assert!(structured_to_text(&serde_json::json!({"verdict": "peut-être"})).is_none());
+        assert!(structured_to_text(&serde_json::json!("prêt")).is_none());
+    }
+
+    #[test]
+    fn the_schema_only_allows_the_two_verdicts() {
+        let schema = verdict_schema();
+        assert_eq!(
+            schema["properties"]["verdict"]["enum"],
+            serde_json::json!(["ready", "changes"])
+        );
+        // Each value of the enum is one the reader understands.
+        for v in ["ready", "changes"] {
+            let parsed: Verdict = serde_json::from_value(serde_json::json!(v)).unwrap();
+            assert_eq!(parse_review(&Review { verdict: parsed, changes: vec![] }.to_block()).unwrap().verdict, parsed);
+        }
+    }
 
     #[test]
     fn a_clean_verdict_reads_ready() {
@@ -373,6 +535,7 @@ VERDICT: corrections
                     model: None,
                     effort: None,
                     max_budget_usd: None,
+                    acceptance: Vec::new(),
                     parallel_ok: false,
                 })
                 .collect(),

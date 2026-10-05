@@ -227,6 +227,7 @@ impl TeamEditor {
             model: None,
             effort: None,
             max_budget_usd: None,
+            acceptance: Vec::new(),
             parallel_ok: false,
         });
         self.selected = self.members.len() - 1;
@@ -322,6 +323,7 @@ mod tests {
             model: None,
             effort: None,
             max_budget_usd: None,
+            acceptance: Vec::new(),
             parallel_ok: false,
         }
     }

@@ -484,6 +484,11 @@ pub struct TeamMember {
     pub effort: Option<Effort>,
     #[serde(default)]
     pub max_budget_usd: Option<f64>,
+    /// What must be true for this role's part to count as done, each point
+    /// one a reader can check. Handed to the agent, and to the reviewer, who
+    /// judges against it rather than against an impression.
+    #[serde(default)]
+    pub acceptance: Vec<String>,
     /// May run alongside its siblings in the same stage. Ignored in the MVP
     /// (everything is sequential), kept so the scheduler can use it later.
     #[serde(default)]
@@ -928,6 +933,7 @@ mod tests {
             model: None,
             effort: None,
             max_budget_usd: None,
+            acceptance: Vec::new(),
             parallel_ok: false,
         }
     }

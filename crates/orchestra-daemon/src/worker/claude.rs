@@ -42,6 +42,7 @@ pub struct ClaudeCommand {
     pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
     pub max_budget_usd: Option<f64>,
+    pub max_turns: Option<u32>,
     pub json_schema: Option<String>,
     pub settings_json: Option<String>,
     pub agents_json: Option<String>,
@@ -78,6 +79,7 @@ impl ClaudeCommand {
             allowed_tools: Vec::new(),
             disallowed_tools: Vec::new(),
             max_budget_usd: None,
+            max_turns: None,
             json_schema: None,
             settings_json: None,
             agents_json: None,
@@ -139,6 +141,12 @@ impl ClaudeCommand {
         if let Some(budget) = self.max_budget_usd {
             a.push("--max-budget-usd".into());
             a.push(format!("{budget}"));
+        }
+        if let Some(turns) = self.max_turns {
+            // Not in `--help` (2.1.289), but honoured: the run ends with
+            // `error_max_turns`. See CLAUDE_CLI_NOTES.md.
+            a.push("--max-turns".into());
+            a.push(turns.to_string());
         }
         if let Some(schema) = &self.json_schema {
             a.push("--json-schema".into());
@@ -452,6 +460,7 @@ mod tests {
         c.allowed_tools = vec!["Read".into(), "Grep".into()];
         c.disallowed_tools = vec!["Bash".into()];
         c.max_budget_usd = Some(2.5);
+        c.max_turns = Some(80);
         c.json_schema = Some("{}".into());
         c.settings_json = Some("{\"hooks\":{}}".into());
         let args = c.args();
@@ -466,6 +475,7 @@ mod tests {
             ["--allowedTools", "Read,Grep"],
             ["--disallowedTools", "Bash"],
             ["--max-budget-usd", "2.5"],
+            ["--max-turns", "80"],
             ["--json-schema", "{}"],
             ["--settings", "{\"hooks\":{}}"],
         ] {

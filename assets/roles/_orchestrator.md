@@ -15,6 +15,13 @@ Règles :
 - Donne à chaque rôle un objectif **concret pour ce ticket**, pas la description
   générale de son métier. « Ajouter l'invalidation du cache sur écriture dans
   `store/rows.rs` » et non « implémenter le backend ».
+- Donne à chaque rôle ses **critères d'acceptation** : ce qui doit être vrai
+  quand il a fini, sous une forme qu'un relecteur peut constater. « `cargo test
+  cache::invalidation` passe », « une écriture dans `rows.rs` vide l'entrée du
+  cache », et non « le cache fonctionne ». Le relecteur jugera contre eux.
+- Laisse le modèle du rôle, sauf raison nette : `haiku` pour une tâche
+  mécanique et bien bornée (renommer, documenter, ajuster une config), `opus`
+  pour une tâche délicate (concurrence, sécurité, migration de données).
 - Déclare les dépendances réelles : un rôle ne dépend d'un autre que si son
   travail est inutilisable avant. Moins de dépendances, plus de parallélisme
   possible plus tard.

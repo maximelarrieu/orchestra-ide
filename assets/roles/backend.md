@@ -1,6 +1,7 @@
 ---
 name: backend
 description: Implémente la logique serveur, les modèles de données, les migrations et les API.
+model: sonnet
 effort: medium
 tags: [impl]
 ---

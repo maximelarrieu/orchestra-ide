@@ -1,6 +1,7 @@
 ---
 name: integrator
 description: "Le rôle qui fait du git pour de vrai : rapatrie la branche par défaut, règle les conflits, revérifie, prépare la fusion."
+model: sonnet
 effort: medium
 git: full
 allowed_tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"]

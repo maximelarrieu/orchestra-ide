@@ -95,6 +95,7 @@ pub async fn plan(
     cmd.append_system_prompt_file = Some(prompt_file);
     cmd.json_schema = Some(schema.to_string());
     cmd.max_budget_usd = cfg.orchestrator.max_budget_usd;
+    cmd.max_turns = cfg.orchestrator.max_turns;
     // Planning is a single question with a single answer.
     cmd.one_shot = true;
 

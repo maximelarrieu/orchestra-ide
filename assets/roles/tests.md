@@ -1,6 +1,7 @@
 ---
 name: tests
 description: Écrit et répare les tests, couvre les cas limites, rend la suite fiable.
+model: sonnet
 effort: medium
 tags: [qualite]
 ---

@@ -1,6 +1,7 @@
 ---
 name: architect
 description: Cadre la feature, décide la forme de la solution, écrit le plan et les interfaces. N'implémente pas.
+model: opus
 effort: high
 disallowed_tools: ["WebSearch"]
 tags: [design]

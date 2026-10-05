@@ -15,6 +15,9 @@ use orchestra_core::model::Tokens;
 const RESPONSE_BLOCKS: &str = include_str!("fixtures/response_blocks.jsonl");
 const OTHER_LINES: &str = include_str!("fixtures/other_lines.jsonl");
 const SUBAGENT: &str = include_str!("fixtures/subagent.jsonl");
+/// A reviewer run under `--json-schema` (claude 2.1.289): the verdict comes
+/// as `structured_output`, and `result` carries the same JSON as a string.
+const REVIEWER_RESULT: &str = include_str!("fixtures/reviewer_result.jsonl");
 
 fn records(jsonl: &str) -> Vec<UsageRecord> {
     jsonl
@@ -166,4 +169,20 @@ fn a_headless_run_parses_from_init_to_result() {
     assert!(finished);
     assert_eq!(tokens.output, 90);
     assert_eq!(tokens.cache_read, 1000);
+}
+
+#[test]
+fn a_structured_verdict_comes_out_of_a_real_result_line() {
+    use orchestra_core::review::{parse_review, structured_to_text, Verdict};
+    let StreamLine::Result(r) = StreamLine::parse(REVIEWER_RESULT.trim()).unwrap() else {
+        panic!("une ligne result était attendue");
+    };
+    assert!(r.is_success());
+    let text = structured_to_text(r.structured_output.as_ref().expect("structured_output"))
+        .expect("un verdict lisible");
+    let review = parse_review(&text).unwrap();
+    assert_eq!(review.verdict, Verdict::Changes);
+    assert_eq!(review.roles_to_fix(&["backend", "tests"]), vec!["backend", "tests"]);
+    // The text copy is the fallback: on its own, it is JSON, not a block.
+    assert!(parse_review(r.result.as_deref().unwrap()).is_none());
 }

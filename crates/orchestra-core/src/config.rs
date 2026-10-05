@@ -35,6 +35,8 @@ impl Default for Config {
                 model: MODEL_DEFAULT.into(),
                 effort: Effort::Medium,
                 max_budget_usd: Some(2.0),
+                // It reads the repository, then answers once.
+                max_turns: Some(60),
             },
             review: ReviewConfig::default(),
             checks: ChecksConfig::default(),
@@ -82,6 +84,9 @@ pub struct AgentDefaults {
     pub model: String,
     pub effort: Effort,
     pub max_budget_usd: Option<f64>,
+    /// `--max-turns`: a run that loops stops on a count, not only once it
+    /// has spent its budget. `None` passes no limit.
+    pub max_turns: Option<u32>,
 }
 
 impl Default for AgentDefaults {
@@ -90,6 +95,7 @@ impl Default for AgentDefaults {
             model: MODEL_DEFAULT.into(),
             effort: Effort::Medium,
             max_budget_usd: Some(5.0),
+            max_turns: Some(200),
         }
     }
 }
@@ -330,6 +336,11 @@ impl Config {
                     )));
                 }
             }
+            if d.max_turns == Some(0) {
+                return Err(CoreError::Config(format!(
+                    "{label}.max_turns doit être au moins 1"
+                )));
+            }
         }
         Ok(())
     }
@@ -552,6 +563,14 @@ mod tests {
         let mut c = Config::default();
         c.defaults.max_budget_usd = Some(0.0);
         assert!(c.validate().is_err());
+
+        let mut c = Config::default();
+        c.orchestrator.max_turns = Some(0);
+        assert!(c.validate().is_err());
+        // No limit at all is a choice, not an error.
+        let mut c = Config::default();
+        c.defaults.max_turns = None;
+        assert!(c.validate().is_ok());
     }
 
     #[test]

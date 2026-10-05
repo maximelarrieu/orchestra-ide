@@ -1,6 +1,7 @@
 ---
 name: frontend
 description: "Implémente l'interface : composants, écrans, état, interactions, styles."
+model: sonnet
 effort: medium
 tags: [impl]
 ---

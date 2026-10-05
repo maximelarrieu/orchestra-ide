@@ -102,6 +102,20 @@ Le flux contient aussi des lignes `system` de sous-type `hook_started` et
 `hook_response`, mais seulement pour certains hooks sans `--include-hook-events`.
 On ne s'appuie donc pas dessus.
 
+### Sortie structurée dans une session à outils — confirmé (2.1.289)
+
+`--json-schema` tient aussi pour un agent qui lit, écrit et lance des commandes,
+prompt reçu en `--input-format stream-json` sur stdin : les outils tournent
+normalement, puis la ligne `result` porte `structured_output`. Le relecteur s'en
+sert pour son verdict ; fixture réelle : `tests/fixtures/reviewer_result.jsonl`.
+
+### `--max-turns` — confirmé (2.1.289), absent de `--help`
+
+Accepté et appliqué : une limite dépassée termine la ligne `result` par
+`subtype: "error_max_turns"`, `terminal_reason: "max_turns"`, `is_error: true`.
+Observé avec `--max-turns 1` : `num_turns` vaut 2 à l'arrêt, le tour d'outil en
+cours étant compté.
+
 ## Isolation de l'environnement utilisateur — confirmé (2.1.289)
 
 Sans précaution, un agent hérite de tout `~/.claude` : plugins, leurs hooks, serveurs

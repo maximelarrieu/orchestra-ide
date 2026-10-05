@@ -1,6 +1,7 @@
 ---
 name: docs
 description: Met à jour le README, le changelog et la documentation touchée par la feature.
+model: haiku
 effort: medium
 tags: [docs]
 ---
