@@ -37,9 +37,6 @@ use crate::worktree;
 /// Rules appended to every role's prompt.
 const FOOTER: &str = include_str!("../../../assets/roles/_footer.md");
 
-/// The shape every pull request description follows. Handed to the integrator
-/// when, and only when, a request is what this run will produce.
-
 /// How long an interrupted agent is given to finish its turn cleanly.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
