@@ -104,7 +104,19 @@ toucher au disque ni au réseau.
 
 État `App` pur, façon Elm : `update(Msg) -> Vec<Command>`. Aucun type ratatui dans
 l'état, donc toute la machine se teste sans terminal ; le rendu se teste avec
-`TestBackend` en 80×24 et en pane étroit.
+`TestBackend` (`screens::text_of`) en 80×24 et en pane étroit, et les écrans
+principaux sont figés en snapshots `insta` (`tests/snapshots/`).
+
+`app/` répartit les méthodes d'`App` par préoccupation : `input` (la cascade des
+touches), `nav` (écrans, colonnes, lignes, file « à toi »), un fichier par écran
+pour ses touches, `palette`, `replies` (réponses et événements du daemon),
+`describe` (les événements en mots). `screens/layout.rs` dessine le cadre commun ;
+chaque `screens/<écran>.rs` ne dessine que son contenu.
+
+**Une grammaire de touches** : `y` accepte, `x` rejette ou arrête, `e` édite, `o`
+ouvre, `d` supprime ; une confirmation ne se donne qu'avec `y` ou Entrée. Un test
+essaie toutes les lettres sur plusieurs écrans : une touche qui agit sans être
+écrite sur la barre ni dans l'aide le fait échouer.
 
 Les raccourcis évitent `Alt` et les accords `Ctrl+b` / `Ctrl+g`, réservés à zellij
 par la configuration de l'utilisateur.
