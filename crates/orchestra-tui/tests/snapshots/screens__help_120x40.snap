@@ -10,31 +10,31 @@ expression: "draw(&app, 120, 40)"
 │                    ││                       ││                      ││                       ││                      │
 │                    ││                       ││                      ││#4 relu sans défaut    ││                      │
 │                    ││                       ││                      ││  ▶ prêt à intégrer    ││                      │
-│  ┌ Aide — Tableau ───────────────────────────────────────────────────────────────────────────────────────────────┐   │
-│  │Sur cet écran                 Partout                                                                          │   │
-│  │ [Entrée] voir ses tickets          [:] palette de commandes                                                   │   │
-│  │    [j/k] changer de projet         [R] rafraîchir                                                             │   │
-│  │      [d] oublier                   [?] cette aide                                                             │   │
-│  │      [n] nouveau ticket            [q] revenir en arrière                                                     │   │
-│  │                                    [Q] quitter                                                                │   │
-│  │Se déplacer                    [Ctrl-C] quitter                                                                │   │
-│  │    [1…8] aller à un écran          [!] aller à ce qui t'attend                                                │   │
-│  │    [Tab] écran suivant             [A] replier le bandeau Activité                                            │   │
-│  │   [⇧Tab] écran précédent                                                                                      │   │
-│  │    [j k] descendre / monter  Palette « : »                                                                    │   │
-│  │    [h l] gauche / droite      :project add <chemin>           ajouter un projet                               │   │
-│  │    [g G] début / fin          :project forget <nom>           oublier un projet                               │   │
-│  │ [Entrée] ouvrir               :todo add <titre>               ajouter un todo                                 │   │
-│  │                               :todo urgent <n>                basculer l'urgence                              │   │
-│  │                               :todo due <n> <AAAA-MM-JJ>      fixer l'échéance                                │   │
-│  │                               :todo open|doing|done|drop <n>  changer le statut                               │   │
-│  │                               :convention add <titre>         écrire une convention                           │   │
-│  │                               :adr add <titre>                écrire une décision du projet                   │   │
-│  │                               :role add <nom>                 créer un rôle (projet sélectionné, sinon global)│   │
-│  │                               :regles                         les rôles, conventions et ADR                   │   │
-│  │                               :usage                          les coûts                                       │   │
-└──│                               :refresh                        tout relire                                     │───┘
-┌ A└───────────────────────────────────────────────────────────────────────────────────────────────────────────────┘───┐
+│ ┌ Aide — Tableau ──────────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│ │Sur cet écran                    Partout                                                                          │ │
+│ │ [Entrée] voir ses tickets             [:] palette de commandes                                                   │ │
+│ │    [j/k] changer de projet            [R] rafraîchir                                                             │ │
+│ │      [d] oublier                      [?] cette aide                                                             │ │
+│ │      [n] nouveau ticket               [q] revenir en arrière                                                     │ │
+│ │                                       [Q] quitter                                                                │ │
+│ │Se déplacer                       [Ctrl-C] quitter                                                                │ │
+│ │       [1…8] aller à un écran          [!] aller à ce qui t'attend                                                │ │
+│ │       [Tab] écran suivant             [A] replier le bandeau Activité                                            │ │
+│ │      [⇧Tab] écran précédent                                                                                      │ │
+│ │       [j k] descendre / monter  Palette « : »                                                                    │ │
+│ │       [h l] gauche / droite      :project add <chemin>           ajouter un projet                               │ │
+│ │       [g G] début / fin          :project forget <nom>           oublier un projet                               │ │
+│ │ [PgUp PgDn] page haut / bas      :todo add <titre>               ajouter un todo                                 │ │
+│ │    [Entrée] ouvrir               :todo urgent <n>                basculer l'urgence                              │ │
+│ │                                  :todo due <n> <AAAA-MM-JJ>      fixer l'échéance                                │ │
+│ │                                  :todo open|doing|done|drop <n>  changer le statut                               │ │
+│ │                                  :convention add <titre>         écrire une convention                           │ │
+│ │                                  :adr add <titre>                écrire une décision du projet                   │ │
+│ │                                  :role add <nom>                 créer un rôle (projet sélectionné, sinon global)│ │
+│ │                                  :regles                         les rôles, conventions et ADR                   │ │
+│ │                                  :usage                          les coûts                                       │ │
+└─│                                  :refresh                        tout relire                                     │─┘
+┌ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘─┐
 │en attente d'activité…                                                                                                │
 │                                                                                                                      │
 │                                                                                                                      │

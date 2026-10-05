@@ -39,6 +39,10 @@ pub enum Action {
     /// Tab: next field of a form.
     NextField,
     Cancel,
+    /// PgUp / Ctrl-U: a page towards the top (the oldest, in a log).
+    PageUp,
+    /// PgDn / Ctrl-D: a page towards the bottom.
+    PageDown,
 }
 
 /// Translate a key press outside text input.
@@ -63,6 +67,8 @@ pub fn map(key: KeyEvent) -> Option<Action> {
         (KeyCode::Char('l'), false) | (KeyCode::Right, false) => Action::Right,
         (KeyCode::Char('g'), false) => Action::Top,
         (KeyCode::Char('G'), false) => Action::Bottom,
+        (KeyCode::PageUp, _) | (KeyCode::Char('u'), true) => Action::PageUp,
+        (KeyCode::PageDown, _) | (KeyCode::Char('d'), true) => Action::PageDown,
         (KeyCode::Home, false) => Action::Top,
         (KeyCode::End, false) => Action::Bottom,
         (KeyCode::Enter, false) => Action::Select,

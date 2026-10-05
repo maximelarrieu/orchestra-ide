@@ -318,6 +318,9 @@ impl CostView {
 }
 
 pub struct App {
+    /// Rows the agent log had at the last frame, kept by the renderer so a
+    /// page is a page and not a guess.
+    pub log_height: std::cell::Cell<usize>,
     pub screen: Screen,
     /// The ticket currently open, when one is.
     pub ticket: Option<Box<TicketDetail>>,
@@ -453,6 +456,7 @@ impl Default for App {
             outbox: Vec::new(),
             ticks: 0,
             last_activity: None,
+            log_height: std::cell::Cell::new(20),
         }
     }
 }

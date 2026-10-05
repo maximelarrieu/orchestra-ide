@@ -139,7 +139,7 @@ pub fn strip_for_width(app: &App, width: usize) -> Vec<Hint> {
 pub fn strip(app: &App) -> Vec<Hint> {
     if app.confirm.is_some() {
         return vec![
-            Hint::screen("o", "confirmer"),
+            Hint::screen("y", "confirmer"),
             Hint::global("Échap", "renoncer"),
         ];
     }
@@ -367,10 +367,10 @@ fn rules_hints(app: &App) -> Vec<Hint> {
     };
     let mut hints = Vec::new();
     if r.status != RuleStatus::Accepted {
-        hints.push(Hint::screen("a", "accepter"));
+        hints.push(Hint::screen("y", "accepter"));
     }
     if r.status != RuleStatus::Rejected {
-        hints.push(Hint::screen("r", "rejeter"));
+        hints.push(Hint::screen("x", "rejeter"));
     }
     if r.kind == RuleKind::Adr && r.status == RuleStatus::Accepted {
         hints.push(Hint::screen("s", "remplacée"));
@@ -392,9 +392,9 @@ fn proposal_hints(app: &App) -> Vec<Hint> {
     }
     vec![
         Hint::screen("y", "accepter l'équipe"),
-        Hint::screen("o", "objectif"),
+        Hint::screen("e", "objectif"),
         Hint::screen("m", "modèle"),
-        Hint::screen("e", "effort"),
+        Hint::screen("E", "effort"),
         Hint::screen("a", "ajouter"),
         Hint::screen("d", "retirer"),
         Hint::screen("J/K", "déplacer"),
@@ -410,6 +410,7 @@ pub const NAVIGATION: &[(&str, &str)] = &[
     ("j k", "descendre / monter"),
     ("h l", "gauche / droite"),
     ("g G", "début / fin"),
+    ("PgUp PgDn", "page haut / bas"),
     ("Entrée", "ouvrir"),
 ];
 

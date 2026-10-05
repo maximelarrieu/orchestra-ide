@@ -154,7 +154,7 @@ fn render_detail(app: &App, frame: &mut Frame<'_>, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(lines)
-            .block(pane_block("Objectif — « o » pour le réécrire", false))
+            .block(pane_block("Objectif — « e » pour le réécrire", false))
             .wrap(Wrap { trim: true }),
         area,
     );

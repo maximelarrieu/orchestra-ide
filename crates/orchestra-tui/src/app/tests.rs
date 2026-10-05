@@ -286,17 +286,17 @@ fn app_with_rules() -> App {
 }
 
 #[test]
-fn a_accepts_the_selected_rule_and_r_asks_first() {
+fn y_accepts_the_selected_rule_and_x_asks_first() {
     let mut app = app_with_rules();
     assert_eq!(app.pending_rules(), 1);
     app.update(Msg::Key(Action::Down));
-    let cmds = app.update(Msg::Key(Action::Char('a')));
+    let cmds = app.update(Msg::Key(Action::Char('y')));
     assert!(matches!(
         cmds.as_slice(),
         [Command::SetRuleStatus { name, status: RuleStatus::Accepted, .. }] if name == "paginer"
     ));
 
-    let cmds = app.update(Msg::Key(Action::Char('r')));
+    let cmds = app.update(Msg::Key(Action::Char('x')));
     assert!(cmds.is_empty(), "rejeter se confirme");
     assert!(app.confirm.as_ref().unwrap().question.contains("titre paginer"));
     let cmds = app.update(Msg::Key(Action::Char('y')));

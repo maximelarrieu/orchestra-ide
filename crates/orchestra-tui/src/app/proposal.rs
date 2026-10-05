@@ -37,12 +37,12 @@ impl App {
                 let aliases = self.model_aliases.clone();
                 self.editor.cycle_model(&aliases);
             }
-            'e' => self.editor.cycle_effort(),
+            'E' => self.editor.cycle_effort(),
             'd' => self.editor.remove_selected(),
             'a' => self.editor.add_next_role(),
             'J' => self.editor.reorder(1),
             'K' => self.editor.reorder(-1),
-            'o' => self.editor.start_editing_objective(),
+            'e' => self.editor.start_editing_objective(),
             'y' => self.accept_team(),
             'r' => {
                 if let Some(ticket_id) = self.ticket.as_ref().map(|d| d.ticket.id) {

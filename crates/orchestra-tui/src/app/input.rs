@@ -63,6 +63,8 @@ impl App {
             Action::PrevScreen => self.go(self.screen.prev()),
             Action::Left => self.move_lane(-1),
             Action::Right => self.move_lane(1),
+            Action::PageUp => self.page(-1),
+            Action::PageDown => self.page(1),
             Action::Up => self.move_selection(-1),
             Action::Down => self.move_selection(1),
             Action::Top => self.set_selection(0),
@@ -157,7 +159,9 @@ impl App {
     pub(super) fn on_confirm_key(&mut self, action: Action) {
         let accepted = matches!(
             action,
-            Action::Char('o') | Action::Char('y') | Action::Select
+            // `y` or Entrée, nothing else: `o` used to confirm too, and is
+            // « ouvrir » everywhere else.
+            Action::Char('y') | Action::Select
         );
         let confirm = self.confirm.take();
         match (accepted, confirm) {

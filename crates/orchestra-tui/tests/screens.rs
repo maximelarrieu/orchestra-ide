@@ -636,7 +636,7 @@ fn an_objective_can_be_rewritten_in_place() {
     })));
     app.update(Msg::Key(Action::Char('a')));
 
-    app.update(Msg::Key(Action::Char('o')));
+    app.update(Msg::Key(Action::Char('e')));
     assert!(app.is_typing(), "l'éditeur capte les touches");
     let out = draw(&app, 120, 30);
     assert!(out.contains("Ctrl-S garder"));
@@ -1133,7 +1133,7 @@ fn cancelling_a_running_agent_asks_the_daemon_once_confirmed() {
         detail.agents[0].agent.status = AgentStatus::Running;
     }
     assert!(app.update(Msg::Key(Action::Char('x'))).is_empty());
-    let cmds = app.update(Msg::Key(Action::Char('o')));
+    let cmds = app.update(Msg::Key(Action::Char('y')));
     assert!(cmds
         .iter()
         .any(|c| matches!(c, Command::CancelAgent { .. })));
@@ -1266,11 +1266,11 @@ fn a_cleared_ticket_offers_the_integration_and_asks_before_merging() {
     let cmds = app.update(Msg::Key(Action::Char('f')));
     assert!(cmds.is_empty(), "une fusion ne part pas sans confirmation");
     assert!(app.confirm.is_some());
-    let cmds = app.update(Msg::Key(Action::Char('o')));
+    let cmds = app.update(Msg::Key(Action::Char('y')));
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Command::IntegrateTicket { .. })),
-        "« o » lance l'intégrateur"
+        "« y » lance l'intégrateur"
     );
 }
 
@@ -1352,7 +1352,7 @@ fn a_closed_ticket_offers_to_be_reopened() {
 
     app.update(Msg::Key(Action::Char('o')));
     assert!(app.confirm.is_some(), "on demande avant");
-    let cmds = app.update(Msg::Key(Action::Char('o')));
+    let cmds = app.update(Msg::Key(Action::Char('y')));
     assert!(cmds
         .iter()
         .any(|c| matches!(c, Command::ReopenTicket { .. })));
@@ -1365,7 +1365,7 @@ fn a_branch_merged_by_hand_is_closed_from_the_ticket() {
     assert!(out.contains("[t] marquer terminé"), "{out}");
     app.update(Msg::Key(Action::Char('t')));
     assert!(app.confirm.is_some());
-    let cmds = app.update(Msg::Key(Action::Char('o')));
+    let cmds = app.update(Msg::Key(Action::Char('y')));
     assert!(cmds
         .iter()
         .any(|c| matches!(c, Command::FinishTicket { .. })));
@@ -1377,11 +1377,11 @@ fn a_cancellation_happens_once_it_is_confirmed() {
     app.update(Msg::Key(Action::Char('x')));
     assert!(app.confirm.is_some());
 
-    let cmds = app.update(Msg::Key(Action::Char('o')));
+    let cmds = app.update(Msg::Key(Action::Char('y')));
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Command::CancelTicket { .. })),
-        "« o » confirme"
+        "« y » confirme"
     );
     assert!(app.confirm.is_none());
 }
@@ -1786,4 +1786,110 @@ fn snapshot_help_overlay() {
     let mut app = board_waiting();
     app.update(Msg::Key(Action::Help));
     insta::assert_snapshot!("help_120x40", draw(&app, 120, 40));
+}
+
+/// The single-character keys a bar or a help line promises.
+fn promised_keys(app: &App) -> std::collections::HashSet<char> {
+    let mut keys: std::collections::HashSet<char> = orchestra_tui::keys::screen_hints(app)
+        .iter()
+        .chain(orchestra_tui::keys::global_hints(app).iter())
+        .flat_map(|h| {
+            h.key
+                .split(['/', ' '])
+                .filter(|k| k.chars().count() == 1)
+                .filter_map(|k| k.chars().next())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    // What every screen answers, written in the help's « Se déplacer » and
+    // « Partout » tables rather than on the bar.
+    keys.extend(['q', 'Q', '?', 'R', ':', 'j', 'k', 'h', 'l', 'g', 'G', '!', 'A']);
+    keys.extend('1'..='8');
+    keys
+}
+
+/// Everything a key could have changed, in one comparable value.
+fn footprint(app: &App) -> String {
+    format!(
+        "{:?}|{}|{}|{}|{}|{}|{:?}|{}",
+        app.screen,
+        app.confirm.is_some(),
+        app.steer.is_some(),
+        app.editor.is_editing(),
+        app.show_help,
+        app.palette.is_some(),
+        app.editor.members.iter().map(|m| (&m.role, &m.model, m.effort)).collect::<Vec<_>>(),
+        app.status,
+    )
+}
+
+#[test]
+fn a_key_the_screen_does_not_announce_does_nothing() {
+    // Every key a screen answers must be on its bar or in the help: a key
+    // that acts without being written anywhere is one nobody finds, or one
+    // somebody hits by accident.
+    for name in ["tableau", "ticket", "ticket relu", "agent", "agent arrêté", "équipe", "coût"] {
+        let promised = promised_keys(&fixture_named(name));
+        for c in ('a'..='z').chain('A'..='Z') {
+            if promised.contains(&c) {
+                continue;
+            }
+            // Rebuilt for each key: a fixture is not Clone.
+            let mut app = fixture_named(name);
+            let before = footprint(&app);
+            let cmds = app.update(Msg::Key(Action::Char(c)));
+            assert!(
+                cmds.is_empty() && footprint(&app) == before,
+                "« {c} » agit sur l'écran {name} sans figurer dans sa barre ni dans l'aide : {cmds:?}"
+            );
+        }
+    }
+}
+
+fn fixture_named(name: &str) -> App {
+    match name {
+        "tableau" => board_waiting(),
+        "ticket" => app_on_ticket(true, true),
+        "ticket relu" => app_on_reviewed_ticket(Verdict::Ready),
+        "agent" => app_watching(AgentStatus::Running),
+        "agent arrêté" => app_watching(AgentStatus::Done),
+        "équipe" => {
+            let mut app = app_on_ticket(true, false);
+            app.update(Msg::Reply(Box::new(Reply::Roles {
+                roles: vec![role("architect"), role("backend"), role("tests")],
+                errors: vec![],
+            })));
+            app.update(Msg::Key(Action::Char('a')));
+            app
+        }
+        "coût" => {
+            let mut app = App::new();
+            app.screen = Screen::Cost;
+            app
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn a_page_in_the_log_is_the_height_the_log_was_drawn_at() {
+    let mut app = app_watching(AgentStatus::Running);
+    for i in 0..200 {
+        app.log.push_event(&Event::from_new(
+            1,
+            NewEvent::new(EventKind::AgentText { text: format!("ligne {i:03}") }),
+        ));
+    }
+    draw(&app, 100, 40);
+    let height = app.log_height.get();
+    assert!(height > 5 && height < 40, "la hauteur vient du rendu : {height}");
+
+    app.update(Msg::Key(Action::PageUp));
+    assert!(!app.log.is_following());
+    let last = app.log.window(height).last().unwrap().text.clone();
+    // One line of the previous page stays in view, as in every pager.
+    assert_eq!(last, format!("ligne {:03}", 199 - (height - 1)));
+
+    app.update(Msg::Key(Action::PageDown));
+    assert!(app.log.is_following(), "une page plus bas revient au direct");
 }

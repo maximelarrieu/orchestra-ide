@@ -150,6 +150,7 @@ fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect, role: &str) {
 
 fn render_log(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let height = area.height.saturating_sub(2) as usize;
+    app.log_height.set(height.max(1));
     let lines: Vec<Line> = if app.log.is_empty() {
         vec![Line::from(Span::styled(
             "en attente de l'agent…",

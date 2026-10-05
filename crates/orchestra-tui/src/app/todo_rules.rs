@@ -23,13 +23,13 @@ impl App {
         let project_id = self.selected_project().map(|p| p.id);
         let (kind, name, title) = (r.kind, r.name.clone(), r.title.clone());
         match c {
-            'a' => self.outbox.push(Command::SetRuleStatus {
+            'y' => self.outbox.push(Command::SetRuleStatus {
                 project_id,
                 rule_kind: kind,
                 name,
                 status: RuleStatus::Accepted,
             }),
-            'r' => self.ask(
+            'x' => self.ask(
                 format!("Rejeter la {} « {title} » ?", kind.label_fr()),
                 Command::SetRuleStatus {
                     project_id,

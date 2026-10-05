@@ -169,7 +169,7 @@ impl App {
             (Screen::Agent, _) => {
                 // On a live log, down means towards the newest.
                 if delta < 0 {
-                    self.log.scroll_up(delta.unsigned_abs(), 20);
+                    self.log.scroll_up(delta.unsigned_abs(), self.log_height.get());
                 } else {
                     self.log.scroll_down(delta as usize);
                 }
@@ -232,5 +232,16 @@ impl App {
             (Screen::Ticket, _) => self.open_agent(),
             _ => {}
         }
+    }
+
+    /// One page up or down: the log's own height on the agent screen, ten
+    /// rows anywhere else.
+    pub(super) fn page(&mut self, direction: isize) {
+        let rows = if self.screen == Screen::Agent {
+            self.log_height.get().saturating_sub(1).max(1)
+        } else {
+            10
+        };
+        self.move_selection(direction * rows as isize);
     }
 }

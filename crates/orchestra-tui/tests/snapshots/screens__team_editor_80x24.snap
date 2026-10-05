@@ -1,5 +1,6 @@
 ---
 source: crates/orchestra-tui/tests/screens.rs
+assertion_line: 1780
 expression: "draw(&app, 80, 24)"
 ---
  1  2  3  4  5  6 Équipe  7  8                                                  
@@ -16,7 +17,7 @@ expression: "draw(&app, 80, 24)"
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-┌ Objectif — « o » pour le réécrire ───────────────────────────────────────────┐
+┌ Objectif — « e » pour le réécrire ───────────────────────────────────────────┐
 │objectif détaillé de architect                                                │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -24,5 +25,5 @@ expression: "draw(&app, 80, 24)"
 │en attente d'activité…                                                        │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-[y] accepter l'équipe  [o] objectif  [m] modèle  [e] effort …  │  [?] aide      
+[y] accepter l'équipe  [e] objectif  [m] modèle  [E] effort …  │  [?] aide      
 ● orchestra  connexion au daemon…             0 msg · 0 tokens · ≈$- (indicatif)
