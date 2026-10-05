@@ -50,7 +50,11 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
         .split(area);
 
     render_header(app, frame, chunks[0]);
-    render_brief(app, frame, chunks[1]);
+    if app.ticket_timeline {
+        render_timeline(app, frame, chunks[1]);
+    } else {
+        render_brief(app, frame, chunks[1]);
+    }
     render_agents(app, frame, chunks[2]);
 }
 
@@ -270,6 +274,38 @@ fn render_brief(app: &App, frame: &mut Frame<'_>, area: Rect) {
 /// A run reads the repository for half a minute before answering. Shown as a
 /// still line, that is indistinguishable from a frozen screen — and the first
 /// reflex is to press keys at it.
+/// What happened to this ticket, oldest first and newest at the bottom, in
+/// the words of the activity strip. The events come with every refresh of
+/// the ticket, so the timeline moves while the team works.
+fn render_timeline(app: &App, frame: &mut Frame<'_>, area: Rect) {
+    let visible = area.height.saturating_sub(2) as usize;
+    let lines: Vec<String> = app
+        .ticket
+        .as_ref()
+        .map(|d| {
+            d.recent_events
+                .iter()
+                .filter_map(crate::app::describe)
+                .collect()
+        })
+        .unwrap_or_default();
+    let shown: Vec<Line> = if lines.is_empty() {
+        vec![Line::from(Span::styled(
+            "rien encore",
+            Style::default().add_modifier(Modifier::DIM),
+        ))]
+    } else {
+        lines[lines.len().saturating_sub(visible)..]
+            .iter()
+            .map(|l| Line::from(l.clone()))
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(shown).block(pane_block("Chronologie — « T » le brief", true)),
+        area,
+    );
+}
+
 fn planning_lines(app: &App) -> Vec<Line<'static>> {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let mut lines = vec![Line::from(Span::raw(

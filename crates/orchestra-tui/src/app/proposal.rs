@@ -43,6 +43,7 @@ impl App {
             'J' => self.editor.reorder(1),
             'K' => self.editor.reorder(-1),
             'e' => self.editor.start_editing_objective(),
+            'c' => self.editor.start_editing_acceptance(),
             'y' => self.accept_team(),
             'r' => {
                 if let Some(ticket_id) = self.ticket.as_ref().map(|d| d.ticket.id) {

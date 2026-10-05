@@ -182,6 +182,13 @@ fn typing_hints(app: &App) -> Option<Vec<Hint>> {
         ]);
     }
     if app.screen == Screen::Proposal && app.editor.is_editing() {
+        if matches!(app.editor.mode, crate::forms::EditorMode::Acceptance { .. }) {
+            return Some(vec![
+                Hint::screen("Ctrl-S", "garder les critères"),
+                Hint::screen("Entrée", "critère suivant"),
+                Hint::global("Échap", "annuler"),
+            ]);
+        }
         return Some(vec![
             Hint::screen("Ctrl-S", "garder l'objectif"),
             Hint::global("Échap", "annuler"),
@@ -285,6 +292,10 @@ fn ticket_hints(app: &App) -> Vec<Hint> {
         hints.push(Hint::screen("Entrée", "suivre l'agent"));
     }
     hints.push(Hint::screen("n", "nouveau ticket"));
+    hints.push(Hint::screen(
+        "T",
+        if app.ticket_timeline { "le brief" } else { "chronologie" },
+    ));
     hints
 }
 
@@ -393,6 +404,7 @@ fn proposal_hints(app: &App) -> Vec<Hint> {
     vec![
         Hint::screen("y", "accepter l'équipe"),
         Hint::screen("e", "objectif"),
+        Hint::screen("c", "critères"),
         Hint::screen("m", "modèle"),
         Hint::screen("E", "effort"),
         Hint::screen("a", "ajouter"),

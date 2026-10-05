@@ -393,6 +393,8 @@ pub struct App {
     /// The activity strip folded away (`A`): on a short terminal it takes
     /// rows the screen itself needs.
     pub activity_hidden: bool,
+    /// The ticket screen shows its timeline instead of its brief (`T`).
+    pub ticket_timeline: bool,
     /// Text being typed in the command palette, if open.
     pub palette: Option<String>,
     pub should_quit: bool,
@@ -451,6 +453,7 @@ impl Default for App {
             daemon_version: None,
             show_help: false,
             activity_hidden: false,
+            ticket_timeline: false,
             palette: None,
             should_quit: false,
             outbox: Vec::new(),

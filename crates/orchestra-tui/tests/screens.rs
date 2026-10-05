@@ -1893,3 +1893,101 @@ fn a_page_in_the_log_is_the_height_the_log_was_drawn_at() {
     app.update(Msg::Key(Action::PageDown));
     assert!(app.log.is_following(), "une page plus bas revient au direct");
 }
+
+#[test]
+fn criteria_are_rewritten_one_per_line_and_reach_the_accepted_team() {
+    let mut app = fixture_named("équipe");
+    app.editor.members[0].acceptance = vec!["le plan existe".into()];
+
+    app.update(Msg::Key(Action::Char('c')));
+    assert!(app.is_typing(), "les lettres vont dans le texte");
+    let out = draw(&app, 100, 30);
+    assert!(out.contains("Critères, un par ligne"), "{out}");
+    assert!(out.contains("[Entrée] critère suivant"));
+    // Rewrite: drop the old line, type two.
+    for _ in 0.."le plan existe".chars().count() {
+        app.update(Msg::Key(Action::Backspace));
+    }
+    for c in "- docs/plan.md existe".chars() {
+        app.update(Msg::Key(Action::Char(c)));
+    }
+    app.update(Msg::Key(Action::Submit));
+    assert!(app.editor.is_editing(), "Entrée passe au critère suivant");
+    for c in "il nomme les fichiers".chars() {
+        app.update(Msg::Key(Action::Char(c)));
+    }
+    app.update(Msg::Key(Action::Accept));
+    assert!(!app.editor.is_editing());
+    assert_eq!(
+        app.editor.members[0].acceptance,
+        vec!["docs/plan.md existe".to_string(), "il nomme les fichiers".to_string()],
+        "le tiret tapé par habitude est retiré"
+    );
+
+    // Escape leaves the list as it was.
+    app.update(Msg::Key(Action::Char('c')));
+    app.update(Msg::Key(Action::Char('x')));
+    app.update(Msg::Key(Action::Cancel));
+    assert_eq!(app.editor.members[0].acceptance.len(), 2);
+
+    let cmds = app.update(Msg::Key(Action::Char('y')));
+    let sent = cmds.iter().find_map(|c| match c {
+        Command::AcceptProposal { team, .. } => Some(team.members[0].acceptance.clone()),
+        _ => None,
+    });
+    assert_eq!(sent.unwrap().len(), 2, "les critères partent avec l'équipe");
+}
+
+#[test]
+fn the_ticket_tells_its_story_on_demand() {
+    let mut d = detail(false, true);
+    d.recent_events = vec![
+        Event::from_new(
+            1,
+            NewEvent::new(EventKind::TicketStatusChanged {
+                from: TicketStatus::Planned,
+                to: TicketStatus::Running,
+            }),
+        ),
+        Event::from_new(
+            2,
+            NewEvent::new(EventKind::ReviewVerdict {
+                round: 1,
+                verdict: Verdict::Ready,
+                blocking: vec![],
+                roles: vec![],
+            }),
+        ),
+    ];
+    let mut app = App::new();
+    app.connected = true;
+    app.update(Msg::Reply(Box::new(Reply::Ticket { detail: Box::new(d) })));
+    app.screen = Screen::Ticket;
+    let has = |app: &App, label: &str| {
+        orchestra_tui::keys::screen_hints(app)
+            .iter()
+            .any(|h| h.key == "T" && h.label == label)
+    };
+    assert!(has(&app, "chronologie"));
+
+    app.update(Msg::Key(Action::Char('T')));
+    let out = draw(&app, 120, 30);
+    assert!(out.contains("Chronologie"), "{out}");
+    let shown: Vec<String> = app
+        .ticket
+        .as_ref()
+        .unwrap()
+        .recent_events
+        .iter()
+        .filter_map(orchestra_tui::app::describe)
+        .collect();
+    assert_eq!(shown.len(), 2);
+    for line in &shown {
+        let words: String = line.chars().skip(10).take(20).collect();
+        assert!(out.contains(words.trim()), "« {words} » absent : {out}");
+    }
+    assert!(has(&app, "le brief"));
+
+    app.update(Msg::Key(Action::Char('T')));
+    assert!(!draw(&app, 120, 30).contains("Chronologie"));
+}

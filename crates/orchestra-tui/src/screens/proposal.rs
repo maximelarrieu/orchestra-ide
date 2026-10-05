@@ -47,8 +47,22 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
     render_members(app, frame, chunks[1]);
     render_detail(app, frame, chunks[2]);
 
-    if let EditorMode::Objective { buffer } = &editor.mode {
-        render_objective_editor(buffer, frame, area);
+    match &editor.mode {
+        EditorMode::Objective { buffer } => render_text_editor(
+            buffer,
+            "Objectif — Ctrl-S garder, Échap annuler",
+            7,
+            frame,
+            area,
+        ),
+        EditorMode::Acceptance { buffer } => render_text_editor(
+            buffer,
+            "Critères, un par ligne — Entrée suivant, Ctrl-S garder, Échap annuler",
+            12,
+            frame,
+            area,
+        ),
+        EditorMode::Browsing => {}
     }
 }
 
@@ -154,15 +168,15 @@ fn render_detail(app: &App, frame: &mut Frame<'_>, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(lines)
-            .block(pane_block("Objectif — « e » pour le réécrire", false))
+            .block(pane_block("Objectif — « e » le réécrire, « c » ses critères", false))
             .wrap(Wrap { trim: true }),
         area,
     );
 }
 
-fn render_objective_editor(buffer: &str, frame: &mut Frame<'_>, area: Rect) {
+fn render_text_editor(buffer: &str, title: &str, max_height: u16, frame: &mut Frame<'_>, area: Rect) {
     let width = area.width.saturating_sub(8).clamp(20, 90);
-    let height = area.height.saturating_sub(2).clamp(3, 7);
+    let height = area.height.saturating_sub(2).clamp(3, max_height);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -172,7 +186,7 @@ fn render_objective_editor(buffer: &str, frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(format!("{buffer}▏"))
-            .block(pane_block("Objectif — Ctrl-S garder, Échap annuler", true))
+            .block(pane_block(title, true))
             .wrap(Wrap { trim: false }),
         popup,
     );

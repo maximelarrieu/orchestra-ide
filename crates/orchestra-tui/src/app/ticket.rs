@@ -11,6 +11,7 @@ impl App {
         match c {
             'p' => self.start_planning(ticket_id),
             'a' => self.open_editor(),
+            'T' => self.ticket_timeline = !self.ticket_timeline,
             'n' => self.open_new_ticket(),
             'L' => {
                 self.outbox.push(Command::LaunchTicket {

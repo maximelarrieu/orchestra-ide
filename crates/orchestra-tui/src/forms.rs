@@ -99,6 +99,8 @@ pub enum EditorMode {
     Browsing,
     /// Rewriting one member's objective.
     Objective { buffer: String },
+    /// Rewriting one member's acceptance criteria, one per line.
+    Acceptance { buffer: String },
 }
 
 /// The proposal, editable before it is accepted.
@@ -242,34 +244,76 @@ impl TeamEditor {
         }
     }
 
+    /// The criteria as text, one per line, the way they are typed back.
+    pub fn start_editing_acceptance(&mut self) {
+        if let Some(member) = self.members.get(self.selected) {
+            self.mode = EditorMode::Acceptance {
+                buffer: member.acceptance.join("\n"),
+            };
+        }
+    }
+
+    fn buffer_mut(&mut self) -> Option<&mut String> {
+        match &mut self.mode {
+            EditorMode::Objective { buffer } | EditorMode::Acceptance { buffer } => Some(buffer),
+            EditorMode::Browsing => None,
+        }
+    }
+
     pub fn type_char(&mut self, c: char) {
-        if let EditorMode::Objective { buffer } = &mut self.mode {
+        if let Some(buffer) = self.buffer_mut() {
             buffer.push(c);
         }
     }
 
     pub fn backspace(&mut self) {
-        if let EditorMode::Objective { buffer } = &mut self.mode {
+        if let Some(buffer) = self.buffer_mut() {
             buffer.pop();
+        }
+    }
+
+    /// Enter: a new criterion in the list; the objective is one line.
+    pub fn newline(&mut self) -> bool {
+        match &mut self.mode {
+            EditorMode::Acceptance { buffer } => {
+                buffer.push('\n');
+                true
+            }
+            _ => false,
         }
     }
 
     /// Keep what was typed, or drop it.
     pub fn finish_editing(&mut self, keep: bool) {
-        if let EditorMode::Objective { buffer } = std::mem::take(&mut self.mode) {
-            if keep {
+        let mode = std::mem::take(&mut self.mode);
+        if !keep {
+            return;
+        }
+        let Some(member) = self.members.get_mut(self.selected) else {
+            return;
+        };
+        match mode {
+            EditorMode::Objective { buffer } => {
                 let text = buffer.trim().to_string();
                 if !text.is_empty() {
-                    if let Some(member) = self.members.get_mut(self.selected) {
-                        member.objective = text;
-                    }
+                    member.objective = text;
                 }
             }
+            // An empty list is a choice: the user may want none.
+            EditorMode::Acceptance { buffer } => {
+                member.acceptance = buffer
+                    .lines()
+                    .map(|l| l.trim().trim_start_matches(['-', '*', '☐']).trim())
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+            EditorMode::Browsing => {}
         }
     }
 
     pub fn is_editing(&self) -> bool {
-        matches!(self.mode, EditorMode::Objective { .. })
+        !matches!(self.mode, EditorMode::Browsing)
     }
 
     /// The team as it stands, ready to send.

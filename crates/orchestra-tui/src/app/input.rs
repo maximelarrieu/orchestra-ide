@@ -224,6 +224,8 @@ impl App {
         match action {
             Action::Char(c) => self.editor.type_char(c),
             Action::Backspace => self.editor.backspace(),
+            // In the criteria, Enter starts the next one; Ctrl-S keeps them.
+            Action::Submit if self.editor.newline() => {}
             Action::Submit | Action::Accept => self.editor.finish_editing(true),
             Action::Cancel => self.editor.finish_editing(false),
             Action::Quit => self.should_quit = true,

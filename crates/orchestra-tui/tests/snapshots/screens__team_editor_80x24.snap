@@ -17,7 +17,7 @@ expression: "draw(&app, 80, 24)"
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-┌ Objectif — « e » pour le réécrire ───────────────────────────────────────────┐
+┌ Objectif — « e » le réécrire, « c » ses critères ────────────────────────────┐
 │objectif détaillé de architect                                                │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -25,5 +25,5 @@ expression: "draw(&app, 80, 24)"
 │en attente d'activité…                                                        │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-[y] accepter l'équipe  [e] objectif  [m] modèle  [E] effort …  │  [?] aide      
+[y] accepter l'équipe  [e] objectif  [c] critères  [m] modèle …  │  [?] aide    
 ● orchestra  connexion au daemon…             0 msg · 0 tokens · ≈$- (indicatif)
