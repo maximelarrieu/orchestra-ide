@@ -442,6 +442,9 @@ pub struct TicketSummary {
     /// user: the card must say so, not only the activity strip.
     #[serde(default)]
     pub merge_blocked: Option<String>,
+    /// What the ticket waits on the user for, if anything (`attention::of`).
+    #[serde(default)]
+    pub attention: Option<crate::attention::Attention>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

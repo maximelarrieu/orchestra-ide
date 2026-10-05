@@ -370,6 +370,7 @@ fn app_on_kanban() -> App {
             cost_usd: Some(1.25),
             pull_request: pr.map(str::to_string),
             merge_blocked: None,
+            attention: None,
         }
     };
     let mut app = App::new();
@@ -490,6 +491,7 @@ fn opening_a_ticket_from_the_board_asks_the_daemon_for_it() {
         cost_usd: None,
         pull_request: None,
         merge_blocked: None,
+        attention: None,
     }];
     app.update(Msg::Reply(Box::new(Reply::Tickets { tickets: summaries })));
     app.update(Msg::Key(Action::Right));
@@ -1651,4 +1653,118 @@ fn an_opened_pane_is_named_in_the_status_line() {
         pane_id: "terminal_7".into(),
     })));
     assert!(app.status.contains("terminal_7"), "{}", app.status);
+}
+
+/// A board of four tickets, three of which wait on the user.
+fn board_waiting() -> App {
+    use orchestra_core::attention::Attention;
+    let base = detail(false, false);
+    let make = |number: i64, title: &str, status: TicketStatus, attention: Option<Attention>| {
+        let mut t = base.ticket.clone();
+        t.id = Uuid::new_v4();
+        t.number = number;
+        t.title = title.into();
+        t.status = status;
+        TicketSummary {
+            ticket: t,
+            agents_total: 0,
+            agents_active: 0,
+            agents_done: 0,
+            tokens: Tokens::default(),
+            cost_usd: None,
+            pull_request: None,
+            merge_blocked: None,
+            attention,
+        }
+    };
+    let mut app = App::new();
+    app.connected = true;
+    app.update(Msg::Reply(Box::new(Reply::Tickets {
+        tickets: vec![
+            make(1, "équipe proposée", TicketStatus::Draft, Some(Attention::ProposalReady)),
+            make(2, "au travail", TicketStatus::Running, None),
+            make(3, "branche refusée", TicketStatus::Review, Some(Attention::MergeBlocked)),
+            make(4, "relu sans défaut", TicketStatus::Review, Some(Attention::ReadyToIntegrate)),
+        ],
+    })));
+    app
+}
+
+#[test]
+fn the_board_counts_and_marks_what_waits_on_the_user() {
+    let app = board_waiting();
+    let out = draw(&app, 140, 30);
+    assert!(out.contains("⚑ 3 à toi"), "le compte, avec le symbole du plus urgent : {out}");
+    assert!(out.contains("⚑ fusion bloquée"));
+    assert!(out.contains("▶ équipe à relire"));
+    assert!(out.contains("▶ prêt à intégrer"));
+    assert!(out.contains("[!] à toi (3)"));
+}
+
+#[test]
+fn bang_walks_the_queue_most_urgent_first_and_comes_back_round() {
+    let mut app = board_waiting();
+    app.screen = Screen::Cost;
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        app.update(Msg::Key(Action::Char('!')));
+        assert_eq!(app.screen, Screen::Board, "le saut ramène au tableau");
+        seen.push(app.selected_ticket().unwrap().ticket.number);
+    }
+    assert_eq!(seen, vec![3, 1, 4, 3], "un problème passe avant une étape prête");
+    assert!(app.status.contains("fusion bloquée"), "{}", app.status);
+
+    let mut calm = App::new();
+    calm.update(Msg::Key(Action::Char('!')));
+    assert_eq!(calm.status, "rien ne t'attend");
+}
+
+#[test]
+fn a_short_terminal_keeps_its_rows_for_the_screen() {
+    let mut app = board_waiting();
+    let rows_of = |out: &str| out.lines().position(|l| l.contains("Activité"));
+    let tall = draw(&app, 140, 40);
+    let short = draw(&app, 140, 24);
+    // The strip shrinks on 24 rows: it starts lower, relative to the height.
+    assert_eq!(rows_of(&tall), Some(40 - 2 - 7));
+    assert_eq!(rows_of(&short), Some(24 - 2 - 4));
+
+    app.update(Msg::Key(Action::Char('A')));
+    assert!(app.activity_hidden);
+    assert!(!draw(&app, 140, 24).contains("Activité"), "replié sur demande");
+    app.update(Msg::Key(Action::Char('A')));
+    assert!(draw(&app, 140, 24).contains("Activité"));
+}
+
+#[test]
+fn narrow_tabs_keep_their_numbers_and_the_open_one_its_name() {
+    let app = board_waiting();
+    let wide = draw(&app, 180, 30);
+    let first_line = |out: &str| out.lines().next().unwrap().to_string();
+    assert!(first_line(&wide).contains("4 Coût"));
+    let narrow = first_line(&draw(&app, 80, 24));
+    assert!(!narrow.contains("Coût"), "{narrow}");
+    assert!(narrow.contains(" 4 "));
+    assert!(narrow.contains("1 Tableau"), "l'écran ouvert garde son nom : {narrow}");
+}
+
+#[test]
+fn the_two_global_keys_are_not_claimed_by_any_screen() {
+    // `!` and `A` work everywhere; a screen that read them for itself would
+    // silently win on that screen alone.
+    for screen in [
+        Screen::Board,
+        Screen::Ticket,
+        Screen::Agent,
+        Screen::Cost,
+        Screen::Proposal,
+        Screen::Todo,
+        Screen::Rules,
+    ] {
+        let mut app = app_on_ticket(true, true);
+        app.screen = screen;
+        let cmds = app.update(Msg::Key(Action::Char('A')));
+        assert!(app.activity_hidden, "{screen:?}");
+        assert!(cmds.is_empty(), "{screen:?} : {cmds:?}");
+    }
 }

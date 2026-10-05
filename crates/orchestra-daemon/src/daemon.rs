@@ -505,13 +505,34 @@ impl Daemon {
             } else {
                 None
             };
-            let mut summary = summarise(
-                ticket.clone(),
-                &agents.remove(&ticket.id).unwrap_or_default(),
-                costs.remove(&ticket.id).unwrap_or_default(),
-            );
+            let team = agents.remove(&ticket.id).unwrap_or_default();
+            // Verdict and checks matter only once the team handed back; those
+            // tickets are few, so one read each stays cheap.
+            let (verdict, checks_failed) = if ticket.status == TicketStatus::Review {
+                let verdict = self.last_review(ticket.id).await?.map(|r| r.verdict);
+                let failed = self
+                    .last_checks(ticket.id)
+                    .await?
+                    .is_some_and(|c| c.failed().is_some());
+                (verdict, failed)
+            } else {
+                (None, false)
+            };
+            let attention = orchestra_core::attention::of(&orchestra_core::attention::Facts {
+                status: Some(ticket.status),
+                has_proposal: ticket.proposal.is_some(),
+                has_team: ticket.team.is_some(),
+                agent_waiting: team.iter().any(|a| a.status == AgentStatus::WaitingInput),
+                verdict,
+                checks_failed,
+                merge_blocked: blocked.is_some(),
+                pull_request_open: url.is_some(),
+            });
+            let cost = costs.remove(&ticket.id).unwrap_or_default();
+            let mut summary = summarise(ticket, &team, cost);
             summary.pull_request = url;
             summary.merge_blocked = blocked.map(|b| b.reason);
+            summary.attention = attention;
             out.push(summary);
         }
         out.sort_by_key(|s| (s.ticket.status.board_order(), -s.ticket.number));
@@ -1662,6 +1683,7 @@ fn summarise(ticket: Ticket, agents: &[Agent], cost: AgentCost) -> TicketSummary
         tokens: cost.tokens,
         pull_request: None,
         merge_blocked: None,
+        attention: None,
         ticket,
     }
 }
@@ -1792,6 +1814,30 @@ mod tests {
             assert_eq!(row.turns, one.messages as u32);
         }
         assert_eq!(detail.agents.iter().find(|a| a.agent.id == backend.id).unwrap().turns, 2);
+    }
+
+    #[tokio::test]
+    async fn the_board_says_what_each_ticket_waits_on_the_user_for() {
+        use orchestra_core::attention::Attention;
+        let attention = |reply: Reply| match reply {
+            Reply::Tickets { tickets } => tickets[0].attention,
+            other => panic!("réponse inattendue : {other:?}"),
+        };
+
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Review).await;
+        assert_eq!(
+            attention(daemon.list_tickets(None, None).await.unwrap()),
+            Some(Attention::ReviewBlocked),
+            "rendu sans verdict : le silence ne vaut pas accord"
+        );
+        record_verdict(&daemon, &ticket, Verdict::Ready).await;
+        assert_eq!(
+            attention(daemon.list_tickets(None, None).await.unwrap()),
+            Some(Attention::ReadyToIntegrate)
+        );
+
+        let (daemon, _) = daemon_with_ticket(TicketStatus::Running).await;
+        assert_eq!(attention(daemon.list_tickets(None, None).await.unwrap()), None);
     }
 
     async fn record_verdict(daemon: &Daemon, ticket: &Ticket, verdict: Verdict) {

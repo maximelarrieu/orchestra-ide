@@ -105,6 +105,12 @@ pub fn strip_for_width(app: &App, width: usize) -> Vec<Hint> {
         return full;
     }
     let mut short = screen.clone();
+    // What waits on the user survives the trim: it is the key that says
+    // where to go next, and the badge at the top points to it.
+    let waiting = app.attention_queue().len();
+    if waiting > 0 {
+        short.push(Hint::global("!", format!("à toi ({waiting})")));
+    }
     short.push(Hint::global("?", "aide"));
     let mut with_exit = short.clone();
     with_exit.push(Hint::global(
@@ -212,11 +218,19 @@ pub fn screen_hints(app: &App) -> Vec<Hint> {
 pub fn global_hints(app: &App) -> Vec<Hint> {
     // There is no back from the board: `q` leaves for good, and saying so
     // spares the surprise.
-    let mut hints = vec![
+    let mut hints = Vec::new();
+    // What waits on the user comes first among the common keys: it is the
+    // one that changes what to do next.
+    let waiting = app.attention_queue().len();
+    if waiting > 0 {
+        hints.push(Hint::global("!", format!("à toi ({waiting})")));
+    }
+    hints.extend([
         Hint::global("Tab", "écran"),
         Hint::global(":", "commande"),
+        Hint::global("A", "activité"),
         Hint::global("?", "aide"),
-    ];
+    ]);
     if app.screen == Screen::Board {
         hints.push(Hint::global("q", "quitter"));
     } else {

@@ -8,6 +8,7 @@
 //! Only the sixteen terminal colours are used, so the result follows whatever
 //! theme the terminal already has rather than fighting it.
 
+use orchestra_core::attention::Attention;
 use orchestra_core::conventions::RuleStatus;
 use orchestra_core::model::{AgentStatus, TicketStatus, TodoStatus};
 use ratatui::style::{Color, Modifier, Style};
@@ -234,6 +235,27 @@ pub fn urgent() -> Badge {
 
 /// A ready branch the daemon could not merge: the ticket is waiting on the
 /// user, not on an agent, and that is what the eye must find on the board.
+/// A ticket waiting on the user. Two shapes: a flag when something went
+/// wrong, an arrow when the next step is simply ready — told apart by the
+/// symbol, the colour only follows.
+pub fn attention(a: Attention) -> Badge {
+    if a.is_problem() {
+        Badge {
+            symbol: "⚑",
+            color: Color::Yellow,
+            bold: true,
+            dim: false,
+        }
+    } else {
+        Badge {
+            symbol: "▶",
+            color: Color::Blue,
+            bold: true,
+            dim: false,
+        }
+    }
+}
+
 pub fn merge_waiting() -> Badge {
     Badge {
         symbol: "⏸",
@@ -413,6 +435,15 @@ mod tests {
                 );
             }
         }
+        for a in Attention::ALL {
+            let b = attention(a);
+            assert_ne!(b.color, Color::Red);
+            assert_ne!(b.color, Color::Green);
+        }
+        // A problem and a ready step never share a symbol.
+        let problem = attention(Attention::MergeBlocked).symbol;
+        let step = attention(Attention::ReadyToIntegrate).symbol;
+        assert_ne!(problem, step);
         assert_ne!(urgent().color, Color::Red);
         assert_ne!(urgent().color, Color::Green);
     }

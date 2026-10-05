@@ -363,6 +363,9 @@ pub struct App {
     pub connected: bool,
     pub daemon_version: Option<String>,
     pub show_help: bool,
+    /// The activity strip folded away (`A`): on a short terminal it takes
+    /// rows the screen itself needs.
+    pub activity_hidden: bool,
     /// Text being typed in the command palette, if open.
     pub palette: Option<String>,
     pub should_quit: bool,
@@ -420,6 +423,7 @@ impl Default for App {
             connected: false,
             daemon_version: None,
             show_help: false,
+            activity_hidden: false,
             palette: None,
             should_quit: false,
             outbox: Vec::new(),
@@ -519,6 +523,53 @@ impl App {
         }
         if next < 0 {
             self.board_pane = BoardPane::Projects;
+        }
+    }
+
+    /// Tickets that wait on the user, most urgent first, then by number.
+    /// Indices into `tickets`.
+    pub fn attention_queue(&self) -> Vec<usize> {
+        let mut queue: Vec<usize> = (0..self.tickets.len())
+            .filter(|i| self.tickets[*i].attention.is_some())
+            .collect();
+        queue.sort_by_key(|i| {
+            let t = &self.tickets[*i];
+            (t.attention, t.ticket.number)
+        });
+        queue
+    }
+
+    /// Go to the next ticket that waits on the user, from wherever we are.
+    ///
+    /// Repeated, it walks the queue and comes back round, so a morning's
+    /// worth of decisions is `!`, Entrée, decide, `q`, `!` again.
+    fn jump_to_attention(&mut self) {
+        let queue = self.attention_queue();
+        if queue.is_empty() {
+            self.status = "rien ne t'attend".into();
+            return;
+        }
+        let on_board = self.screen == Screen::Board && self.board_pane == BoardPane::Tickets;
+        let next = match queue.iter().position(|i| *i == self.ticket_selected) {
+            Some(pos) if on_board => (pos + 1) % queue.len(),
+            _ => 0,
+        };
+        let index = queue[next];
+        if self.screen != Screen::Board {
+            self.go(Screen::Board);
+        }
+        self.board_pane = BoardPane::Tickets;
+        self.ticket_selected = index;
+        let t = &self.tickets[index];
+        if let Some(a) = t.attention {
+            self.status = format!(
+                "à toi {}/{} : #{} {} — {}",
+                next + 1,
+                queue.len(),
+                t.ticket.number,
+                t.ticket.title,
+                a.label_fr()
+            );
         }
     }
 
@@ -878,6 +929,16 @@ impl App {
     }
 
     fn on_char(&mut self, c: char) {
+        // Two keys that work from every screen. Neither letter is taken by
+        // a screen of its own, which a test keeps true.
+        match c {
+            '!' => return self.jump_to_attention(),
+            'A' => {
+                self.activity_hidden = !self.activity_hidden;
+                return;
+            }
+            _ => {}
+        }
         match self.screen {
             Screen::Cost => self.on_cost_char(c),
             Screen::Board => self.on_board_char(c),

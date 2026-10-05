@@ -77,6 +77,13 @@ où `git` est toujours résolu : ce qu'un agent du rôle recevra). `create_role`
 être fusionnée. Tant qu'il reste le dernier mot du ticket, `list_tickets` et
 `get_ticket` renvoient sa raison dans `merge_blocked`, à côté de `pull_request`.
 
+Chaque carte de `list_tickets` porte aussi `attention` : ce que le ticket attend de
+l'utilisateur, ou `null`. Valeurs, de la plus urgente à la moins urgente :
+`merge_blocked`, `checks_failed`, `review_blocked`, `agent_waiting`,
+`proposal_ready`, `ready_to_integrate`, `ready_to_launch`, `pull_request_open`. La
+règle vit dans `orchestra-core/src/attention.rs` ; le daemon l'applique, les
+clients se contentent de l'afficher.
+
 Les règles (conventions et ADR) sont des fichiers, pas des lignes de la base :
 `list_rules` les relit à chaque appel (`{"reply":"rules","rules":[…],"errors":[…]}`),
 `create_rule` répond `{"reply":"rule_file","path":"…"}` pour qu'un client l'ouvre

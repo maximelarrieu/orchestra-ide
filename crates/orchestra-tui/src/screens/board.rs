@@ -17,6 +17,21 @@ use crate::theme;
 /// Width below which the board stacks its panes.
 const NARROW: u16 = 100;
 
+/// Height below which the activity strip shrinks to two lines.
+const SHORT: u16 = 30;
+
+/// Rows given to the activity strip, borders included.
+pub fn activity_height(app: &App, height: u16) -> u16 {
+    if app.activity_hidden {
+        0
+    } else if height < SHORT {
+        // On 24 rows the full strip left the screen fourteen.
+        4
+    } else {
+        7
+    }
+}
+
 pub fn render(app: &App, frame: &mut Frame<'_>) {
     let area = frame.area();
     let chunks = Layout::default()
@@ -24,7 +39,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(5),
-            Constraint::Length(7),
+            Constraint::Length(activity_height(app, area.height)),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
@@ -41,7 +56,9 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
         Screen::Todo => super::todo::render(app, frame, chunks[1]),
         Screen::Rules => super::rules::render(app, frame, chunks[1]),
     }
-    render_activity(app, frame, chunks[2]);
+    if chunks[2].height > 0 {
+        render_activity(app, frame, chunks[2]);
+    }
     render_keys(app, frame, chunks[3]);
     render_status(app, frame, chunks[4]);
 
@@ -58,8 +75,31 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
 
 fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let mut spans = Vec::new();
+    // What waits on the user goes first: it is the reason to look at all.
+    let waiting = app.attention_queue();
+    if let Some(first) = waiting.first().and_then(|i| app.tickets[*i].attention) {
+        let badge = theme::attention(first);
+        spans.push(Span::styled(
+            // The key rides along: on a narrow bar it is the first to go.
+            format!("{} {} à toi [!] ", badge.symbol, waiting.len()),
+            badge.style(),
+        ));
+    }
+    let badges: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    // Every tab named takes about ninety columns; past that, only the open
+    // one keeps its name and the others keep their number.
+    let named: usize = Screen::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!(" {} {} ", i + 1, s.title_fr()).chars().count())
+        .sum();
+    let compact = named + badges + 30 > area.width as usize;
     for (i, s) in Screen::ALL.iter().enumerate() {
-        let label = format!(" {} {} ", i + 1, s.title_fr());
+        let label = if compact && *s != app.screen {
+            format!(" {} ", i + 1)
+        } else {
+            format!(" {} {} ", i + 1, s.title_fr())
+        };
         let style = if *s == app.screen {
             Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
         } else if s.is_implemented() {
@@ -278,9 +318,14 @@ fn render_lane(
         // agent: that goes first on the line, and it is not dimmed.
         let mut spans = vec![Span::raw("  ")];
         let mut used = 2;
-        if t.merge_blocked.is_some() {
-            let badge = theme::merge_waiting();
-            let mark = badge.label("fusion en attente");
+        let mark = match (t.attention, &t.merge_blocked) {
+            (Some(a), _) => Some((theme::attention(a), a.label_fr())),
+            // A daemon from before the queue still says this much.
+            (None, Some(_)) => Some((theme::merge_waiting(), "fusion en attente")),
+            (None, None) => None,
+        };
+        if let Some((badge, label)) = mark {
+            let mark = badge.label(label);
             used += mark.chars().count() + 3;
             spans.push(Span::styled(truncate(&mark, width.saturating_sub(2)), badge.style()));
             if !foot.is_empty() {
@@ -726,6 +771,7 @@ mod tests {
             cost_usd: None,
             pull_request: None,
             merge_blocked: None,
+            attention: None,
         }];
         // Still on "Tous les projets": the card must say whose ticket it is.
         assert!(app.selected_project().is_none());
@@ -768,6 +814,7 @@ mod tests {
             cost_usd: None,
             pull_request: None,
             merge_blocked: Some("le dépôt principal a 1 fichier(s) modifié(s)".into()),
+            attention: None,
         }];
         let out = draw(&app, 120, 30);
         assert!(out.contains("⏸ fusion en attente"), "{out}");

@@ -42,6 +42,8 @@ toucher au disque ni au réseau.
   `EventFilter`.
 - `protocol.rs` — `Command`, `Reply`, `Frame`, plus les vues (`TicketSummary`,
   `UsageRow`…). Une trame tient sur une ligne.
+- `attention.rs` — ce qu'un ticket attend de l'utilisateur (`attention::of`),
+  d'où la file « à toi » du tableau.
 - `pricing.rs` — tokens vers dollars indicatifs, par plus long préfixe de modèle.
 - `config.rs` — `config.toml` et tous les chemins XDG.
 - `guard.rs` — les règles du garde-fou, dont `GitPolicy` : `Confined` par défaut,
