@@ -607,6 +607,24 @@ pub fn select_agents_of_ticket(conn: &mut Connection, ticket_id: TicketId) -> Re
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Every agent of every ticket, of one project or of all: what the board
+/// needs in one read instead of one per card.
+pub fn select_agents_of_tickets(
+    conn: &mut Connection,
+    project_id: Option<ProjectId>,
+) -> Result<Vec<Agent>> {
+    let mut sql = String::from("SELECT * FROM agents");
+    let mut args: Vec<String> = Vec::new();
+    if let Some(p) = project_id {
+        sql.push_str(" WHERE ticket_id IN (SELECT id FROM tickets WHERE project_id = ?1)");
+        args.push(p.to_string());
+    }
+    sql.push_str(" ORDER BY stage, role");
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter()), agent_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 pub fn select_agents_with_status(
     conn: &mut Connection,
     statuses: &[AgentStatus],
@@ -853,6 +871,70 @@ pub fn ticket_usage(conn: &mut Connection, ticket_id: TicketId) -> Result<Tokens
          FROM usage_samples WHERE ticket_id = ?1",
     )?;
     Ok(stmt.query_row([ticket_id.to_string()], tokens_from_row)?)
+}
+
+/// Usage of one owner — a ticket or an agent — on one model.
+#[derive(Debug, Clone)]
+pub struct KeyedUsage {
+    pub key: Uuid,
+    pub model: String,
+    pub tokens: Tokens,
+    pub messages: u64,
+}
+
+/// Usage per ticket and model, for the tickets of one project or of all.
+pub fn usage_per_ticket(
+    conn: &mut Connection,
+    project_id: Option<ProjectId>,
+) -> Result<Vec<KeyedUsage>> {
+    let (scope, args) = match project_id {
+        Some(p) => (
+            "ticket_id IN (SELECT id FROM tickets WHERE project_id = ?1)",
+            vec![p.to_string()],
+        ),
+        None => ("ticket_id IS NOT NULL", Vec::new()),
+    };
+    keyed_usage(conn, "ticket_id", scope, &args)
+}
+
+/// Usage per agent and model, for the agents of one ticket.
+pub fn usage_per_agent(conn: &mut Connection, ticket_id: TicketId) -> Result<Vec<KeyedUsage>> {
+    keyed_usage(
+        conn,
+        "agent_id",
+        "agent_id IN (SELECT id FROM agents WHERE ticket_id = ?1)",
+        &[ticket_id.to_string()],
+    )
+}
+
+fn keyed_usage(
+    conn: &mut Connection,
+    key: &str,
+    scope: &str,
+    args: &[String],
+) -> Result<Vec<KeyedUsage>> {
+    let sql = format!(
+        "SELECT {key} AS k, COALESCE(model, '') AS model,
+                SUM(input) AS input, SUM(output) AS output,
+                SUM(cache_read) AS cache_read, SUM(cache_creation) AS cache_creation,
+                SUM(thinking) AS thinking, COUNT(*) AS messages
+         FROM usage_samples WHERE {scope}
+         GROUP BY {key}, model"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter()), |row| {
+        let key: String = row.get("k")?;
+        Ok((key, row.get::<_, String>("model")?, tokens_from_row(row)?, row.get::<_, i64>("messages")? as u64))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (key, model, tokens, messages) = row?;
+        // A key that does not parse is a row no one can claim; skip it.
+        if let Ok(key) = Uuid::parse_str(&key) {
+            out.push(KeyedUsage { key, model, tokens, messages });
+        }
+    }
+    Ok(out)
 }
 
 /// SQL expression and label for one grouping dimension.

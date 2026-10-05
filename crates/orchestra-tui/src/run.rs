@@ -19,10 +19,14 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, Msg};
 use crate::client::{Client, ClientHandle};
+use crate::inflight::Inflight;
 use crate::keymap;
 
 /// Minimum time between redraws, so a burst of events cannot spin the loop.
 const FRAME: Duration = Duration::from_millis(60);
+
+/// The longest a read waits for its reply before it is given up.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Restores the terminal even on panic or error.
 struct TerminalGuard {
@@ -56,11 +60,12 @@ pub async fn run(socket: &Path) -> Result<()> {
 
     // Replies arrive out of band and are folded back into the app as messages.
     let (reply_tx, mut replies) = mpsc::channel::<Result<Reply>>(64);
+    let inflight = Inflight::default();
 
     let mut app = App::new();
     app.update(Msg::Reconnected(version));
     app.refresh();
-    dispatch(&handle, &reply_tx, app.take_outbox());
+    dispatch(&handle, &reply_tx, &inflight, app.take_outbox());
 
     let mut guard = TerminalGuard::enter()?;
     // An `Option` so it can be dropped while an editor owns the terminal:
@@ -78,6 +83,10 @@ pub async fn run(socket: &Path) -> Result<()> {
         }
 
         tokio::select! {
+            // The end of a burst: without this wake-up, the last events of a
+            // burst that came inside one frame stayed off screen until the
+            // next message or the next tick, up to a second later.
+            _ = tokio::time::sleep_until((last_draw + FRAME).into()), if dirty => {}
             key = async { keys.as_mut().expect("rétabli après l'éditeur").next().await } => {
                 match key {
                     Some(Ok(TermEvent::Key(k))) if k.kind == KeyEventKind::Press => {
@@ -88,7 +97,7 @@ pub async fn run(socket: &Path) -> Result<()> {
                         };
                         if let Some(a) = action {
                             let cmds = app.update(Msg::Key(a));
-                            dispatch(&handle, &reply_tx, cmds);
+                            dispatch(&handle, &reply_tx, &inflight, cmds);
                             dirty = true;
                         }
                     }
@@ -102,7 +111,7 @@ pub async fn run(socket: &Path) -> Result<()> {
                 match event {
                     Some(ev) => {
                         let cmds = app.update(Msg::Event(Box::new(ev)));
-                        dispatch(&handle, &reply_tx, cmds);
+                        dispatch(&handle, &reply_tx, &inflight, cmds);
                         dirty = true;
                     }
                     None => {
@@ -115,7 +124,7 @@ pub async fn run(socket: &Path) -> Result<()> {
                 match reply {
                     Some(Ok(r)) => {
                         let cmds = app.update(Msg::Reply(Box::new(r)));
-                        dispatch(&handle, &reply_tx, cmds);
+                        dispatch(&handle, &reply_tx, &inflight, cmds);
                         dirty = true;
                     }
                     Some(Err(e)) => {
@@ -135,7 +144,7 @@ pub async fn run(socket: &Path) -> Result<()> {
                 // The tick still turns the spinners when the socket is down;
                 // its queries would only fill the status line with errors.
                 if handle.is_connected() {
-                    dispatch(&handle, &reply_tx, cmds);
+                    dispatch(&handle, &reply_tx, &inflight, cmds);
                 } else {
                     if app.connected {
                         app.update(Msg::Disconnected);
@@ -148,7 +157,7 @@ pub async fn run(socket: &Path) -> Result<()> {
                         handle = new_handle;
                         app.update(Msg::Reconnected(version));
                         app.refresh();
-                        dispatch(&handle, &reply_tx, app.take_outbox());
+                        dispatch(&handle, &reply_tx, &inflight, app.take_outbox());
                     }
                 }
                 dirty = true;
@@ -160,7 +169,7 @@ pub async fn run(socket: &Path) -> Result<()> {
             let outcome = edit(&mut guard, &path).await;
             keys = Some(EventStream::new());
             let cmds = app.edited(outcome);
-            dispatch(&handle, &reply_tx, cmds);
+            dispatch(&handle, &reply_tx, &inflight, cmds);
             dirty = true;
         }
 
@@ -222,14 +231,38 @@ async fn reconnect(
 }
 
 /// Fire off commands without blocking the loop; each reply comes back on
-/// `reply_tx`.
-fn dispatch(handle: &ClientHandle, reply_tx: &mpsc::Sender<Result<Reply>>, cmds: Vec<Command>) {
+/// `reply_tx`. A read already in flight is not sent twice (see `inflight`).
+fn dispatch(
+    handle: &ClientHandle,
+    reply_tx: &mpsc::Sender<Result<Reply>>,
+    inflight: &Inflight,
+    cmds: Vec<Command>,
+) {
     for cmd in cmds {
+        if !inflight.begin(&cmd) {
+            continue;
+        }
         let handle = handle.clone();
         let tx = reply_tx.clone();
+        let inflight = inflight.clone();
         tokio::spawn(async move {
-            let result = handle.call(cmd).await;
-            let _ = tx.send(result).await;
+            loop {
+                // A read that never comes back would stay in flight, and the
+                // screen would never ask for it again: it gets a deadline.
+                // Writes do not — a launch may legitimately take a while.
+                let result = if crate::inflight::is_read(&cmd) {
+                    tokio::time::timeout(READ_TIMEOUT, handle.call(cmd.clone()))
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("le daemon ne répond pas")))
+                } else {
+                    handle.call(cmd.clone()).await
+                };
+                let again = inflight.finish(&cmd);
+                // A reply nobody reads any more: the app is gone.
+                if tx.send(result).await.is_err() || !again {
+                    break;
+                }
+            }
         });
     }
 }

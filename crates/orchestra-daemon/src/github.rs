@@ -4,13 +4,38 @@
 //! authenticated, and already knows which repository a directory belongs to.
 //! Asking it is one process and no secret of ours to keep.
 //!
-//! Everything here is blocking, like `worktree`: these are short commands, and
-//! the callers already run on their own task.
+//! Every call is a network round trip, so none of it blocks: `gh` runs under
+//! tokio with a deadline, and is killed if it outlives it. Offline, a call
+//! fails in `GH_TIMEOUT` instead of holding a runtime thread for as long as the
+//! TCP stack cares to wait.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Output, Stdio};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use tokio::process::Command;
+
+/// The longest a `gh` call is given.
+const GH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Run `gh` in `dir` (or wherever the daemon runs) and collect its output.
+async fn gh(dir: Option<&Path>, args: &[&str]) -> Result<Output> {
+    let mut cmd = Command::new("gh");
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    cmd.args(args)
+        .stdin(Stdio::null())
+        // A prompt would wait for a terminal the daemon does not have.
+        .env("GH_PROMPT_DISABLED", "1")
+        .kill_on_drop(true);
+    let what = format!("gh {}", args.iter().take(2).copied().collect::<Vec<_>>().join(" "));
+    tokio::time::timeout(GH_TIMEOUT, cmd.output())
+        .await
+        .with_context(|| format!("« {what} » sans réponse après {} s", GH_TIMEOUT.as_secs()))?
+        .with_context(|| format!("exécution de « {what} »"))
+}
 
 /// A pull request, as `gh` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,10 +54,9 @@ pub enum PrState {
 }
 
 /// True when `gh` is installed and usable.
-pub fn is_available() -> bool {
-    Command::new("gh")
-        .arg("--version")
-        .output()
+pub async fn is_available() -> bool {
+    gh(None, &["--version"])
+        .await
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -41,27 +65,25 @@ pub fn is_available() -> bool {
 ///
 /// A branch that already has one is not an error: the existing request is
 /// returned, so a second attempt after a crash lands on its feet.
-pub fn create_pr(
+pub async fn create_pr(
     repo: &Path,
     base: &str,
     head: &str,
     title: &str,
     body: &str,
 ) -> Result<PullRequest> {
-    if let Some(existing) = view_pr(repo, head)? {
+    if let Some(existing) = view_pr(repo, head).await? {
         return Ok(existing);
     }
-    let out = Command::new("gh")
-        .current_dir(repo)
-        .args([
-            "pr", "create", "--base", base, "--head", head, "--title", title, "--body", body,
-        ])
-        .output()
-        .context("exécution de « gh pr create »")?;
+    let out = gh(
+        Some(repo),
+        &["pr", "create", "--base", base, "--head", head, "--title", title, "--body", body],
+    )
+    .await?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         // A request created between our check and this call: take it.
-        if let Some(existing) = view_pr(repo, head)? {
+        if let Some(existing) = view_pr(repo, head).await? {
             return Ok(existing);
         }
         bail!("gh pr create : {err}");
@@ -75,12 +97,8 @@ pub fn create_pr(
 }
 
 /// The request open for this branch, if there is one.
-pub fn view_pr(repo: &Path, head: &str) -> Result<Option<PullRequest>> {
-    let out = Command::new("gh")
-        .current_dir(repo)
-        .args(["pr", "view", head, "--json", "url,number,state"])
-        .output()
-        .context("exécution de « gh pr view »")?;
+pub async fn view_pr(repo: &Path, head: &str) -> Result<Option<PullRequest>> {
+    let out = gh(Some(repo), &["pr", "view", head, "--json", "url,number,state"]).await?;
     if !out.status.success() {
         // No request for this branch is the ordinary answer, not a failure.
         return Ok(None);
@@ -97,12 +115,8 @@ pub fn view_pr(repo: &Path, head: &str) -> Result<Option<PullRequest>> {
 }
 
 /// Where a request stands now.
-pub fn pr_state(repo: &Path, url: &str) -> Result<PrState> {
-    let out = Command::new("gh")
-        .current_dir(repo)
-        .args(["pr", "view", url, "--json", "state,mergedAt"])
-        .output()
-        .context("exécution de « gh pr view »")?;
+pub async fn pr_state(repo: &Path, url: &str) -> Result<PrState> {
+    let out = gh(Some(repo), &["pr", "view", url, "--json", "state,mergedAt"]).await?;
     if !out.status.success() {
         bail!(
             "gh pr view : {}",

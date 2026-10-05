@@ -4,7 +4,7 @@
 //! mpsc channel with a oneshot to reply on, so there is exactly one writer and
 //! no `Arc<Mutex<Daemon>>` anywhere.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use orchestra_core::events::{EventFilter, EventKind, NewEvent};
 use orchestra_core::guard::GitPolicy;
 use orchestra_core::conventions::{RuleKind, RuleStatus};
 use orchestra_core::model::{
-    can_transition, AgentStatus, Project, ProjectId, ProjectKind, RoleScope, Team, TeamProposal,
+    can_transition, Agent, AgentStatus, Project, ProjectId, ProjectKind, RoleScope, Team, TeamProposal,
     Ticket,
     TicketId, TicketStatus, Todo, TodoId, TodoStatus,
 };
@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::bus::EventBus;
-use crate::ledger::UsageLedger;
+use crate::ledger::{AgentCost, UsageLedger};
 use crate::store::Store;
 use crate::supervisor::Supervisor;
 
@@ -444,7 +444,10 @@ impl Daemon {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.to_string_lossy().to_string())
         });
-        let default_branch = detect_default_branch(&path).unwrap_or_else(|| "main".into());
+        let probe = path.clone();
+        let default_branch = crate::worktree::off_runtime(move || detect_default_branch(&probe))
+            .await
+            .unwrap_or_else(|| "main".into());
         let project = Project {
             id: Uuid::new_v4(),
             name: name.clone(),
@@ -484,6 +487,14 @@ impl Daemon {
             .await
             .map_err(internal)?;
         let open_prs = crate::github::open_pull_requests(&self.store).await;
+        // Agents and costs for the whole board in two reads. The board asks
+        // every second, from every client; one pair of queries per card made
+        // that 2N+2 round trips through the store's single connection.
+        let mut agents: HashMap<TicketId, Vec<Agent>> = HashMap::new();
+        for agent in self.store.agents_of_tickets(project_id).await.map_err(internal)? {
+            agents.entry(agent.ticket_id).or_default().push(agent);
+        }
+        let mut costs = self.ledger.ticket_costs(project_id).await.map_err(internal)?;
         let mut out = Vec::with_capacity(tickets.len());
         for ticket in tickets {
             let url = open_prs.get(&ticket.id).cloned();
@@ -494,7 +505,11 @@ impl Daemon {
             } else {
                 None
             };
-            let mut summary = self.summarise(ticket).await.map_err(internal)?;
+            let mut summary = summarise(
+                ticket.clone(),
+                &agents.remove(&ticket.id).unwrap_or_default(),
+                costs.remove(&ticket.id).unwrap_or_default(),
+            );
             summary.pull_request = url;
             summary.merge_blocked = blocked.map(|b| b.reason);
             out.push(summary);
@@ -506,19 +521,7 @@ impl Daemon {
     async fn summarise(&self, ticket: Ticket) -> Result<TicketSummary> {
         let agents = self.store.agents_of_ticket(ticket.id).await?;
         let cost = self.ledger.ticket_cost(ticket.id).await?;
-        Ok(TicketSummary {
-            agents_total: agents.len(),
-            agents_active: agents.iter().filter(|a| a.status.is_active()).count(),
-            agents_done: agents
-                .iter()
-                .filter(|a| a.status == AgentStatus::Done)
-                .count(),
-            cost_usd: cost.cost_usd,
-            tokens: cost.tokens,
-            pull_request: None,
-            merge_blocked: None,
-            ticket,
-        })
+        Ok(summarise(ticket, &agents, cost))
     }
 
     async fn get_ticket(&self, ticket_id: Uuid) -> Result<Reply, ApiError> {
@@ -540,9 +543,10 @@ impl Daemon {
             .await
             .map_err(internal)?;
 
+        let mut costs = self.ledger.agent_costs(ticket_id).await.map_err(internal)?;
         let mut summaries = Vec::with_capacity(agents.len());
         for agent in agents {
-            let cost = self.ledger.agent_cost(agent.id).await.map_err(internal)?;
+            let cost = costs.remove(&agent.id).unwrap_or_default();
             summaries.push(AgentSummary {
                 agent,
                 tokens: cost.tokens,
@@ -1645,6 +1649,23 @@ pub fn ensure_transition(from: TicketStatus, to: TicketStatus) -> Result<(), Api
     }
 }
 
+/// A board card: the ticket, how its team is doing, what it cost.
+fn summarise(ticket: Ticket, agents: &[Agent], cost: AgentCost) -> TicketSummary {
+    TicketSummary {
+        agents_total: agents.len(),
+        agents_active: agents.iter().filter(|a| a.status.is_active()).count(),
+        agents_done: agents
+            .iter()
+            .filter(|a| a.status == AgentStatus::Done)
+            .count(),
+        cost_usd: cost.cost_usd,
+        tokens: cost.tokens,
+        pull_request: None,
+        merge_blocked: None,
+        ticket,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1681,6 +1702,96 @@ mod tests {
         };
         store.insert_ticket(ticket.clone()).await.unwrap();
         (Daemon::new(Config::default(), store), ticket)
+    }
+
+    #[tokio::test]
+    async fn the_board_reads_in_bulk_what_it_used_to_read_card_by_card() {
+        use orchestra_core::model::{Effort, Tokens, UsageSample, UsageSource};
+        let (daemon, first) = daemon_with_ticket(TicketStatus::Running).await;
+        let mut second = first.clone();
+        second.id = Uuid::new_v4();
+        second.number = 2;
+        daemon.store.insert_ticket(second.clone()).await.unwrap();
+
+        let agent = |ticket: &Ticket, role: &str, status: AgentStatus| Agent {
+            id: Uuid::new_v4(),
+            ticket_id: ticket.id,
+            project_id: ticket.project_id,
+            role: role.into(),
+            objective: String::new(),
+            stage: 0,
+            session_id: Uuid::new_v4(),
+            model: "sonnet".into(),
+            effort: Effort::Medium,
+            max_budget_usd: None,
+            status,
+            exit_reason: None,
+            pid: None,
+            pane_id: None,
+            attempt: 1,
+            handoff: None,
+            started_at: None,
+            ended_at: None,
+        };
+        let backend = agent(&first, "backend", AgentStatus::Running);
+        let tests = agent(&first, "tests", AgentStatus::Done);
+        let other = agent(&second, "docs", AgentStatus::Done);
+        for a in [&backend, &tests, &other] {
+            daemon.store.insert_agent(a.clone()).await.unwrap();
+        }
+        // Two models on one agent: each is priced on its own.
+        let mut n = 0;
+        for (a, model, out) in [
+            (&backend, "claude-opus-5", 1_000),
+            (&backend, "claude-haiku-4-5-20251001", 50_000),
+            (&tests, "claude-sonnet-5", 7_000),
+            (&other, "claude-sonnet-5", 300),
+        ] {
+            n += 1;
+            daemon
+                .ledger
+                .record(UsageSample {
+                    message_id: format!("msg_{n}"),
+                    session_id: a.session_id,
+                    subagent_id: None,
+                    agent_id: Some(a.id),
+                    ticket_id: Some(a.ticket_id),
+                    project_id: Some(a.project_id),
+                    model: model.into(),
+                    tokens: Tokens { input: 10, output: out, ..Default::default() },
+                    ts: orchestra_core::now(),
+                    source: UsageSource::Stream,
+                })
+                .await
+                .unwrap();
+        }
+
+        let Reply::Tickets { tickets } = daemon.list_tickets(None, None).await.unwrap() else {
+            panic!("réponse inattendue");
+        };
+        for card in &tickets {
+            let one = daemon.summarise(card.ticket.clone()).await.unwrap();
+            assert_eq!(card.cost_usd, one.cost_usd, "#{}", card.ticket.number);
+            assert_eq!(card.tokens, one.tokens);
+            assert_eq!(
+                (card.agents_total, card.agents_active, card.agents_done),
+                (one.agents_total, one.agents_active, one.agents_done)
+            );
+        }
+        let card = tickets.iter().find(|c| c.ticket.id == first.id).unwrap();
+        assert_eq!((card.agents_total, card.agents_active, card.agents_done), (2, 1, 1));
+        assert!(card.cost_usd.is_some());
+
+        let Reply::Ticket { detail } = daemon.get_ticket(first.id).await.unwrap() else {
+            panic!("réponse inattendue");
+        };
+        for row in &detail.agents {
+            let one = daemon.ledger.agent_cost(row.agent.id).await.unwrap();
+            assert_eq!(row.cost_usd, one.cost_usd, "{}", row.agent.role);
+            assert_eq!(row.tokens, one.tokens);
+            assert_eq!(row.turns, one.messages as u32);
+        }
+        assert_eq!(detail.agents.iter().find(|a| a.agent.id == backend.id).unwrap().turns, 2);
     }
 
     async fn record_verdict(daemon: &Daemon, ticket: &Ticket, verdict: Verdict) {

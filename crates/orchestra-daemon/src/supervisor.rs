@@ -123,8 +123,9 @@ impl Supervisor {
             .clone()
             .context("ce ticket n'a pas d'équipe acceptée")?;
         anyhow::ensure!(!self.is_running(ticket.id).await, "ce ticket tourne déjà");
+        let path = project.path.clone();
         anyhow::ensure!(
-            worktree::is_repository(&project.path),
+            worktree::off_runtime(move || worktree::is_repository(&path)).await,
             "{} n'est pas un dépôt git : un agent ne travaille que dans un worktree",
             project.path.display()
         );
@@ -186,14 +187,16 @@ impl Supervisor {
                 return Ok((branch, path));
             }
         }
+        let path = project.path.clone();
         anyhow::ensure!(
-            worktree::is_repository(&project.path),
+            worktree::off_runtime(move || worktree::is_repository(&path)).await,
             "{} n'est pas un dépôt git",
             project.path.display()
         );
         // A project created an hour ago has nothing in it. Saying so matters:
         // this is the only commit Orchestra ever writes outside a worktree.
-        if worktree::ensure_root_commit(project)? {
+        let p = project.clone();
+        if worktree::off_runtime(move || worktree::ensure_root_commit(&p)).await? {
             self.warn_ticket(
                 ticket.id,
                 project.id,
@@ -216,8 +219,12 @@ impl Supervisor {
                 .unwrap_or_else(orchestra_core::config::Paths::worktrees_dir),
             &self.cfg.daemon.branch_prefix,
         );
-        let _ = worktree::prune(project);
-        let wt = worktree::ensure(project, &plan)?;
+        let p = project.clone();
+        let wt = worktree::off_runtime(move || {
+            let _ = worktree::prune(&p);
+            worktree::ensure(&p, &plan)
+        })
+        .await?;
         ticket.branch = Some(wt.branch.clone());
         ticket.worktree_path = Some(wt.path.clone());
         ticket.updated_at = orchestra_core::now();
@@ -279,13 +286,15 @@ impl Supervisor {
         // nothing. The default branch moving is the one case that needs it
         // again — someone has to bring it in.
         let ready = match crate::integration::blocked_merge(&self.store, ticket.id).await {
-            Some(blocked) => {
-                blocked.branch == branch
-                    && worktree::branch_head(&project.path, &branch).as_deref()
-                        == Some(blocked.head.as_str())
-                    && worktree::fast_forwardable(&project, &branch)
+            Some(blocked) if blocked.branch == branch => {
+                let (p, b) = (project.clone(), branch.clone());
+                worktree::off_runtime(move || {
+                    worktree::branch_head(&p.path, &b).as_deref() == Some(blocked.head.as_str())
+                        && worktree::fast_forwardable(&p, &b)
+                })
+                .await
             }
-            None => false,
+            _ => false,
         };
 
         let me = self.clone();
@@ -429,14 +438,19 @@ impl Supervisor {
 
         // The fusion itself is ours. An agent that fails leaves the default
         // branch exactly where it was.
-        let commits = match worktree::merge_fast_forward(&project, &branch) {
+        let (p, b) = (project.clone(), branch.clone());
+        let merged = worktree::off_runtime(move || worktree::merge_fast_forward(&p, &b)).await;
+        let commits = match merged {
             Ok(commits) => commits,
             Err(e) => {
                 // Not a warning: the branch is ready and the ticket now waits
                 // on the user, which the board has to be able to say.
                 let reason = format!("{e:#}");
                 tracing::warn!("fusion de {branch} refusée : {reason}");
-                let head = worktree::branch_head(&project.path, &branch).unwrap_or_default();
+                let (repo, b) = (project.path.clone(), branch.clone());
+                let head = worktree::off_runtime(move || worktree::branch_head(&repo, &b))
+                    .await
+                    .unwrap_or_default();
                 let _ = self
                     .bus
                     .publish(
@@ -458,7 +472,8 @@ impl Supervisor {
         // sending it out. Off unless `integration.push` says otherwise —
         // publishing is outward-facing and stays the user's call.
         let pushed_to = if cfg.push {
-            match worktree::push_branch(&project.path, &project.default_branch) {
+            let (repo, b) = (project.path.clone(), project.default_branch.clone());
+            match worktree::off_runtime(move || worktree::push_branch(&repo, &b)).await {
                 Ok(remote) => remote,
                 Err(e) => {
                     self.warn_ticket(
@@ -492,7 +507,8 @@ impl Supervisor {
             .await;
 
         if cfg.remove_worktree {
-            match worktree::remove(&project, &worktree_path) {
+            let (p, path) = (project.clone(), worktree_path.clone());
+            match worktree::off_runtime(move || worktree::remove(&p, &path)).await {
                 Ok(()) => {
                     // Nothing must keep pointing at a directory that is gone.
                     if let Ok(Some(mut current)) = self.store.ticket(ticket.id).await {
@@ -528,7 +544,11 @@ impl Supervisor {
         worktree_path: &Path,
         handoffs: &[(String, String)],
     ) -> Result<bool> {
-        if worktree::default_remote(&project.path).is_none() {
+        let repo = project.path.clone();
+        if worktree::off_runtime(move || worktree::default_remote(&repo))
+            .await
+            .is_none()
+        {
             self.warn_ticket(
                 ticket.id,
                 project.id,
@@ -537,7 +557,7 @@ impl Supervisor {
             .await;
             return Ok(false);
         }
-        if !crate::github::is_available() {
+        if !crate::github::is_available().await {
             self.warn_ticket(
                 ticket.id,
                 project.id,
@@ -547,7 +567,8 @@ impl Supervisor {
             return Ok(false);
         }
 
-        worktree::push_branch(&project.path, branch)?;
+        let (repo, b) = (project.path.clone(), branch.to_string());
+        worktree::off_runtime(move || worktree::push_branch(&repo, &b)).await?;
         let title = format!("#{} {}", ticket.number, ticket.title);
         // What the integrator wrote following the template, if it did. The
         // assembled version is the floor, not the goal: an agent that has just
@@ -564,7 +585,8 @@ impl Supervisor {
             branch,
             &title,
             &body,
-        )?;
+        )
+        .await?;
         let _ = self
             .bus
             .publish(
@@ -613,7 +635,7 @@ impl Supervisor {
             };
             // A failure here is usually being offline; the next round asks
             // again rather than deciding anything.
-            let state = match crate::github::pr_state(&project.path, &url) {
+            let state = match crate::github::pr_state(&project.path, &url).await {
                 Ok(state) => state,
                 Err(e) => {
                     tracing::debug!("état de {url} indisponible : {e:#}");
@@ -670,7 +692,8 @@ impl Supervisor {
 
         // The merge happened over there; this machine has to catch up before
         // the default branch can move again.
-        if let Err(e) = worktree::pull_default_branch(project) {
+        let p = project.clone();
+        if let Err(e) = worktree::off_runtime(move || worktree::pull_default_branch(&p)).await {
             self.warn_ticket(
                 ticket.id,
                 project.id,
@@ -683,7 +706,8 @@ impl Supervisor {
         }
         if self.cfg.integration.remove_worktree {
             if let Some(path) = ticket.worktree_path.clone() {
-                if worktree::remove(project, &path).is_ok() {
+                let p = project.clone();
+                if worktree::off_runtime(move || worktree::remove(&p, &path)).await.is_ok() {
                     if let Ok(Some(mut current)) = self.store.ticket(ticket.id).await {
                         current.worktree_path = None;
                         current.updated_at = orchestra_core::now();
@@ -1020,8 +1044,10 @@ impl Supervisor {
             if book.checks(is_pr).is_empty() {
                 return true;
             }
+            let (p, b) = (project.clone(), branch.to_string());
+            let commits = worktree::off_runtime(move || worktree::commit_messages(&p, &b)).await;
             let facts = orchestra_core::conventions::BranchFacts {
-                commits: match worktree::commit_messages(project, branch) {
+                commits: match commits {
                     Ok(commits) => commits,
                     Err(e) => {
                         self.warn_ticket(

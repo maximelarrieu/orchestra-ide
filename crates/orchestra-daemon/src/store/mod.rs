@@ -22,7 +22,7 @@ use rusqlite::{Connection, OpenFlags};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-pub use rows::{Recorded, SessionRow, UsageBreakdown};
+pub use rows::{KeyedUsage, Recorded, SessionRow, UsageBreakdown};
 
 #[derive(Clone)]
 pub struct Store {
@@ -252,6 +252,19 @@ impl Store {
     pub async fn agents_of_ticket(&self, ticket_id: TicketId) -> Result<Vec<Agent>> {
         self.with(move |c| rows::select_agents_of_ticket(c, ticket_id))
             .await
+    }
+
+    pub async fn agents_of_tickets(&self, project_id: Option<ProjectId>) -> Result<Vec<Agent>> {
+        self.with(move |c| rows::select_agents_of_tickets(c, project_id))
+            .await
+    }
+
+    pub async fn usage_per_ticket(&self, project_id: Option<ProjectId>) -> Result<Vec<KeyedUsage>> {
+        self.with(move |c| rows::usage_per_ticket(c, project_id)).await
+    }
+
+    pub async fn usage_per_agent(&self, ticket_id: TicketId) -> Result<Vec<KeyedUsage>> {
+        self.with(move |c| rows::usage_per_agent(c, ticket_id)).await
     }
 
     pub async fn agents_with_status(&self, statuses: Vec<AgentStatus>) -> Result<Vec<Agent>> {

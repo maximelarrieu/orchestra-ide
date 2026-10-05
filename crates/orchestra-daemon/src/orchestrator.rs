@@ -66,10 +66,14 @@ pub async fn plan(
     let prompt_file = write_prompt_file(cache_dir, "_orchestrator", ORCHESTRATOR_PROMPT)
         .context("écriture de la consigne de l'orchestrateur")?;
 
+    // A tree walk and a few git calls: off the runtime, like all git.
+    let repo = project.path.clone();
+    let summary = crate::worktree::off_runtime(move || RepoSummary::build(&repo)).await;
+
     let mut cmd = ClaudeCommand::new(
         &cfg.daemon.claude_bin,
         &project.path,
-        user_prompt(ticket, catalog, &project.path),
+        user_prompt(ticket, catalog, &project.path, &summary),
     );
     cmd.session_id = Some(session_id);
     cmd.name = Some(format!(
@@ -264,8 +268,7 @@ async fn run(
 }
 
 /// The prompt: the brief, the catalog, and a map of the repository.
-fn user_prompt(ticket: &Ticket, catalog: &Catalog, repo: &Path) -> String {
-    let summary = RepoSummary::build(repo);
+fn user_prompt(ticket: &Ticket, catalog: &Catalog, repo: &Path, summary: &RepoSummary) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "# Ticket #{} — {}\n\n",
@@ -399,7 +402,7 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join("README.md"), "# Mon dépôt").unwrap();
 
-        let prompt = user_prompt(&ticket(), &catalog(&roles), &repo);
+        let prompt = user_prompt(&ticket(), &catalog(&roles), &repo, &RepoSummary::build(&repo));
         assert!(prompt.contains("#12 — Ajouter un cache"));
         assert!(prompt.contains("On veut un cache"), "le brief entier");
         assert!(prompt.contains("- backend (sonnet) : Logique serveur."));

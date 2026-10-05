@@ -11,6 +11,19 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use orchestra_core::model::{ticket_slug, Project, Ticket};
 
+/// Run git work on tokio's blocking pool.
+///
+/// Everything in this module blocks: `git worktree add` on a large repository,
+/// a fetch, a push. Called straight from async code it holds a runtime thread
+/// for as long, and from the daemon loop, every client with it. Async callers
+/// go through here.
+pub async fn off_runtime<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(v) => v,
+        Err(e) => std::panic::resume_unwind(e.into_panic()),
+    }
+}
+
 /// A worktree created for a ticket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
@@ -386,6 +399,10 @@ fn git(cwd: &Path, args: &[String]) -> Result<String> {
         .arg("-C")
         .arg(cwd)
         .args(args)
+        // A fetch or a push that wants credentials fails instead of waiting
+        // for a terminal the daemon does not have.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
         .output()
         .with_context(|| format!("exécution de git {}", args.join(" ")))?;
     if !out.status.success() {

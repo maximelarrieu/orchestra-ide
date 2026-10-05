@@ -3,6 +3,7 @@
 pub mod app;
 pub mod client;
 pub mod forms;
+mod inflight;
 pub mod keymap;
 pub mod keys;
 mod run;

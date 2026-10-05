@@ -3,15 +3,15 @@
 //! Raw tokens are the truth. The dollar figure is indicative, applied at read
 //! time from the price table, so editing the table re-prices the whole history.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use orchestra_core::config::Config;
-use orchestra_core::model::{AgentId, TicketId, Tokens, UsageSample};
+use orchestra_core::model::{AgentId, ProjectId, TicketId, Tokens, UsageSample};
 use orchestra_core::pricing::PriceTable;
 use orchestra_core::protocol::{GroupBy, UsageQuery, UsageRow, UsageTotals};
 
-use crate::store::{Recorded, Store, UsageBreakdown};
+use crate::store::{KeyedUsage, Recorded, Store, UsageBreakdown};
 
 /// Tokens and price of one scope.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -142,21 +142,62 @@ impl UsageLedger {
         .await
     }
 
+    /// The cost of every ticket of a project (or of all), in one query: the
+    /// board asks for it every second, and one query per card does not scale.
+    /// A ticket with no usage is simply absent.
+    pub async fn ticket_costs(
+        &self,
+        project_id: Option<ProjectId>,
+    ) -> Result<HashMap<TicketId, AgentCost>> {
+        Ok(self.costs_by_key(self.store.usage_per_ticket(project_id).await?))
+    }
+
+    /// The cost of every agent of a ticket, in one query.
+    pub async fn agent_costs(&self, ticket_id: TicketId) -> Result<HashMap<AgentId, AgentCost>> {
+        Ok(self.costs_by_key(self.store.usage_per_agent(ticket_id).await?))
+    }
+
+    fn costs_by_key(&self, rows: Vec<KeyedUsage>) -> HashMap<uuid::Uuid, AgentCost> {
+        let mut parts: HashMap<uuid::Uuid, Vec<(String, Tokens, u64)>> = HashMap::new();
+        for row in rows {
+            parts
+                .entry(row.key)
+                .or_default()
+                .push((row.model, row.tokens, row.messages));
+        }
+        parts
+            .into_iter()
+            .map(|(key, parts)| {
+                let cost = self.price(parts.iter().map(|(m, t, n)| (m.as_str(), t, *n)));
+                (key, cost)
+            })
+            .collect()
+    }
+
     async fn cost_of(&self, query: UsageQuery) -> Result<AgentCost> {
         let breakdown = self.store.usage_breakdown(query).await?;
+        Ok(self.price(
+            breakdown
+                .iter()
+                .map(|part| (part.model.as_str(), &part.tokens, part.messages)),
+        ))
+    }
+
+    /// Sum usage split by model, pricing each model on its own (rule 8).
+    fn price<'a>(&self, parts: impl Iterator<Item = (&'a str, &'a Tokens, u64)>) -> AgentCost {
         let mut out = AgentCost::default();
         let mut cost = 0.0;
         let mut priced = false;
-        for part in &breakdown {
-            out.tokens += part.tokens;
-            out.messages += part.messages;
-            if let Some(c) = self.prices.cost(&part.model, &part.tokens) {
+        for (model, tokens, messages) in parts {
+            out.tokens += *tokens;
+            out.messages += messages;
+            if let Some(c) = self.prices.cost(model, tokens) {
                 cost += c;
                 priced = true;
             }
         }
         out.cost_usd = priced.then_some(cost);
-        Ok(out)
+        out
     }
 
     pub async fn ticket_tokens(&self, ticket_id: TicketId) -> Result<Tokens> {

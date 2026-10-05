@@ -378,7 +378,8 @@ impl TranscriptWatcher {
     /// home directory creates a project there, and every later session then
     /// matches it by prefix and every repository disappears into one row.
     async fn project_for(&self, cwd: &Path) -> Option<ProjectId> {
-        if let Some(root) = git_toplevel(cwd) {
+        let probe = cwd.to_path_buf();
+        if let Some(root) = crate::worktree::off_runtime(move || git_toplevel(&probe)).await {
             if let Ok(Some(p)) = self.store.project_by_path(root.clone()).await {
                 return Some(p.id);
             }
