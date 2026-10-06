@@ -241,6 +241,82 @@ pub fn detect(facts: &RepoFacts) -> Option<String> {
     None
 }
 
+/// The quality gates a repository already gives itself, then its tests:
+/// what a pass runs when nothing is configured.
+///
+/// Only what the project and the machine both have. `cargo fmt` runs when
+/// `cargo-fmt` is installed, `npm run lint` when the script exists, `ruff`
+/// when the project uses it and the tool is there: a gate that cannot run
+/// would fail every ticket for a reason no agent can fix. Cheap and strict
+/// first, the suite last, so a pass stops on a formatting error in seconds
+/// rather than after the tests.
+pub fn detect_gates(facts: &RepoFacts, installed: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out = Vec::new();
+    // A declared recipe is the project's own choice, as for the tests.
+    let recipes = facts
+        .get("justfile")
+        .or_else(|| facts.get(".justfile"))
+        .map(|c| ("just", c))
+        .or_else(|| facts.get("Makefile").or_else(|| facts.get("GNUmakefile")).map(|c| ("make", c)));
+    if let Some((runner, content)) = recipes {
+        for recipe in ["fmt-check", "lint", "check"] {
+            if has_recipe(content, recipe) {
+                out.push(format!("{runner} {recipe}"));
+            }
+        }
+    }
+    if out.is_empty() {
+        if let Some(cargo) = facts.get("Cargo.toml") {
+            let workspace = cargo.contains("[workspace]");
+            if installed("cargo-fmt") {
+                out.push("cargo fmt --all --check".into());
+            }
+            if installed("cargo-clippy") {
+                out.push(if workspace {
+                    "cargo clippy --workspace --all-targets -- -D warnings".into()
+                } else {
+                    "cargo clippy --all-targets -- -D warnings".into()
+                });
+            }
+        } else if let Some(package) = facts.get("package.json") {
+            for script in ["lint", "typecheck"] {
+                if has_npm_script(package, script) {
+                    out.push(format!("npm run {script}"));
+                }
+            }
+        } else if facts.get("pyproject.toml").is_some_and(|c| c.contains("ruff")) && installed("ruff") {
+            out.push("ruff check .".into());
+        }
+    }
+    out.extend(detect(facts));
+    out
+}
+
+/// A script of that name in `package.json`'s `scripts`.
+fn has_npm_script(package: &str, name: &str) -> bool {
+    package
+        .split("\"scripts\"")
+        .nth(1)
+        .is_some_and(|scripts| scripts.contains(&format!("\"{name}\"")))
+}
+
+/// `.orchestra/checks.toml`, versioned with the repository: its gates travel
+/// with the code, and a change to them is reviewed like code.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RepoChecks {
+    /// The gate before every relecture.
+    pub commands: Vec<String>,
+    /// Quick commands after each implementation step.
+    pub after_stage: Vec<String>,
+}
+
+impl RepoChecks {
+    pub fn parse(src: &str) -> crate::error::Result<Self> {
+        toml::from_str(src).map_err(|e| crate::error::CoreError::Config(format!(".orchestra/checks.toml : {e}")))
+    }
+}
+
 /// A `test:` target at the start of a line, comments left out.
 fn has_recipe(content: &str, name: &str) -> bool {
     content.lines().any(|line| {
@@ -284,6 +360,49 @@ fn has_npm_test(package: &str) -> bool {
         }
     }
     !value.trim().is_empty() && !value.contains("no test specified")
+}
+
+#[cfg(test)]
+mod gates_tests {
+    use super::*;
+
+    fn facts(files: &[(&str, &str)]) -> RepoFacts {
+        RepoFacts { files: files.iter().map(|(n, c)| (n.to_string(), c.to_string())).collect() }
+    }
+
+    #[test]
+    fn a_rust_workspace_gets_fmt_and_clippy_before_its_tests_when_installed() {
+        let f = facts(&[("Cargo.toml", "[workspace]\nmembers = []")]);
+        assert_eq!(
+            detect_gates(&f, |_| true),
+            vec![
+                "cargo fmt --all --check",
+                "cargo clippy --workspace --all-targets -- -D warnings",
+                "cargo test --workspace",
+            ]
+        );
+        // Without the tools, only what can run.
+        assert_eq!(detect_gates(&f, |_| false), vec!["cargo test --workspace"]);
+    }
+
+    #[test]
+    fn a_node_project_gets_its_own_lint_and_typecheck() {
+        let f = facts(&[("package.json", r#"{"scripts": {"lint": "eslint .", "typecheck": "tsc", "test": "vitest"}}"#)]);
+        assert_eq!(detect_gates(&f, |_| true), vec!["npm run lint", "npm run typecheck", "npm test"]);
+    }
+
+    #[test]
+    fn a_declared_recipe_wins_over_the_language() {
+        let f = facts(&[("justfile", "lint:\n  cargo clippy\ntest:\n  cargo test\n"), ("Cargo.toml", "")]);
+        assert_eq!(detect_gates(&f, |_| true), vec!["just lint", "just test"]);
+    }
+
+    #[test]
+    fn the_repository_file_is_read_strictly() {
+        let c = RepoChecks::parse("commands = [\"cargo test\"]\nafter_stage = [\"cargo check\"]\n").unwrap();
+        assert_eq!(c.after_stage, vec!["cargo check"]);
+        assert!(RepoChecks::parse("comands = []").is_err(), "une faute de frappe ne passe pas en silence");
+    }
 }
 
 #[cfg(test)]

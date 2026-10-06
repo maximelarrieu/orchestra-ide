@@ -878,9 +878,7 @@ impl Supervisor {
                 }
                 gated = true;
                 next_stage = gate_stage.max(stage) + 1;
-                if let Some(outcome) = self.last_checks(ticket.id).await {
-                    appendix = checks_appendix(&outcome);
-                }
+                appendix = self.reviewer_appendix(&ticket, &project).await;
             }
             let step = self
                 .run_member(Step {
@@ -910,7 +908,9 @@ impl Supervisor {
             }
             // A quick look after each step that wrote code: a broken build
             // goes back to its author now, not after the whole team.
-            if member.role != self.cfg.review.role && !self.cfg.checks.after_stage.is_empty() {
+            if member.role != self.cfg.review.role
+                && !crate::checks::after_stage(&self.cfg.checks, &project.path).is_empty()
+            {
                 let mut gate_stage = next_stage;
                 match self
                     .stage_gate(
@@ -1273,15 +1273,7 @@ impl Supervisor {
         stage: &mut u32,
         role: &str,
     ) -> StepOutcome {
-        let cfg = &self.cfg.checks;
-        if !cfg.enabled {
-            return StepOutcome::Done;
-        }
-        let commands: Vec<_> = cfg
-            .after_stage
-            .iter()
-            .filter_map(|c| orchestra_core::checks::Check::parse(c))
-            .collect();
+        let commands = crate::checks::after_stage(&self.cfg.checks, &project.path);
         self.gate_with(ticket, project, team, catalog, worktree_path, handoffs, stage, commands, Some(role))
             .await
     }
@@ -1664,10 +1656,7 @@ impl Supervisor {
                 StepOutcome::Done => {}
                 other => return other,
             }
-            let appendix = match self.last_checks(ticket.id).await {
-                Some(outcome) => checks_appendix(&outcome),
-                None => String::new(),
-            };
+            let appendix = self.reviewer_appendix(ticket, project).await;
 
             let mut again = reviewer.clone();
             again.objective = format!(
@@ -2632,6 +2621,57 @@ fn corrected_since_review(prior: &[Agent], review_role: &str) -> Vec<String> {
 /// second time at agent prices. With the command named, because a reviewer
 /// that cannot see what ran has to take our word for it, and this whole gate
 /// exists so that nobody has to take anybody's word for it.
+impl Supervisor {
+    /// What the reviewer is handed before reading: the checks that ran, and
+    /// what the branch touches, so scope is judged on the facts.
+    async fn reviewer_appendix(&self, ticket: &Ticket, project: &Project) -> String {
+        let mut out = match self.last_checks(ticket.id).await {
+            Some(outcome) => checks_appendix(&outcome),
+            None => String::new(),
+        };
+        let current = self.store.ticket(ticket.id).await.ok().flatten();
+        if let Some(branch) = current.and_then(|t| t.branch) {
+            let p = project.clone();
+            if let Ok(diff) = worktree::off_runtime(move || worktree::diff(&p, &branch)).await {
+                out.push_str(&scope_appendix(&diff));
+            }
+        }
+        out
+    }
+}
+
+/// The branch's files, for the reviewer to hold against the ticket: a file
+/// changed for no reason the brief or the criteria give is a finding.
+fn scope_appendix(diff: &orchestra_core::protocol::TicketDiff) -> String {
+    if diff.files.is_empty() {
+        return "\n## Ce que la branche modifie\n\nRien : la branche n'apporte aucun changement. \
+                Si le ticket en demandait, c'est bloquant.\n"
+            .into();
+    }
+    let mut out = format!(
+        "\n## Ce que la branche modifie\n\n{} fichier(s), contre `{}` :\n\n",
+        diff.files.len(),
+        diff.base
+    );
+    for f in diff.files.iter().take(60) {
+        let counts = match (f.added, f.removed) {
+            (Some(a), Some(r)) => format!("+{a} -{r}"),
+            _ => "binaire".into(),
+        };
+        out.push_str(&format!("- `{}` ({counts})\n", f.path));
+    }
+    if diff.files.len() > 60 {
+        out.push_str(&format!("- … et {} autre(s)\n", diff.files.len() - 60));
+    }
+    out.push_str(
+        "\nVérifie que chaque fichier sert le brief ou un critère d'acceptation. Un \
+         changement sans rapport avec le ticket — un fichier remanié en passant, une \
+         dépendance ajoutée sans besoin, un test désactivé — est un point bloquant, \
+         attribué au rôle qui l'a fait.\n",
+    );
+    out
+}
+
 fn checks_appendix(outcome: &orchestra_core::checks::ChecksOutcome) -> String {
     if outcome.runs.is_empty() {
         return String::new();
@@ -3308,6 +3348,27 @@ mod tests {
         // And every agent is told to read and add to them.
         let prompt = build_prompt(&t, &member("backend"), Path::new("/wt"), &[], &[], Blocked::Review);
         assert!(prompt.contains(worktree::NOTES_FILE) && prompt.contains("## backend"));
+    }
+
+    #[test]
+    fn the_reviewer_sees_every_file_the_branch_touches_and_why_it_matters() {
+        use orchestra_core::protocol::{DiffFile, TicketDiff};
+        let diff = TicketDiff {
+            branch: "orch/7-cache".into(),
+            base: "main".into(),
+            files: vec![
+                DiffFile { path: "src/cache.rs".into(), added: Some(40), removed: Some(2) },
+                DiffFile { path: "logo.png".into(), added: None, removed: None },
+            ],
+            patch: String::new(),
+            truncated: false,
+        };
+        let text = scope_appendix(&diff);
+        assert!(text.contains("2 fichier(s), contre `main`"));
+        assert!(text.contains("`src/cache.rs` (+40 -2)") && text.contains("`logo.png` (binaire)"));
+        assert!(text.contains("point bloquant"));
+        let empty = TicketDiff { files: vec![], ..diff };
+        assert!(scope_appendix(&empty).contains("aucun changement"));
     }
 
     #[test]

@@ -34,17 +34,47 @@ pub fn commands(cfg: &orchestra_core::config::ChecksConfig, repo: &Path) -> Vec<
     if !cfg.enabled {
         return Vec::new();
     }
-    if !cfg.commands.is_empty() {
-        return cfg
-            .commands
-            .iter()
-            .filter_map(|c| Check::parse(c))
-            .collect();
+    let lines = match repo_checks(repo).filter(|c| !c.commands.is_empty()) {
+        Some(file) => file.commands,
+        None if !cfg.commands.is_empty() => cfg.commands.clone(),
+        None => checks::detect_gates(&facts(repo), on_path),
+    };
+    lines.iter().filter_map(|c| Check::parse(c)).collect()
+}
+
+/// The quick commands after each step: the repository's file first, then the
+/// configuration. Never guessed: a step is half a feature, and a full suite
+/// on half a feature is noise.
+pub fn after_stage(cfg: &orchestra_core::config::ChecksConfig, repo: &Path) -> Vec<Check> {
+    if !cfg.enabled {
+        return Vec::new();
     }
-    checks::detect(&facts(repo))
-        .and_then(|line| Check::parse(&line))
-        .into_iter()
-        .collect()
+    let lines = match repo_checks(repo).filter(|c| !c.after_stage.is_empty()) {
+        Some(file) => file.after_stage,
+        None => cfg.after_stage.clone(),
+    };
+    lines.iter().filter_map(|c| Check::parse(c)).collect()
+}
+
+/// `.orchestra/checks.toml` of the main repository, when it has one. Read
+/// there and not in the worktree, for the reason above. A file that does
+/// not parse is said, and the configuration applies instead.
+fn repo_checks(repo: &Path) -> Option<checks::RepoChecks> {
+    let src = std::fs::read_to_string(repo.join(".orchestra/checks.toml")).ok()?;
+    match checks::RepoChecks::parse(&src) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::warn!("{e} — la configuration s'applique à la place");
+            None
+        }
+    }
+}
+
+/// Whether a program is installed, on `$PATH`.
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
+    })
 }
 
 /// Read what little of a repository's root says how it is verified.
@@ -228,8 +258,22 @@ mod tests {
         };
         assert_eq!(commands(&cfg, &dir)[0].label(), "just verifier");
 
+        // Guessed: whatever quality gates are installed here, then the tests.
         let guessed = commands(&ChecksConfig::default(), &dir);
-        assert_eq!(guessed[0].label(), "cargo test --workspace");
+        assert_eq!(guessed.last().unwrap().label(), "cargo test --workspace");
+
+        // The repository's own file wins over both, and sets the steps too.
+        std::fs::create_dir_all(dir.join(".orchestra")).unwrap();
+        std::fs::write(
+            dir.join(".orchestra/checks.toml"),
+            "commands = [\"make ci\"]\nafter_stage = [\"cargo check\"]\n",
+        )
+        .unwrap();
+        assert_eq!(commands(&cfg, &dir)[0].label(), "make ci");
+        assert_eq!(after_stage(&ChecksConfig::default(), &dir)[0].label(), "cargo check");
+        // A broken file is set aside: the configuration applies.
+        std::fs::write(dir.join(".orchestra/checks.toml"), "comands = 1").unwrap();
+        assert_eq!(commands(&cfg, &dir)[0].label(), "just verifier");
 
         let off = ChecksConfig {
             enabled: false,

@@ -103,6 +103,13 @@ toucher au disque ni au réseau.
   d'un refus dans le flux.
 - `checks.rs` — les vérifications du dépôt, lancées par le daemon dans le
   worktree : quelles commandes, et ce qu'elles ont rendu.
+- Les vérifications d'un projet viennent, dans l'ordre, de `.orchestra/checks.toml`
+  du dépôt principal (`commands`, `after_stage` — versionnées avec le code, relues
+  comme du code), de `[checks]` dans `config.toml`, puis de la détection
+  (`checks::detect_gates`) : fmt, clippy, lint ou typecheck que le projet et la
+  machine ont tous deux, avant ses tests. Le relecteur reçoit la liste des fichiers
+  que la branche modifie (`scope_appendix`) : un changement hors du ticket est
+  bloquant.
 - Les notes de ticket (`.orchestra-ticket.md`, `worktree::NOTES_FILE`) sont la
   mémoire de l'équipe sur un ticket : écrites au lancement (brief, équipe, critères,
   points d'attention), lues et complétées par chaque agent, exclues de git par
