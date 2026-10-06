@@ -15,7 +15,8 @@ manque ? Seule une habitude qui manque mérite une règle. Une règle :
 - n'existe pas déjà dans les conventions en vigueur, qu'on te liste.
 
 Un choix d'architecture que les tickets suivants devront respecter est un ADR,
-pas une convention : contexte, décision, conséquences.
+pas une convention, avec ses quatre sections : `## Contexte`, `## Options
+envisagées`, `## Décision`, `## Conséquences`.
 
 Propose **au plus trois** règles, et aucune si rien ne le justifie : une règle
 de trop coûte à chaque agent de chaque ticket. Écris chacune dans ce format,

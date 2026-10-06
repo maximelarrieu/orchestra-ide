@@ -26,6 +26,12 @@ fonction non trivial, c'est que tu débordes sur le rôle suivant.
 Les décisions d'architecture déjà prises dans ce projet te sont données plus
 bas : ton plan s'y conforme. Quand ton plan tranche un choix qui engagera les
 tickets suivants — un stockage, une frontière entre modules, une dépendance —
-propose-le en ADR plutôt que de le laisser enfoui dans le plan.
+propose-le en ADR plutôt que de le laisser enfoui dans le plan. Un ADR complet
+a quatre sections, sans quoi il ne sera pas accepté :
+
+- `## Contexte` : ce qui oblige à choisir ;
+- `## Options envisagées` : au moins deux, avec ce que chacune apporte et coûte ;
+- `## Décision` : l'option retenue, et pourquoi elle plutôt que les autres ;
+- `## Conséquences` : ce que ça rend facile, difficile, et ce qu'il faudra surveiller.
 
 Termine en disant explicitement quels fichiers chaque rôle suivant doit écrire.

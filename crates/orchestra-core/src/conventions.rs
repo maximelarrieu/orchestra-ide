@@ -279,6 +279,9 @@ struct Frontmatter {
     supersedes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     proposed_by: Option<String>,
+    /// When an ADR was written, `AAAA-MM-JJ`: a decision is read in its time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    date: Option<String>,
 }
 
 fn is_any(m: &RuleMode) -> bool {
@@ -810,6 +813,7 @@ pub fn render(draft: &RuleDraft<'_>) -> Result<String> {
         checks: Vec::new(),
         supersedes: None,
         proposed_by: draft.proposed_by.map(str::to_string),
+        date: (draft.kind == RuleKind::Adr).then(|| crate::now().date().to_string()),
     };
     let header = serde_yaml_ng::to_string(&fm)?;
     Ok(format!("---\n{}---\n{}\n", header, draft.body.trim()))
@@ -825,17 +829,81 @@ pub fn skeleton_body(kind: RuleKind) -> &'static str {
              et, pour la limiter à des rôles : `applies_to: [integrator]`."
         }
         RuleKind::Adr => {
-            "## Contexte\n\nCe qui oblige à choisir.\n\n\
-             ## Décision\n\nCe qui est retenu, en une phrase.\n\n\
-             ## Conséquences\n\nCe que ça rend facile, ce que ça rend difficile."
+            "## Contexte\n\nCe qui oblige à choisir : la contrainte, le besoin, ce qui a changé.\n\n\
+             ## Options envisagées\n\n- Option A : ce qu'elle apporte, ce qu'elle coûte.\n\
+             - Option B : ce qu'elle apporte, ce qu'elle coûte.\n\n\
+             ## Décision\n\nL'option retenue, en une phrase, et pourquoi elle plutôt que les autres.\n\n\
+             ## Conséquences\n\nCe que ça rend facile, ce que ça rend difficile, ce qu'il faudra \
+             surveiller."
         }
     }
+}
+
+/// The sections a decision cannot do without. Without the options weighed, a
+/// later reader cannot tell a choice from a default; without consequences,
+/// nobody knows what to watch.
+pub const ADR_SECTIONS: [&str; 4] = ["Contexte", "Options envisagées", "Décision", "Conséquences"];
+
+/// The sections an ADR's body lacks, by their `## ` heading, case and
+/// accents aside, and « Options » alone accepted for the second.
+pub fn adr_missing_sections(body: &str) -> Vec<&'static str> {
+    let fold = |s: &str| {
+        s.to_lowercase()
+            .replace(['é', 'è', 'ê'], "e")
+            .trim()
+            .to_string()
+    };
+    let headings: Vec<String> = body
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("## "))
+        .map(fold)
+        .collect();
+    ADR_SECTIONS
+        .iter()
+        .filter(|section| {
+            let want = fold(section);
+            let first = want.split_whitespace().next().unwrap_or_default().to_string();
+            !headings.iter().any(|h| *h == want || h.starts_with(&first))
+        })
+        .copied()
+        .collect()
 }
 
 /// Change the `status:` line of a rule file, keeping everything else — the
 /// user's comments and layout included — exactly as it was.
 pub fn with_status(src: &str, status: RuleStatus) -> Result<String> {
     crate::roles::set_header_field(src, "status", status.as_str())
+}
+
+#[cfg(test)]
+mod adr_tests {
+    use super::*;
+
+    #[test]
+    fn the_skeleton_is_a_complete_decision_and_a_short_one_is_not() {
+        assert!(adr_missing_sections(skeleton_body(RuleKind::Adr)).is_empty());
+        let short = "## Contexte\nx\n## Décision\ny\n";
+        assert_eq!(adr_missing_sections(short), vec!["Options envisagées", "Conséquences"]);
+        // Wording varies; the headings are what matter.
+        let loose = "## contexte\n## Options\n## DECISION\n## Conséquences et suivi\n";
+        assert!(adr_missing_sections(loose).is_empty());
+    }
+
+    #[test]
+    fn a_written_adr_carries_its_date() {
+        let draft = RuleDraft {
+            kind: RuleKind::Adr,
+            title: "SQLite plutôt que Postgres",
+            status: RuleStatus::Proposed,
+            applies_to: &[],
+            proposed_by: Some("architect, ticket #3"),
+            body: skeleton_body(RuleKind::Adr),
+        };
+        let text = render(&draft).unwrap();
+        assert!(text.contains(&format!("date: {}", crate::now().date())), "{text}");
+        let convention = RuleDraft { kind: RuleKind::Convention, ..draft };
+        assert!(!render(&convention).unwrap().contains("date:"));
+    }
 }
 
 #[cfg(test)]

@@ -35,5 +35,6 @@ FIN PROPOSITION
 
 `convention` pour une habitude d'équipe (et `rôles:` pour dire à qui elle
 s'adresse, sinon elle vaut pour tous), `adr` pour une décision d'architecture
-(contexte, décision, conséquences). Une proposition n'engage personne tant que
+(sections `## Contexte`, `## Options envisagées`, `## Décision`, `## Conséquences` :
+un ADR sans les options pesées ni les conséquences n'est pas accepté). Une proposition n'engage personne tant que
 l'humain ne l'a pas acceptée : n'en fais que quand le besoin est réel.

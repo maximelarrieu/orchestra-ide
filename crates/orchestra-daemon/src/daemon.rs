@@ -1115,6 +1115,23 @@ impl Daemon {
         if from == status {
             return Ok(Reply::Ack);
         }
+        // An accepted ADR binds every ticket after it: it has to say what was
+        // weighed and what follows, not only what was chosen.
+        if kind == RuleKind::Adr && status == RuleStatus::Accepted {
+            let body = book
+                .rules
+                .iter()
+                .find(|r| r.kind == kind && r.name == name)
+                .map(|r| r.body.as_str())
+                .unwrap_or_default();
+            let missing = orchestra_core::conventions::adr_missing_sections(body);
+            if !missing.is_empty() {
+                return Err(ApiError::invalid(format!(
+                    "ADR incomplet, il manque : {} — complète-le (« e ») puis accepte-le",
+                    missing.join(", ")
+                )));
+            }
+        }
         crate::rules::set_status(&path, status).map_err(|e| ApiError::invalid(format!("{e:#}")))?;
         self.bus
             .publish(self.rule_event(
@@ -2232,6 +2249,50 @@ mod tests {
         assert_eq!(stats.roles.len(), 1, "l'orchestrateur n'est pas un rôle de l'équipe");
         let backend = &stats.roles[0];
         assert_eq!((backend.runs, backend.done, backend.failed), (2, 1, 1));
+    }
+
+    #[tokio::test]
+    async fn an_adr_is_accepted_only_once_it_weighs_its_options() {
+        use orchestra_core::conventions::{RuleDraft, RuleKind, RuleStatus};
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open_memory().unwrap();
+        let project = Project {
+            id: Uuid::new_v4(),
+            name: "depot".into(),
+            path: dir.path().to_path_buf(),
+            default_branch: "main".into(),
+            zellij_tab: None,
+            kind: ProjectKind::Managed,
+            created_at: orchestra_core::now(),
+        };
+        store.insert_project(project.clone()).await.unwrap();
+        let daemon = Daemon::new(Config::default(), store);
+        let draft = RuleDraft {
+            kind: RuleKind::Adr,
+            title: "SQLite pour la file",
+            status: RuleStatus::Proposed,
+            applies_to: &[],
+            proposed_by: Some("architect, ticket #2"),
+            body: "## Contexte\nUne file locale.\n\n## Décision\nSQLite.\n",
+        };
+        let (name, path) = crate::rules::create(&daemon.paths.conventions_dir, Some(&project), &draft).unwrap();
+
+        let err = daemon
+            .set_rule_status(Some(project.id), RuleKind::Adr, name.clone(), RuleStatus::Accepted)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("Options envisagées") && err.message.contains("Conséquences"), "{}", err.message);
+
+        let src = std::fs::read_to_string(&path).unwrap();
+        let complete = format!(
+            "{src}\n## Options envisagées\n- Postgres : trop lourd ici.\n\n## Conséquences\nUn seul écrivain.\n"
+        );
+        std::fs::write(&path, complete).unwrap();
+        daemon
+            .set_rule_status(Some(project.id), RuleKind::Adr, name, RuleStatus::Accepted)
+            .await
+            .unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("status: accepted"));
     }
 
     async fn record_verdict(daemon: &Daemon, ticket: &Ticket, verdict: Verdict) {

@@ -169,6 +169,22 @@ fn render_list(app: &App, frame: &mut Frame<'_>, area: Rect, title: &str) {
             truncate(&format!("  {}", foot.join(" · ")), width),
             Style::default().add_modifier(Modifier::DIM),
         )));
+        // Said before « y » is pressed: the daemon refuses an ADR without
+        // these, and the user should not learn it from a refusal.
+        if r.kind == RuleKind::Adr && r.status != orchestra_core::conventions::RuleStatus::Accepted {
+            let missing = orchestra_core::conventions::adr_missing_sections(&r.body);
+            if !missing.is_empty() {
+                let warn = theme::urgent();
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(warn.symbol, warn.style()),
+                    Span::styled(
+                        truncate(&format!(" incomplet : {}", missing.join(", ")), width.saturating_sub(4)),
+                        warn.style(),
+                    ),
+                ]));
+            }
+        }
     }
     if !app.rule_errors.is_empty() {
         lines.push(Line::raw(""));
@@ -330,6 +346,19 @@ mod tests {
 
     fn draw(app: &App, w: u16, h: u16) -> String {
         crate::screens::text_of(w, h, |f| render(app, f, f.area()))
+    }
+
+    #[test]
+    fn an_incomplete_adr_says_what_it_lacks_before_it_is_accepted() {
+        let mut app = App::new();
+        let mut adr = rule("0002-sqlite", RuleKind::Adr, RuleStatus::Proposed, false);
+        adr.body = "## Contexte\nx\n## Décision\ny".into();
+        let mut done = rule("0001-rust", RuleKind::Adr, RuleStatus::Proposed, false);
+        done.body = orchestra_core::conventions::skeleton_body(RuleKind::Adr).into();
+        app.rules = vec![done, adr];
+        let out = draw(&app, 100, 20);
+        assert!(out.contains("incomplet : Options envisagées"), "{out}");
+        assert_eq!(out.matches("incomplet").count(), 1, "l'ADR complet ne l'est pas : {out}");
     }
 
     #[test]
