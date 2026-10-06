@@ -58,6 +58,11 @@ pub enum Command {
     GetTicket {
         ticket_id: TicketId,
     },
+    /// How the team does: per role and model, and over the reviewed tickets.
+    GetStats {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+    },
     /// What the ticket's branch changes against the default branch.
     GetDiff {
         ticket_id: TicketId,
@@ -302,6 +307,9 @@ pub enum Reply {
     Diff {
         diff: Box<TicketDiff>,
     },
+    Stats {
+        stats: Box<TeamStats>,
+    },
     Epic {
         detail: Box<EpicDetail>,
     },
@@ -515,6 +523,41 @@ pub struct EpicTicketRow {
     /// Numbers of the tickets it depends on.
     #[serde(default)]
     pub depends_on: Vec<i64>,
+}
+
+/// How a role does on one model: what to change when a role keeps failing,
+/// or costs more than its work is worth.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoleStat {
+    pub role: String,
+    /// The model the samples report, as configured when none was seen.
+    pub model: String,
+    /// Agents run in this role on this model.
+    pub runs: u32,
+    pub done: u32,
+    /// Failed or crashed, cancellations left out: those are the user's.
+    pub failed: u32,
+    #[serde(default)]
+    pub avg_cost_usd: Option<f64>,
+}
+
+/// The team's record, as the cost screen shows it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TeamStats {
+    pub roles: Vec<RoleStat>,
+    /// Tickets the relecture has spoken on.
+    pub reviewed: u32,
+    /// …of which it cleared at the first round.
+    pub first_pass: u32,
+    /// Correction rounds the relecture sent, over all those tickets.
+    pub correction_rounds: u32,
+}
+
+impl TeamStats {
+    /// Share of reviewed tickets cleared at once, in percent.
+    pub fn first_pass_pct(&self) -> Option<u32> {
+        (self.reviewed > 0).then(|| self.first_pass * 100 / self.reviewed)
+    }
 }
 
 /// One file a branch touches. `None` counts for a binary file.

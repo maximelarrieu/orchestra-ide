@@ -2262,3 +2262,30 @@ fn snapshot_split_to_review() {
     let app = fixture_named("découpage");
     insta::assert_snapshot!("split_100x30", draw(&app, 100, 30));
 }
+
+#[test]
+fn the_cost_screen_shows_how_the_team_does() {
+    use orchestra_core::protocol::{RoleStat, TeamStats};
+    let mut app = fixture_named("coût");
+    let cmds = app.update(Msg::Key(Action::Char('v')));
+    assert!(cmds.iter().any(|c| matches!(c, Command::GetStats { .. })), "{cmds:?}");
+    app.update(Msg::Reply(Box::new(Reply::Stats {
+        stats: Box::new(TeamStats {
+            roles: vec![RoleStat {
+                role: "backend".into(),
+                model: "claude-sonnet-5".into(),
+                runs: 4,
+                done: 3,
+                failed: 1,
+                avg_cost_usd: Some(0.42),
+            }],
+            reviewed: 4,
+            first_pass: 3,
+            correction_rounds: 2,
+        }),
+    })));
+    let out = draw(&app, 110, 24);
+    assert!(out.contains("4 ticket(s) relu(s) · 75 % passés du premier coup"), "{out}");
+    assert!(out.contains("backend") && out.contains("75 %") && out.contains("claude-sonnet-5"));
+    assert!(out.contains("[v] revenir aux coûts"));
+}

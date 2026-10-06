@@ -18,6 +18,10 @@ use super::pane_block;
 const WIDE: u16 = 92;
 
 pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
+    if app.cost.show_stats {
+        render_stats(app, frame, area);
+        return;
+    }
     let has_trend = app.cost.daily.len() > 1 && area.height >= 12;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -161,6 +165,68 @@ pub fn estimate_note(cost: &CostView) -> &'static str {
 /// Label of the period, for the status bar.
 pub fn period_label(p: Period) -> &'static str {
     p.label_fr()
+}
+
+/// The team's record: how often the relecture clears a branch at once, and
+/// how each role does on each model. What to change when a role keeps
+/// failing, or costs more than its work is worth.
+fn render_stats(app: &App, frame: &mut Frame<'_>, area: Rect) {
+    let Some(stats) = app.cost.stats.as_ref() else {
+        frame.render_widget(
+            Paragraph::new("lecture des statistiques…").block(pane_block("Qualité de l'équipe", true)),
+            area,
+        );
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(3)])
+        .split(area);
+    let headline = match stats.first_pass_pct() {
+        Some(pct) => format!(
+            "{} ticket(s) relu(s) · {pct} % passés du premier coup · {} tour(s) de correction",
+            stats.reviewed, stats.correction_rounds
+        ),
+        None => "aucun ticket relu pour l'instant".to_string(),
+    };
+    frame.render_widget(
+        Paragraph::new(headline).block(pane_block("Relecture", false)),
+        chunks[0],
+    );
+    let rows: Vec<Row> = stats
+        .roles
+        .iter()
+        .map(|r| {
+            let rate = if r.runs > 0 { format!("{} %", r.done * 100 / r.runs) } else { "-".into() };
+            Row::new(vec![
+                r.role.clone(),
+                r.model.clone(),
+                r.runs.to_string(),
+                rate,
+                r.failed.to_string(),
+                r.avg_cost_usd.map(fmt_usd).unwrap_or_else(|| "-".into()),
+            ])
+        })
+        .collect();
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Min(12),
+                Constraint::Min(14),
+                Constraint::Length(8),
+                Constraint::Length(9),
+                Constraint::Length(7),
+                Constraint::Length(12),
+            ],
+        )
+        .header(
+            Row::new(vec!["rôle", "modèle", "passages", "réussis", "échecs", "coût moyen"])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+        )
+        .block(pane_block("Par rôle et par modèle", true)),
+        chunks[1],
+    );
 }
 
 #[cfg(test)]

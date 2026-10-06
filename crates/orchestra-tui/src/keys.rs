@@ -379,6 +379,9 @@ fn agent_hints(app: &App) -> Vec<Hint> {
 
 fn cost_hints(app: &App) -> Vec<Hint> {
     let c = &app.cost;
+    if c.show_stats {
+        return vec![Hint::screen("v", "revenir aux coûts")];
+    }
     // Each key states where it stands: the label is both what one is looking
     // at and what the key will change it to.
     vec![
@@ -392,6 +395,7 @@ fn cost_hints(app: &App) -> Vec<Hint> {
                 "agents seulement"
             },
         ),
+        Hint::screen("v", "qualité de l'équipe"),
     ]
 }
 

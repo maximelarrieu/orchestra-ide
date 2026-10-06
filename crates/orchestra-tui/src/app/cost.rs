@@ -19,6 +19,10 @@ impl App {
                 self.cost.include_unmanaged = !self.cost.include_unmanaged;
                 self.request_usage();
             }
+            'v' => {
+                self.cost.show_stats = !self.cost.show_stats;
+                self.request_usage();
+            }
             _ => {}
         }
     }

@@ -63,6 +63,11 @@ impl App {
         for query in self.cost.queries() {
             self.outbox.push(Command::GetUsage { query });
         }
+        if self.cost.show_stats {
+            self.outbox.push(Command::GetStats {
+                project_id: self.selected_project().map(|p| p.id),
+            });
+        }
     }
 
     pub(super) fn on_reply(&mut self, reply: Reply) {
@@ -143,6 +148,7 @@ impl App {
                 self.epic_selected = self.epic_selected.min(self.epics.len().saturating_sub(1));
             }
             Reply::Epic { detail } => self.adopt_epic(detail),
+            Reply::Stats { stats } => self.cost.stats = Some(stats),
             Reply::Diff { diff } => {
                 self.status = format!(
                     "{} fichier(s) — j/k pour lire, q pour fermer",

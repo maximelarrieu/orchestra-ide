@@ -114,6 +114,14 @@ attention = false
 [epic]
 auto_plan = true
 
+# Après un ticket qui a connu des frictions (relecture bloquante, vérification
+# rouge, redirection, refus du garde-fou), un agent bon marché propose au plus
+# trois conventions ou ADR. Elles attendent ton accord, comme toute proposition.
+[retro]
+enabled = true
+model = "haiku"
+max_budget_usd = 0.5
+
 # Serveurs MCP qu'un rôle peut demander dans son entête (`mcp: [nom, …]`). Les
 # agents tournent isolés de ta configuration : ils n'ont que ceux-là. Même forme
 # que les `mcpServers` de Claude Code.

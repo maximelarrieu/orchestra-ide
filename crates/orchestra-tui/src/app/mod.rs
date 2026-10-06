@@ -267,6 +267,9 @@ pub struct CostView {
     pub include_unmanaged: bool,
     /// Daily cost, oldest first, for the trend line.
     pub daily: Vec<(String, f64)>,
+    /// The team's record instead of the costs (`v`).
+    pub show_stats: bool,
+    pub stats: Option<Box<orchestra_core::protocol::TeamStats>>,
 }
 
 impl Default for CostView {
@@ -279,6 +282,8 @@ impl Default for CostView {
             period: Period::Week,
             include_unmanaged: true,
             daily: Vec::new(),
+            show_stats: false,
+            stats: None,
         }
     }
 }

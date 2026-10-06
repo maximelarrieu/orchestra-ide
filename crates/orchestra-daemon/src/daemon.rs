@@ -276,6 +276,7 @@ impl Daemon {
             }
             Command::GetTicket { ticket_id } => self.get_ticket(ticket_id).await,
             Command::GetDiff { ticket_id } => self.get_diff(ticket_id).await,
+            Command::GetStats { project_id } => self.get_stats(project_id).await,
             Command::CreateEpic { project_id, title, brief } => {
                 self.create_epic(project_id, title, brief).await
             }
@@ -617,6 +618,83 @@ impl Daemon {
         let agents = self.store.agents_of_ticket(ticket.id).await?;
         let cost = self.ledger.ticket_cost(ticket.id).await?;
         Ok(summarise(ticket, &agents, cost))
+    }
+
+    async fn get_stats(&self, project_id: Option<ProjectId>) -> Result<Reply, ApiError> {
+        use orchestra_core::protocol::{RoleStat, TeamStats};
+        let agents = self.store.agents_of_tickets(project_id).await.map_err(internal)?;
+        let mut costs: HashMap<orchestra_core::model::AgentId, AgentCost> = HashMap::new();
+        let tickets: HashSet<TicketId> = agents.iter().map(|a| a.ticket_id).collect();
+        for t in tickets {
+            costs.extend(self.ledger.agent_costs(t).await.map_err(internal)?);
+        }
+        let mut by_role: std::collections::BTreeMap<(String, String), RoleStat> = Default::default();
+        let mut spent: HashMap<(String, String), (f64, u32)> = HashMap::new();
+        for a in &agents {
+            // The orchestrator and the retrospective are Orchestra's own runs.
+            if a.role == orchestra_core::model::ORCHESTRATOR_ROLE || a.role == "rétrospective" {
+                continue;
+            }
+            let model = if a.model.is_empty() { "défaut".to_string() } else { a.model.clone() };
+            let key = (a.role.clone(), model.clone());
+            let entry = by_role.entry(key.clone()).or_insert_with(|| RoleStat {
+                role: a.role.clone(),
+                model,
+                runs: 0,
+                done: 0,
+                failed: 0,
+                avg_cost_usd: None,
+            });
+            entry.runs += 1;
+            match a.status {
+                AgentStatus::Done => entry.done += 1,
+                AgentStatus::Failed | AgentStatus::Crashed => entry.failed += 1,
+                _ => {}
+            }
+            if let Some(c) = costs.get(&a.id).and_then(|c| c.cost_usd) {
+                let s = spent.entry(key).or_default();
+                s.0 += c;
+                s.1 += 1;
+            }
+        }
+        for (key, stat) in by_role.iter_mut() {
+            if let Some((total, n)) = spent.get(key).filter(|(_, n)| *n > 0) {
+                stat.avg_cost_usd = Some(total / *n as f64);
+            }
+        }
+        let verdicts = self
+            .store
+            .recent_events(
+                EventFilter {
+                    project_id,
+                    tags: vec![orchestra_core::events::EventTag::ReviewVerdict],
+                    ..Default::default()
+                },
+                10_000,
+            )
+            .await
+            .map_err(internal)?;
+        let mut first: HashMap<TicketId, (u32, bool)> = HashMap::new();
+        let mut rounds = 0;
+        for e in &verdicts {
+            let (Some(ticket), EventKind::ReviewVerdict { round, verdict, .. }) = (e.ticket_id, &e.kind) else {
+                continue;
+            };
+            if !verdict.is_ready() {
+                rounds += 1;
+            }
+            let slot = first.entry(ticket).or_insert((*round, verdict.is_ready()));
+            if *round < slot.0 {
+                *slot = (*round, verdict.is_ready());
+            }
+        }
+        let stats = TeamStats {
+            roles: by_role.into_values().collect(),
+            reviewed: first.len() as u32,
+            first_pass: first.values().filter(|(r, ready)| *r <= 1 && *ready).count() as u32,
+            correction_rounds: rounds,
+        };
+        Ok(Reply::Stats { stats: Box::new(stats) })
     }
 
     /// The ticket's branch against the default branch. Read from the main
@@ -2104,6 +2182,56 @@ mod tests {
         // The fixture's project lives at /tmp/depot, which does not exist.
         let err = daemon.plan_ticket(ticket.id).await.unwrap_err();
         assert!(err.message.contains("introuvable") && err.message.contains("/tmp/depot"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn the_team_record_counts_first_passes_rounds_and_runs() {
+        use orchestra_core::model::Effort;
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Review).await;
+        let agent = |role: &str, status| Agent {
+            id: Uuid::new_v4(),
+            ticket_id: ticket.id,
+            project_id: ticket.project_id,
+            role: role.into(),
+            objective: String::new(),
+            stage: 0,
+            session_id: Uuid::new_v4(),
+            model: "sonnet".into(),
+            effort: Effort::Medium,
+            max_budget_usd: None,
+            status,
+            exit_reason: None,
+            pid: None,
+            pane_id: None,
+            attempt: 1,
+            handoff: None,
+            started_at: None,
+            ended_at: None,
+        };
+        for a in [
+            agent("backend", AgentStatus::Done),
+            agent("backend", AgentStatus::Failed),
+            agent(orchestra_core::model::ORCHESTRATOR_ROLE, AgentStatus::Done),
+        ] {
+            daemon.store.insert_agent(a).await.unwrap();
+        }
+        // Blocked at the first round, cleared at the second.
+        let verdict = |round, verdict| {
+            NewEvent::new(EventKind::ReviewVerdict { round, verdict, blocking: vec![], roles: vec![] })
+                .project(ticket.project_id)
+                .ticket(ticket.id)
+        };
+        daemon.bus.publish(verdict(1, Verdict::Changes)).await.unwrap();
+        daemon.bus.publish(verdict(2, Verdict::Ready)).await.unwrap();
+
+        let Reply::Stats { stats } = daemon.get_stats(None).await.unwrap() else {
+            panic!("réponse inattendue");
+        };
+        assert_eq!((stats.reviewed, stats.first_pass, stats.correction_rounds), (1, 0, 1));
+        assert_eq!(stats.first_pass_pct(), Some(0));
+        assert_eq!(stats.roles.len(), 1, "l'orchestrateur n'est pas un rôle de l'équipe");
+        let backend = &stats.roles[0];
+        assert_eq!((backend.runs, backend.done, backend.failed), (2, 1, 1));
     }
 
     async fn record_verdict(daemon: &Daemon, ticket: &Ticket, verdict: Verdict) {

@@ -87,6 +87,11 @@ worktree n'a pas pu être préparé, le ticket restant alors prêt à lancer).
 |"effort"|"budget","value":…}`, `null` pour revenir au défaut) réécrit la ligne
 voulue de l'entête du rôle et publie `role_updated`.
 
+`get_stats` (`project_id` facultatif) répond `{"reply":"stats","stats":{roles:[{role,
+model, runs, done, failed, avg_cost_usd}], reviewed, first_pass,
+correction_rounds}}` : le bilan de l'équipe, lu dans les agents, leurs coûts et les
+verdicts. L'orchestrateur et la rétrospective n'y figurent pas.
+
 `move_project` (`project_id`, `path`) fait suivre à un projet son dépôt déplacé :
 tickets, coûts et épopées restent attachés, les worktrees sont réparés (`git
 worktree repair`), et l'événement `project_moved` (`name`, `from`, `to`) suit. Refusé

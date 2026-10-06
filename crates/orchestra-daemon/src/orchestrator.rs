@@ -25,6 +25,7 @@ use crate::worker::translate::{self, Scope};
 /// The orchestrator's own instructions, shipped with the binary.
 const ORCHESTRATOR_PROMPT: &str = include_str!("../../../assets/roles/_orchestrator.md");
 const SPLITTER_PROMPT: &str = include_str!("../../../assets/roles/_splitter.md");
+const RETRO_PROMPT: &str = include_str!("../../../assets/roles/_retro.md");
 
 /// What planning produced.
 #[derive(Debug, Clone)]
@@ -234,6 +235,63 @@ pub async fn split(
         result.text.as_deref(),
     )?;
     Ok(proposal)
+}
+
+/// The retrospective of a ticket: one read-only turn on a cheap model,
+/// whose answer is a handful of `PROPOSITION` blocks. Its cost lands on the
+/// ticket, through an agent row of its own.
+#[allow(clippy::too_many_arguments)]
+pub async fn retrospect(
+    ticket: &Ticket,
+    project: &Project,
+    cfg: &Config,
+    cache_dir: &Path,
+    bus: &EventBus,
+    ledger: &UsageLedger,
+    prompt: String,
+    worktree: &Path,
+) -> Result<String> {
+    let session_id = Uuid::new_v4();
+    let mut agent = pseudo_agent(ticket, project, cfg, session_id);
+    agent.role = "rétrospective".into();
+    agent.objective = format!("tirer les leçons du ticket #{}", ticket.number);
+    agent.model = cfg.retro.model.clone();
+    agent.max_budget_usd = cfg.retro.max_budget_usd;
+    bus.store()
+        .insert_agent(agent.clone())
+        .await
+        .context("enregistrement de la rétrospective")?;
+    let prompt_file = write_prompt_file(cache_dir, "_retro", RETRO_PROMPT)
+        .context("écriture de la consigne de rétrospective")?;
+
+    let mut cmd = ClaudeCommand::new(&cfg.daemon.claude_bin, worktree, prompt);
+    cmd.session_id = Some(session_id);
+    cmd.name = Some(format!("[{}] rétrospective #{}", project.name, ticket.number));
+    cmd.model = Some(cfg.retro.model.clone()).filter(|m| !m.trim().is_empty());
+    cmd.allowed_tools = vec!["Read".into(), "Glob".into(), "Grep".into()];
+    cmd.disallowed_tools = vec!["Bash".into(), "Edit".into(), "Write".into(), "WebFetch".into(), "WebSearch".into(), "Task".into()];
+    cmd.append_system_prompt_file = Some(prompt_file);
+    cmd.max_budget_usd = cfg.retro.max_budget_usd;
+    cmd.max_turns = Some(20);
+    cmd.one_shot = true;
+
+    let scope = Scope {
+        agent_id: Some(agent.id),
+        ticket_id: Some(ticket.id),
+        project_id: Some(project.id),
+        session_id,
+    };
+    match run(&cmd, &scope, bus, ledger, &agent).await {
+        Ok(result) => {
+            let text = result.text.unwrap_or_default();
+            finish_agent(bus, &agent, AgentStatus::Done, Some(text.clone())).await;
+            Ok(text)
+        }
+        Err(e) => {
+            finish_agent(bus, &agent, AgentStatus::Failed, None).await;
+            Err(e)
+        }
+    }
 }
 
 /// What the planning run returned.

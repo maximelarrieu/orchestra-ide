@@ -995,7 +995,51 @@ impl Supervisor {
             TicketStatus::Review
         };
         self.finish_ticket(&ticket, final_status).await;
+        // On its own task: the ticket is already the user's, a retrospective
+        // only adds proposals they may or may not accept.
+        if self.cfg.retro.enabled {
+            let me = self.clone();
+            tokio::spawn(async move { me.retrospect(&ticket, &project, &worktree_path).await });
+        }
         Ok(())
+    }
+
+    /// Ask for the lessons of a ticket that met friction, and record them as
+    /// proposals (rule 16: nothing applies before the user accepts).
+    async fn retrospect(&self, ticket: &Ticket, project: &Project, worktree_path: &Path) {
+        let events = self
+            .store
+            .recent_events(orchestra_core::events::EventFilter::for_ticket(ticket.id), 2000)
+            .await
+            .unwrap_or_default();
+        let frictions = frictions(&events);
+        if frictions.is_empty() {
+            return;
+        }
+        let notes = std::fs::read_to_string(worktree_path.join(worktree::NOTES_FILE)).unwrap_or_default();
+        let book = crate::rules::book(&self.conventions_dir, Some(project));
+        let in_force: Vec<String> = book
+            .rules
+            .iter()
+            .filter(|r| r.status == orchestra_core::conventions::RuleStatus::Accepted)
+            .map(|r| format!("- {}", r.title))
+            .collect();
+        let prompt = retro_prompt(ticket, &frictions, &notes, &in_force);
+        match crate::orchestrator::retrospect(
+            ticket,
+            project,
+            &self.cfg,
+            &self.cache_dir,
+            &self.bus,
+            &self.ledger,
+            prompt,
+            worktree_path,
+        )
+        .await
+        {
+            Ok(text) => self.record_proposals(ticket, project, "rétrospective", &text).await,
+            Err(e) => tracing::warn!("rétrospective du ticket #{} : {e:#}", ticket.number),
+        }
     }
 
     /// Run one member, and fold its handoff into the ticket's memory.
@@ -2640,6 +2684,63 @@ impl Supervisor {
     }
 }
 
+/// What went less than smoothly on a ticket, read from its events: blocking
+/// points of the relecture, red checks, what the user had to say, refusals of
+/// the guard, silences. Empty for a smooth ticket.
+fn frictions(events: &[orchestra_core::events::Event]) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in events {
+        match &e.kind {
+            EventKind::ReviewVerdict { blocking, round, .. } => {
+                for b in blocking {
+                    out.push(format!("relecture, tour {round} : {b}"));
+                }
+            }
+            EventKind::CheckFinished { run, .. } if !run.ok => {
+                out.push(format!("vérification en échec : {}", run.label_fr()));
+            }
+            EventKind::AgentSteered { text, hard, .. } => {
+                let how = if *hard { "redirection" } else { "consigne" };
+                out.push(format!("{how} de l'humain en cours de route : {text}"));
+            }
+            EventKind::HookBlocked { tool, reason } => {
+                out.push(format!("garde-fou, {tool} refusé : {reason}"));
+            }
+            EventKind::AgentStalled { silent_secs } => {
+                out.push(format!("un agent est resté muet {} min", silent_secs / 60));
+            }
+            _ => {}
+        }
+    }
+    out.dedup();
+    out
+}
+
+/// What the retrospective reads.
+fn retro_prompt(ticket: &Ticket, frictions: &[String], notes: &str, in_force: &[String]) -> String {
+    let mut out = format!(
+        "# Rétrospective du ticket #{} — {}\n\n## Brief\n\n{}\n\n## Les frictions\n\n",
+        ticket.number,
+        ticket.title,
+        ticket.brief.trim()
+    );
+    for f in frictions.iter().take(60) {
+        out.push_str(&format!("- {}\n", orchestra_core::claude::stream::truncate(f, 400)));
+    }
+    if !notes.trim().is_empty() {
+        let capped = orchestra_core::claude::stream::truncate(notes.trim(), 20_000);
+        out.push_str(&format!("\n## Les notes de l'équipe\n\n{capped}\n"));
+    }
+    out.push_str("\n## Conventions déjà en vigueur — ne les repropose pas\n\n");
+    if in_force.is_empty() {
+        out.push_str("Aucune.\n");
+    } else {
+        out.push_str(&in_force.join("\n"));
+        out.push('\n');
+    }
+    out
+}
+
 /// The branch's files, for the reviewer to hold against the ticket: a file
 /// changed for no reason the brief or the criteria give is a finding.
 fn scope_appendix(diff: &orchestra_core::protocol::TicketDiff) -> String {
@@ -3369,6 +3470,32 @@ mod tests {
         assert!(text.contains("point bloquant"));
         let empty = TicketDiff { files: vec![], ..diff };
         assert!(scope_appendix(&empty).contains("aucun changement"));
+    }
+
+    #[test]
+    fn a_retrospective_reads_only_what_went_wrong() {
+        use orchestra_core::events::{Event, NewEvent};
+        let ev = |kind| Event::from_new(1, NewEvent::new(kind));
+        let smooth = vec![ev(EventKind::Warning { message: "x".into() })];
+        assert!(frictions(&smooth).is_empty(), "un ticket sans accroc n'appelle rien");
+
+        let rough = vec![
+            ev(EventKind::ReviewVerdict {
+                round: 1,
+                verdict: orchestra_core::review::Verdict::Changes,
+                blocking: vec!["backend : la pagination boucle".into()],
+                roles: vec![],
+            }),
+            ev(EventKind::AgentSteered { text: "utilise sqlx".into(), by: "user".into(), hard: true }),
+            ev(EventKind::HookBlocked { tool: "Bash".into(), reason: "git push".into() }),
+        ];
+        let f = frictions(&rough);
+        assert_eq!(f.len(), 3);
+        assert!(f[0].contains("la pagination boucle"));
+        assert!(f[1].starts_with("redirection"));
+        let prompt = retro_prompt(&ticket(), &f, "## backend\nfait", &["- Paginer les listes".into()]);
+        assert!(prompt.contains("## Les frictions") && prompt.contains("## backend"));
+        assert!(prompt.contains("ne les repropose pas") && prompt.contains("Paginer les listes"));
     }
 
     #[test]

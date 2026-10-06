@@ -24,6 +24,7 @@ pub struct Config {
     pub zellij: ZellijConfig,
     pub notify: NotifyConfig,
     pub epic: EpicConfig,
+    pub retro: RetroConfig,
     /// MCP servers a role may name in its `mcp:` list, as Claude Code's
     /// `mcpServers` describes them (`command`, `args`, `env`, or `type` and
     /// `url`). Agents get none they are not given.
@@ -51,6 +52,7 @@ impl Default for Config {
             zellij: ZellijConfig::default(),
             notify: NotifyConfig::default(),
             epic: EpicConfig::default(),
+            retro: RetroConfig::default(),
             mcp_servers: Default::default(),
             models: ModelsConfig::default(),
             pricing: PriceTable::defaults(),
@@ -287,6 +289,29 @@ pub struct EpicConfig {
 impl Default for EpicConfig {
     fn default() -> Self {
         EpicConfig { auto_plan: true }
+    }
+}
+
+/// The retrospective after a ticket that met friction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetroConfig {
+    /// Run it when a ticket ends after a blocking verdict, a red check, a
+    /// redirection or a refusal. A smooth ticket teaches nothing and costs
+    /// nothing.
+    pub enabled: bool,
+    /// A cheap model is enough to read a few frictions.
+    pub model: String,
+    pub max_budget_usd: Option<f64>,
+}
+
+impl Default for RetroConfig {
+    fn default() -> Self {
+        RetroConfig {
+            enabled: true,
+            model: "haiku".into(),
+            max_budget_usd: Some(0.5),
+        }
     }
 }
 
