@@ -196,6 +196,14 @@ impl Supervisor {
             }
         };
 
+        // The notes are written once: a relaunch finds what the agents added.
+        let notes = worktree_path.join(worktree::NOTES_FILE);
+        if !notes.exists() {
+            if let Err(e) = std::fs::write(&notes, ticket_notes(&ticket, &team)) {
+                tracing::warn!("notes du ticket non écrites : {e}");
+            }
+        }
+
         let from = ticket.status;
         ticket.branch = Some(branch);
         ticket.worktree_path = Some(worktree_path.clone());
@@ -2689,9 +2697,11 @@ pub fn redirect_prompt(text: &str, member: &orchestra_core::model::TeamMember) -
 /// the new objective — the blocking points, the second look — is sent.
 pub fn rerun_prompt(member: &orchestra_core::model::TeamMember, worktree: &Path) -> String {
     format!(
-        "Nouveau tour sur ce même ticket.\n\n{}\n\nTu travailles toujours dans `{}`.",
+        "Nouveau tour sur ce même ticket.\n\n{}\n\nTu travailles toujours dans `{}`. \
+         Complète ta section de `{}` avant ton résumé.",
         member.objective.trim(),
-        worktree.display()
+        worktree.display(),
+        worktree::NOTES_FILE
     )
 }
 
@@ -2879,6 +2889,47 @@ pub fn build_prompt(
          ticket : tout ce que tu écris doit y rester.\n",
         worktree.display()
     ));
+    out.push_str(&notes_instructions(&member.role));
+    out
+}
+
+/// The shared notes, as each agent is told about them. The handoffs above are
+/// summaries; the notes are where the plan and the decisions live in full.
+fn notes_instructions(role: &str) -> String {
+    format!(
+        "\n## Les notes du ticket\n\n`{file}`, à la racine de ton worktree, est la mémoire \
+         de l'équipe sur ce ticket : le brief, l'équipe et ses critères, puis ce que chaque \
+         rôle y a laissé. Lis-le avant de commencer. Avant ton résumé final, ajoute-y une \
+         section `## {role}` : ce que tu as fait et où, les décisions prises et pourquoi, ce \
+         qui reste. Ne réécris pas les sections des autres. Ce fichier n'est jamais commité.\n",
+        file = worktree::NOTES_FILE
+    )
+}
+
+/// The notes a ticket starts with: what everyone needs before writing a line.
+pub fn ticket_notes(ticket: &Ticket, team: &Team) -> String {
+    let mut out = format!(
+        "# Ticket #{} — {}\n\n## Brief\n\n{}\n\n## Équipe\n",
+        ticket.number,
+        ticket.title,
+        ticket.brief.trim()
+    );
+    for (stage, m) in team.ordered() {
+        out.push_str(&format!("\n### {} (étape {})\n\n{}\n", m.role, stage + 1, m.objective.trim()));
+        if !m.acceptance.is_empty() {
+            out.push_str("\nFini quand :\n");
+            for c in &m.acceptance {
+                out.push_str(&format!("- [ ] {}\n", c.trim()));
+            }
+        }
+    }
+    if let Some(risks) = ticket.proposal.as_ref().map(|p| &p.risks).filter(|r| !r.is_empty()) {
+        out.push_str("\n## Points d'attention\n\n");
+        for r in risks {
+            out.push_str(&format!("- {}\n", r.trim()));
+        }
+    }
+    out.push_str("\n---\n\nChaque rôle ajoute sa section ci-dessous.\n");
     out
 }
 
@@ -3235,6 +3286,28 @@ mod tests {
             mcp_config(&["context7".into(), "inconnu".into()], &servers),
             Err(vec!["inconnu".to_string()])
         );
+    }
+
+    #[test]
+    fn the_notes_start_with_the_brief_the_team_and_what_done_means() {
+        let mut t = ticket();
+        t.proposal = Some(orchestra_core::model::TeamProposal {
+            summary: "s".into(),
+            members: vec![],
+            risks: vec!["rows.rs a deux appelants".into()],
+            estimated_size: orchestra_core::model::Size::S,
+        });
+        let mut backend = member("backend");
+        backend.acceptance = vec!["cargo test cache passe".into()];
+        let team = Team { members: vec![backend, member("reviewer")], stages: vec![vec!["backend".into()], vec!["reviewer".into()]] };
+        let notes = ticket_notes(&t, &team);
+        assert!(notes.starts_with("# Ticket #7 — Ajouter un cache"));
+        assert!(notes.contains("### backend (étape 1)"));
+        assert!(notes.contains("- [ ] cargo test cache passe"));
+        assert!(notes.contains("rows.rs a deux appelants"));
+        // And every agent is told to read and add to them.
+        let prompt = build_prompt(&t, &member("backend"), Path::new("/wt"), &[], &[], Blocked::Review);
+        assert!(prompt.contains(worktree::NOTES_FILE) && prompt.contains("## backend"));
     }
 
     #[test]

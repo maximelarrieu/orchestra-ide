@@ -56,6 +56,7 @@ pub fn plan_for(
 /// its worktree and its branch exactly as the previous run left them.
 pub fn ensure(project: &Project, plan: &Worktree) -> Result<Worktree> {
     if plan.path.join(".git").exists() {
+        exclude_notes(&project.path)?;
         return Ok(plan.clone());
     }
     if plan.path.exists() {
@@ -101,7 +102,37 @@ pub fn ensure(project: &Project, plan: &Worktree) -> Result<Worktree> {
             plan.branch
         )
     })?;
+    exclude_notes(&project.path)?;
     Ok(plan.clone())
+}
+
+/// The ticket's shared notes, at the root of its worktree: the brief, the
+/// team, and what each agent noted for the next. Never committed.
+pub const NOTES_FILE: &str = ".orchestra-ticket.md";
+
+/// Keep the notes out of every commit. Listed in the repository's own
+/// `info/exclude` — shared by all its worktrees, and not a tracked file the
+/// user would see change.
+pub fn exclude_notes(repo: &Path) -> Result<()> {
+    let common = git(repo, &["rev-parse".into(), "--git-common-dir".into()])?;
+    let common = PathBuf::from(common);
+    let common = if common.is_absolute() { common } else { repo.join(common) };
+    let info = common.join("info");
+    std::fs::create_dir_all(&info).with_context(|| format!("création de {}", info.display()))?;
+    let exclude = info.join("exclude");
+    let line = format!("/{NOTES_FILE}");
+    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if current.lines().any(|l| l.trim() == line) {
+        return Ok(());
+    }
+    let mut out = current;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("# Orchestra : les notes de ticket ne sont jamais commitées.\n");
+    out.push_str(&line);
+    out.push('\n');
+    std::fs::write(&exclude, out).with_context(|| format!("écriture de {}", exclude.display()))
 }
 
 /// Give an empty repository its first commit, so its default branch exists.
@@ -631,6 +662,22 @@ mod tests {
         assert!(d.patch.contains("+ligne 2"));
         assert!(!d.patch.contains("ailleurs"), "base...branche, pas base..branche");
         assert!(!d.truncated);
+    }
+
+    #[test]
+    fn the_ticket_notes_are_never_committed() {
+        let f = fixture();
+        let plan = plan_for(&f.project, &ticket(1, "cache"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        std::fs::write(wt.path.join(NOTES_FILE), "## backend\nfait").unwrap();
+        let status = git(&wt.path, &["status".into(), "--porcelain".into()]).unwrap();
+        assert!(status.is_empty(), "les notes n'apparaissent pas : {status}");
+        // A second worktree, a second call: the line is not repeated.
+        let plan2 = plan_for(&f.project, &ticket(2, "autre"), &f.worktrees, "orch/");
+        ensure(&f.project, &plan2).unwrap();
+        let common = f.project.path.join(".git/info/exclude");
+        let exclude = std::fs::read_to_string(common).unwrap();
+        assert_eq!(exclude.matches(NOTES_FILE).count(), 1, "{exclude}");
     }
 
     #[test]

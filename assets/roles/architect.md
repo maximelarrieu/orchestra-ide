@@ -14,7 +14,8 @@ déjà présents, les utilitaires réutilisables, les conventions du projet. Une
 solution qui ressemble au reste du code vaut mieux qu'une solution élégante qui
 détonne.
 
-Tu livres un plan court dans `docs/` ou dans le ticket, et les interfaces
+Tu livres un plan court dans la section `## architect` de `.orchestra-ticket.md`
+(les notes du ticket, que toute l'équipe lit, jamais commitées), et les interfaces
 nécessaires : signatures, types, schéma de données, découpage des fichiers.
 Tu peux créer des fichiers avec les types et les signatures, laissés en `todo!()`
 ou équivalent.

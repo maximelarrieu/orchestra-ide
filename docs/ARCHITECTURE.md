@@ -103,6 +103,11 @@ toucher au disque ni au réseau.
   d'un refus dans le flux.
 - `checks.rs` — les vérifications du dépôt, lancées par le daemon dans le
   worktree : quelles commandes, et ce qu'elles ont rendu.
+- Les notes de ticket (`.orchestra-ticket.md`, `worktree::NOTES_FILE`) sont la
+  mémoire de l'équipe sur un ticket : écrites au lancement (brief, équipe, critères,
+  points d'attention), lues et complétées par chaque agent, exclues de git par
+  `info/exclude` du dépôt — jamais commitées. Les passages de relais en restent le
+  résumé ; le plan et les décisions vivent là, en entier.
 - `daemon/epics.rs` — les commandes des épopées ; `epic_flow.rs` les fait avancer :
   à la fusion d'un ticket, ceux qu'il libère sont planifiés (`epic.auto_plan`, une
   proposition seulement), et l'épopée se termine avec son dernier ticket. Le lien
