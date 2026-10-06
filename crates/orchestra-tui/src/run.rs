@@ -180,15 +180,33 @@ pub async fn run(socket: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Hand the terminal to `$VISUAL` / `$EDITOR` (then `vi`) on one file, and
-/// take it back whatever happens. The daemon keeps running meanwhile; its
-/// events are simply read once the screen is back.
+/// The editor to open a file in: `$ORCHESTRA_EDITOR`, `$VISUAL`, `$EDITOR`
+/// — the first that is set and not empty — then nano when it is installed,
+/// and `vi` last.
+///
+/// nano before vi: on a stock Debian or Ubuntu, `vi` is vim.tiny in
+/// compatible mode, where the arrow keys type letters into the file. Someone
+/// who never chose an editor should not land there.
+fn choose_editor(var: impl Fn(&str) -> Option<String>, installed: impl Fn(&str) -> bool) -> String {
+    ["ORCHESTRA_EDITOR", "VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|name| var(name))
+        .find(|e| !e.trim().is_empty())
+        .unwrap_or_else(|| if installed("nano") { "nano".into() } else { "vi".into() })
+}
+
+/// Whether `program` is an executable somewhere on `$PATH`.
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
+    })
+}
+
+/// Hand the terminal to an editor (`choose_editor`) on one file, and take it
+/// back whatever happens. The daemon keeps running meanwhile; its events are
+/// simply read once the screen is back.
 async fn edit(guard: &mut TerminalGuard, path: &Path) -> std::result::Result<(), String> {
-    let editor = std::env::var("VISUAL")
-        .ok()
-        .or_else(|| std::env::var("EDITOR").ok())
-        .filter(|e| !e.trim().is_empty())
-        .unwrap_or_else(|| "vi".into());
+    let editor = choose_editor(|name| std::env::var(name).ok(), on_path);
     // `code -w`, `emacsclient -t`: a program and its flags, no shell.
     let mut words = editor.split_whitespace();
     let program = words.next().unwrap_or("vi").to_string();
@@ -264,5 +282,33 @@ fn dispatch(
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> =
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        move |name| map.get(name).cloned()
+    }
+
+    #[test]
+    fn without_a_chosen_editor_nano_comes_before_vi() {
+        assert_eq!(choose_editor(env(&[]), |p| p == "nano"), "nano");
+        assert_eq!(choose_editor(env(&[]), |_| false), "vi", "vi en dernier recours");
+    }
+
+    #[test]
+    fn a_chosen_editor_wins_and_orchestra_s_own_first() {
+        let both = env(&[("EDITOR", "vim"), ("ORCHESTRA_EDITOR", "nano -l")]);
+        assert_eq!(choose_editor(both, |_| true), "nano -l");
+        assert_eq!(choose_editor(env(&[("EDITOR", "hx")]), |_| true), "hx");
+        // An empty variable is not a choice: the next one is read.
+        let empty = env(&[("VISUAL", " "), ("EDITOR", "micro")]);
+        assert_eq!(choose_editor(empty, |_| true), "micro");
     }
 }
