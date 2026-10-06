@@ -24,6 +24,11 @@ pub struct Config {
     pub zellij: ZellijConfig,
     pub notify: NotifyConfig,
     pub epic: EpicConfig,
+    /// MCP servers a role may name in its `mcp:` list, as Claude Code's
+    /// `mcpServers` describes them (`command`, `args`, `env`, or `type` and
+    /// `url`). Agents get none they are not given.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub mcp_servers: std::collections::BTreeMap<String, serde_json::Value>,
     pub models: ModelsConfig,
     pub pricing: PriceTable,
 }
@@ -46,6 +51,7 @@ impl Default for Config {
             zellij: ZellijConfig::default(),
             notify: NotifyConfig::default(),
             epic: EpicConfig::default(),
+            mcp_servers: Default::default(),
             models: ModelsConfig::default(),
             pricing: PriceTable::defaults(),
         }

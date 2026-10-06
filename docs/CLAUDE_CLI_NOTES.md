@@ -141,6 +141,11 @@ Les plugins qui restent sont ceux livrés ou imposés par l'administration (`man
 le garde d'Orchestra n'en dépend pas. `ClaudeCommand::isolated`, vrai par défaut,
 pose les deux drapeaux pour l'orchestrateur comme pour les agents.
 
+`--mcp-config '<json>'` reste lu sous `--strict-mcp-config` : un serveur passé en
+JSON en ligne apparaît dans `system/init` avec `"source":"dynamic"`. C'est ainsi qu'un
+rôle reçoit les seuls serveurs que son entête nomme (`mcp: [...]`), pris dans
+`[mcp_servers]` de `config.toml`.
+
 Écartés : `--bare` coupe aussi l'OAuth (seul `ANTHROPIC_API_KEY` reste),
 `--restricted` refuse `bypassPermissions` et retire Bash, `--safe-mode` désactive
 tous les hooks, garde compris.

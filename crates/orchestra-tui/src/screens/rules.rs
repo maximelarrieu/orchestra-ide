@@ -368,6 +368,8 @@ mod tests {
             disallowed_tools: vec![],
             max_budget_usd: None,
             subagents: None,
+            mcp: vec![],
+            max_turns: None,
             tags: vec![],
             git: Some(git),
             system_prompt: format!("Tu es {name}."),

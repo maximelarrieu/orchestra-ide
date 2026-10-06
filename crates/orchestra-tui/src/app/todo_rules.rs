@@ -85,8 +85,40 @@ impl App {
         let project_id = self.selected_project().map(|p| p.id);
         let (name, scope, source) = (r.name.clone(), r.scope, r.source.clone());
         let git = r.git.unwrap_or_default();
+        use orchestra_core::roles::RoleSetting;
         match c {
             'e' => self.edit_request = Some(source),
+            // Settings cycle through a few values and back to the default:
+            // no editor, and the file keeps everything else as written.
+            'm' => {
+                let next = next_in(&role_models(&self.model_aliases), r.model.as_deref());
+                self.outbox.push(Command::SetRoleSetting {
+                    project_id,
+                    name,
+                    setting: RoleSetting::Model(next),
+                });
+            }
+            'E' => {
+                let efforts: Vec<String> =
+                    orchestra_core::model::Effort::ALL.iter().map(|e| e.as_str().to_string()).collect();
+                let next = next_in(&efforts, r.effort.map(|e| e.as_str()))
+                    .and_then(|s| orchestra_core::model::Effort::ALL.into_iter().find(|e| e.as_str() == s));
+                self.outbox.push(Command::SetRoleSetting {
+                    project_id,
+                    name,
+                    setting: RoleSetting::Effort(next),
+                });
+            }
+            'b' => {
+                let budgets: Vec<String> = ["1", "2", "5", "10"].iter().map(|s| s.to_string()).collect();
+                let current = r.max_budget_usd.map(|b| format!("{b}"));
+                let next = next_in(&budgets, current.as_deref()).and_then(|s| s.parse().ok());
+                self.outbox.push(Command::SetRoleSetting {
+                    project_id,
+                    name,
+                    setting: RoleSetting::Budget(next),
+                });
+            }
             // Opening git is outward-facing — a push leaves the machine — so it
             // is asked; closing it takes nothing away that cannot be given back.
             'p' => match git {
@@ -156,5 +188,38 @@ impl App {
         self.form_field = TicketField::Title;
         self.promoting_todo = Some(id);
         self.screen = Screen::NewTicket;
+    }
+}
+
+/// The models a role can be given: the configured aliases, or the usual three.
+fn role_models(aliases: &[String]) -> Vec<String> {
+    if aliases.is_empty() {
+        vec!["haiku".into(), "sonnet".into(), "opus".into()]
+    } else {
+        aliases.to_vec()
+    }
+}
+
+/// The value after `current` in `values`, the default (`None`) after the
+/// last, and the first after the default.
+fn next_in(values: &[String], current: Option<&str>) -> Option<String> {
+    match current.and_then(|c| values.iter().position(|v| v == c)) {
+        None if current.is_some() => None,
+        None => values.first().cloned(),
+        Some(i) => values.get(i + 1).cloned(),
+    }
+}
+
+#[cfg(test)]
+mod setting_tests {
+    use super::*;
+
+    #[test]
+    fn a_setting_walks_its_values_then_returns_to_the_default() {
+        let models = role_models(&[]);
+        assert_eq!(next_in(&models, None).as_deref(), Some("haiku"));
+        assert_eq!(next_in(&models, Some("haiku")).as_deref(), Some("sonnet"));
+        assert_eq!(next_in(&models, Some("opus")), None, "après le dernier : défaut");
+        assert_eq!(next_in(&models, Some("claude-x")), None, "une valeur inconnue revient au défaut");
     }
 }

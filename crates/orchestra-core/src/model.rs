@@ -912,6 +912,14 @@ pub struct RoleDefinition {
     /// Inline subagent definitions passed to `claude --agents`.
     #[serde(default)]
     pub subagents: Option<serde_json::Value>,
+    /// MCP servers this role may use, by name, among those `config.toml`
+    /// defines under `[mcp_servers]`. Agents get none otherwise: they run
+    /// isolated from the user's own setup.
+    #[serde(default)]
+    pub mcp: Vec<String>,
+    /// `--max-turns` for this role, over `defaults.max_turns`.
+    #[serde(default)]
+    pub max_turns: Option<u32>,
     #[serde(default)]
     pub tags: Vec<String>,
     /// What git the role gets, when its file says. Unsaid, see

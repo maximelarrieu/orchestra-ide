@@ -114,6 +114,18 @@ attention = false
 [epic]
 auto_plan = true
 
+# Serveurs MCP qu'un rôle peut demander dans son entête (`mcp: [nom, …]`). Les
+# agents tournent isolés de ta configuration : ils n'ont que ceux-là. Même forme
+# que les `mcpServers` de Claude Code.
+#
+# [mcp_servers.context7]
+# command = "npx"
+# args = ["-y", "@upstash/context7-mcp"]
+#
+# [mcp_servers.playwright]
+# command = "npx"
+# args = ["@playwright/mcp@latest"]
+
 [models]
 aliases = [
     "fable",

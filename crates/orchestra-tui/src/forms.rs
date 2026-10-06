@@ -351,6 +351,8 @@ mod tests {
             disallowed_tools: vec![],
             max_budget_usd: None,
             subagents: None,
+            mcp: vec![],
+            max_turns: None,
             tags: vec![],
             git: None,
             system_prompt: "consigne".into(),

@@ -56,6 +56,8 @@ pub struct ClaudeCommand {
     /// chose. The daemon's guard still applies, since `--settings` is loaded
     /// whatever the sources.
     pub isolated: bool,
+    /// `--mcp-config` as inline JSON: the only servers an isolated run gets.
+    pub mcp_config: Option<String>,
     pub env: Vec<(String, String)>,
     /// Close stdin as soon as the prompt is written.
     ///
@@ -88,6 +90,7 @@ impl ClaudeCommand {
             settings_json: None,
             agents_json: None,
             isolated: true,
+            mcp_config: None,
             env: Vec::new(),
             one_shot: false,
         }
@@ -176,6 +179,12 @@ impl ClaudeCommand {
             a.push("--setting-sources".into());
             a.push("project".into());
             a.push("--strict-mcp-config".into());
+        }
+        if let Some(mcp) = &self.mcp_config {
+            // Honoured under --strict-mcp-config (2.1.289): these servers and
+            // no other. See CLAUDE_CLI_NOTES.md.
+            a.push("--mcp-config".into());
+            a.push(mcp.clone());
         }
         a
     }

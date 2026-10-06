@@ -1967,7 +1967,28 @@ impl Supervisor {
             .chain(hooks::always_disallowed(git))
             .collect();
         cmd.max_budget_usd = budget;
-        cmd.max_turns = self.cfg.defaults.max_turns;
+        cmd.max_turns = role.max_turns.or(self.cfg.defaults.max_turns);
+        match mcp_config(&role.mcp, &self.cfg.mcp_servers) {
+            Ok(config) => cmd.mcp_config = config,
+            Err(missing) => {
+                self.warn_ticket(
+                    agent.ticket_id,
+                    agent.project_id,
+                    format!(
+                        "le rôle « {} » demande {} absent(s) de [mcp_servers] : il tourne sans",
+                        role.name,
+                        missing.join(", ")
+                    ),
+                )
+                .await;
+                cmd.mcp_config = mcp_config(
+                    &role.mcp.iter().filter(|n| !missing.contains(n)).cloned().collect::<Vec<_>>(),
+                    &self.cfg.mcp_servers,
+                )
+                .ok()
+                .flatten();
+            }
+        }
         if role.name == self.cfg.review.role {
             // The verdict is read by the machine: the CLI holds the final
             // message to a schema instead of trusting a text format.
@@ -2687,6 +2708,25 @@ pub fn resume_prompt(member: &orchestra_core::model::TeamMember, worktree: &Path
     )
 }
 
+/// The `--mcp-config` JSON for the servers a role names, taken from the
+/// configuration. `None` for a role that names none; the names missing from
+/// the configuration as the error.
+fn mcp_config(
+    names: &[String],
+    servers: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> std::result::Result<Option<String>, Vec<String>> {
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let missing: Vec<String> = names.iter().filter(|n| !servers.contains_key(*n)).cloned().collect();
+    if !missing.is_empty() {
+        return Err(missing);
+    }
+    let picked: serde_json::Map<String, serde_json::Value> =
+        names.iter().map(|n| (n.clone(), servers[n].clone())).collect();
+    Ok(Some(serde_json::json!({ "mcpServers": picked }).to_string()))
+}
+
 /// What an agent hands over, from its `result` line.
 ///
 /// A structured verdict is kept in its text form, the one every reader of a
@@ -3179,6 +3219,25 @@ mod tests {
     }
 
     #[test]
+    fn a_role_gets_the_mcp_servers_it_names_and_no_other() {
+        let servers: std::collections::BTreeMap<String, serde_json::Value> = [
+            ("context7".to_string(), serde_json::json!({"command": "npx", "args": ["c7"]})),
+            ("playwright".to_string(), serde_json::json!({"command": "npx", "args": ["pw"]})),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(mcp_config(&[], &servers), Ok(None));
+        let json = mcp_config(&["context7".into()], &servers).unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["mcpServers"]["context7"]["args"][0], "c7");
+        assert!(v["mcpServers"].get("playwright").is_none(), "seulement ceux nommés");
+        assert_eq!(
+            mcp_config(&["context7".into(), "inconnu".into()], &servers),
+            Err(vec!["inconnu".to_string()])
+        );
+    }
+
+    #[test]
     fn a_structured_verdict_is_handed_over_as_text() {
         let json = r#"{"verdict":"changes","summary":"Un défaut.","changes":[{"role":"backend","detail":"la boucle"}]}"#;
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
@@ -3307,6 +3366,8 @@ mod tests {
             disallowed_tools: vec![],
             max_budget_usd: None,
             subagents: None,
+            mcp: vec![],
+            max_turns: None,
             tags: vec![],
             git: None,
             system_prompt: "consigne".into(),

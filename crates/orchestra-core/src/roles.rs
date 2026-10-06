@@ -46,6 +46,10 @@ struct Frontmatter {
     #[serde(default)]
     subagents: Option<serde_json::Value>,
     #[serde(default)]
+    mcp: Vec<String>,
+    #[serde(default)]
+    max_turns: Option<u32>,
+    #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
     git: Option<String>,
@@ -119,6 +123,8 @@ pub fn parse_role(path: &Path, src: &str, scope: RoleScope) -> Result<RoleDefini
         disallowed_tools: fm.disallowed_tools,
         max_budget_usd: fm.max_budget_usd,
         subagents: fm.subagents,
+        mcp: fm.mcp,
+        max_turns: fm.max_turns.filter(|n| *n > 0),
         tags: fm.tags,
         git,
         system_prompt: body.to_string(),
@@ -153,6 +159,43 @@ pub(crate) fn set_header_field(src: &str, key: &str, value: &str) -> Result<Stri
         new_header.push_str(&format!("\n{key}: {value}"));
     }
     Ok(format!("{}{}{}", &src[..start], new_header, &src[end..]))
+}
+
+/// Remove one top-level field from a Markdown file's frontmatter: the role
+/// falls back to the default for it. Absent already, nothing changes.
+pub(crate) fn remove_header_field(src: &str, key: &str) -> Result<String> {
+    let (header, _) = split_frontmatter(src)?;
+    let start = src
+        .find(header)
+        .ok_or_else(|| CoreError::Parse("entête introuvable".into()))?;
+    let end = start + header.len();
+    let prefix = format!("{key}:");
+    let kept: Vec<&str> = header.lines().filter(|l| !l.starts_with(&prefix)).collect();
+    Ok(format!("{}{}{}", &src[..start], kept.join("\n"), &src[end..]))
+}
+
+/// What can be set on a role without opening its file.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "setting", content = "value", rename_all = "snake_case")]
+pub enum RoleSetting {
+    /// `None`: the default model.
+    Model(Option<String>),
+    Effort(Option<Effort>),
+    Budget(Option<f64>),
+}
+
+/// A role file with one setting changed; `None` removes the line so the
+/// default applies again.
+pub fn with_setting(src: &str, setting: &RoleSetting) -> Result<String> {
+    let (key, value) = match setting {
+        RoleSetting::Model(m) => ("model", m.clone()),
+        RoleSetting::Effort(e) => ("effort", e.map(|e| e.as_str().to_string())),
+        RoleSetting::Budget(b) => ("max_budget_usd", b.map(|b| format!("{b}"))),
+    };
+    match value {
+        Some(v) => set_header_field(src, key, &v),
+        None => remove_header_field(src, key),
+    }
 }
 
 /// A role file with its git policy set to `git`.
@@ -261,6 +304,39 @@ impl Catalog {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod setting_tests {
+    use super::*;
+
+    const ROLE: &str = "---\nname: backend\ndescription: b\nmodel: sonnet\n---\nCorps.\n";
+
+    #[test]
+    fn a_setting_is_written_then_removed_and_the_body_kept() {
+        let opus = with_setting(ROLE, &RoleSetting::Model(Some("opus".into()))).unwrap();
+        let role = parse_role(Path::new("/r/backend.md"), &opus, RoleScope::Global).unwrap();
+        assert_eq!(role.model.as_deref(), Some("opus"));
+        assert!(opus.ends_with("Corps.\n"), "le corps ne bouge pas");
+
+        let default = with_setting(&opus, &RoleSetting::Model(None)).unwrap();
+        let role = parse_role(Path::new("/r/backend.md"), &default, RoleScope::Global).unwrap();
+        assert_eq!(role.model, None, "retour au modèle par défaut");
+
+        let high = with_setting(ROLE, &RoleSetting::Effort(Some(Effort::High))).unwrap();
+        let budget = with_setting(&high, &RoleSetting::Budget(Some(2.5))).unwrap();
+        let role = parse_role(Path::new("/r/backend.md"), &budget, RoleScope::Global).unwrap();
+        assert_eq!(role.effort, Some(Effort::High));
+        assert_eq!(role.max_budget_usd, Some(2.5));
+    }
+
+    #[test]
+    fn a_role_names_its_mcp_servers_and_turns() {
+        let src = "---\nname: front\nmcp: [playwright, context7]\nmax_turns: 80\n---\nx\n";
+        let role = parse_role(Path::new("/r/front.md"), src, RoleScope::Global).unwrap();
+        assert_eq!(role.mcp, vec!["playwright".to_string(), "context7".to_string()]);
+        assert_eq!(role.max_turns, Some(80));
     }
 }
 

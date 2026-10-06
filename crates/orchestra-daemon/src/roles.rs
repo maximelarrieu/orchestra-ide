@@ -70,6 +70,15 @@ pub fn set_git(path: &Path, git: GitPolicy) -> Result<()> {
     std::fs::write(path, out).with_context(|| format!("écriture de {}", path.display()))
 }
 
+/// Change one setting of a role in its file, checked by reading it back.
+pub fn set_setting(path: &Path, setting: &roles::RoleSetting) -> Result<()> {
+    let src =
+        std::fs::read_to_string(path).with_context(|| format!("lecture de {}", path.display()))?;
+    let out = roles::with_setting(&src, setting)?;
+    roles::parse_role(path, &out, RoleScope::Global)?;
+    std::fs::write(path, out).with_context(|| format!("écriture de {}", path.display()))
+}
+
 /// Move a project's role to the global catalog. Refused when a global role of
 /// that name exists: replacing it would change every other project.
 pub fn promote(roles_dir: &Path, project: &Project, name: &str) -> Result<PathBuf> {
@@ -190,5 +199,23 @@ mod tests {
             RoleScope::Global,
             "le rôle global reprend sa place"
         );
+    }
+}
+
+#[cfg(test)]
+mod setting_tests {
+    use super::*;
+
+    #[test]
+    fn a_setting_lands_in_the_file_and_a_broken_result_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("backend.md");
+        std::fs::write(&path, "---\nname: backend\ndescription: b\n---\nTu es backend.\n").unwrap();
+        set_setting(&path, &roles::RoleSetting::Model(Some("haiku".into()))).unwrap();
+        let src = std::fs::read_to_string(&path).unwrap();
+        assert!(src.contains("model: haiku"), "{src}");
+        assert!(src.ends_with("Tu es backend.\n"));
+        set_setting(&path, &roles::RoleSetting::Model(None)).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("model:"));
     }
 }

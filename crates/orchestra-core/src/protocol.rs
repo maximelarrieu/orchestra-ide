@@ -259,6 +259,13 @@ pub enum Command {
         name: String,
         git: crate::guard::GitPolicy,
     },
+    /// Change a role's model, effort or budget in its file.
+    SetRoleSetting {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+        name: String,
+        setting: crate::roles::RoleSetting,
+    },
     DeleteRole {
         #[serde(default)]
         project_id: Option<ProjectId>,

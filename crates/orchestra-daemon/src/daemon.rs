@@ -362,6 +362,11 @@ impl Daemon {
                 name,
                 git,
             } => self.set_role_git(project_id, name, git).await,
+            Command::SetRoleSetting {
+                project_id,
+                name,
+                setting,
+            } => self.set_role_setting(project_id, name, setting).await,
             Command::DeleteRole { project_id, name } => self.delete_role(project_id, name).await,
             Command::PromoteRole { project_id, name } => self.promote_role(project_id, name).await,
             Command::CreateTodo {
@@ -1174,6 +1179,34 @@ impl Daemon {
             format!("{} désormais écrit dans son fichier", git.label_fr())
         } else {
             git.label_fr().to_string()
+        };
+        self.bus
+            .publish(self.rule_event(project.as_ref(), EventKind::RoleUpdated { name, change }))
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Ack)
+    }
+
+    async fn set_role_setting(
+        &self,
+        project_id: Option<ProjectId>,
+        name: String,
+        setting: orchestra_core::roles::RoleSetting,
+    ) -> Result<Reply, ApiError> {
+        use orchestra_core::roles::RoleSetting;
+        let project = self.project_opt(project_id).await?;
+        let catalog = self.catalog_for(project.as_ref());
+        let role = crate::roles::find(&catalog, &name)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        crate::roles::set_setting(&role.source, &setting)
+            .map_err(|e| ApiError::invalid(format!("{e:#}")))?;
+        let change = match &setting {
+            RoleSetting::Model(m) => format!("modèle : {}", m.as_deref().unwrap_or("défaut")),
+            RoleSetting::Effort(e) => format!("effort : {}", e.map(|e| e.as_str()).unwrap_or("défaut")),
+            RoleSetting::Budget(b) => format!(
+                "budget : {}",
+                b.map(|b| format!("{b} $")).unwrap_or_else(|| "défaut".into())
+            ),
         };
         self.bus
             .publish(self.rule_event(project.as_ref(), EventKind::RoleUpdated { name, change }))

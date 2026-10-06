@@ -409,7 +409,18 @@ fn todo_hints(app: &App) -> Vec<Hint> {
 fn rules_hints(app: &App) -> Vec<Hint> {
     use orchestra_core::conventions::{RuleKind, RuleStatus};
     if let Some(role) = app.selected_role() {
-        let mut hints = vec![Hint::screen("e", "éditer")];
+        let mut hints = vec![
+            Hint::screen("e", "éditer"),
+            Hint::screen("m", format!("modèle : {}", role.model.as_deref().unwrap_or("défaut"))),
+            Hint::screen("E", format!("effort : {}", role.effort.map(|e| e.as_str()).unwrap_or("défaut"))),
+            Hint::screen(
+                "b",
+                format!(
+                    "budget : {}",
+                    role.max_budget_usd.map(|b| format!("{b} $")).unwrap_or_else(|| "défaut".into())
+                ),
+            ),
+        ];
         hints.push(match role.git.unwrap_or_default() {
             orchestra_core::guard::GitPolicy::Full => Hint::screen("p", "confiner git"),
             orchestra_core::guard::GitPolicy::Confined => Hint::screen("p", "ouvrir git"),
