@@ -227,6 +227,38 @@ pub enum IntegrationMode {
     Pr,
 }
 
+/// `.orchestra/integration.toml` of a project: what it overrides in
+/// `[integration]`. Read from the main repository, like the checks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectIntegration {
+    /// `false`: nothing of this project leaves the machine — no push by the
+    /// daemon, `git push` refused to every agent, `pr` read as `merge`.
+    pub push: Option<bool>,
+}
+
+impl ProjectIntegration {
+    pub fn parse(src: &str) -> Result<Self> {
+        toml::from_str(src).map_err(|e| CoreError::Config(format!(".orchestra/integration.toml : {e}")))
+    }
+}
+
+impl IntegrationConfig {
+    /// The integration as it applies to one project.
+    ///
+    /// A pull request is a push: a project closed to pushing integrates here.
+    pub fn for_project(&self, project: &ProjectIntegration) -> IntegrationConfig {
+        let mut cfg = self.clone();
+        if let Some(push) = project.push {
+            cfg.push = push;
+        }
+        if project.push == Some(false) {
+            cfg.mode = IntegrationMode::Merge;
+        }
+        cfg
+    }
+}
+
 impl IntegrationMode {
     pub fn is_pr(self) -> bool {
         matches!(self, IntegrationMode::Pr)
@@ -683,5 +715,16 @@ mod tests {
             Paths::project_roles_dir(p),
             Path::new("/home/x/proj/.orchestra/roles")
         );
+    }
+
+    #[test]
+    fn a_project_closed_to_push_integrates_locally() {
+        let global = IntegrationConfig { push: true, mode: IntegrationMode::Pr, ..Default::default() };
+        let closed = ProjectIntegration::parse("push = false").unwrap();
+        let cfg = global.for_project(&closed);
+        assert!(!cfg.push);
+        assert_eq!(cfg.mode, IntegrationMode::Merge, "une pull request est un push");
+        assert_eq!(global.for_project(&ProjectIntegration::default()), global);
+        assert!(ProjectIntegration::parse("pousser = false").is_err());
     }
 }

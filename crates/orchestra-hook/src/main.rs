@@ -27,6 +27,9 @@ const WORKTREE_VAR: &str = "ORCHESTRA_WORKTREE";
 const EXTRA_VAR: &str = "ORCHESTRA_EXTRA_DIRS";
 /// `full` for the one role whose job is git. Absent or unknown means confined.
 const GIT_VAR: &str = "ORCHESTRA_GIT";
+/// `denied` when the project closed pushing; anything else leaves it to the
+/// git policy, as before the variable existed.
+const PUSH_VAR: &str = "ORCHESTRA_PUSH";
 
 fn main() {
     // Whatever happens, a failure here must not fail the agent.
@@ -84,6 +87,7 @@ fn run() -> Verdict {
     boundary.git = std::env::var(GIT_VAR)
         .map(|v| GitPolicy::parse(&v))
         .unwrap_or_default();
+    boundary.push = std::env::var(PUSH_VAR).map_or(true, |v| v.trim() != "denied");
     if let Some(extra) = std::env::var_os(EXTRA_VAR) {
         boundary.extra = std::env::split_paths(&extra)
             .filter(|p| !p.as_os_str().is_empty())

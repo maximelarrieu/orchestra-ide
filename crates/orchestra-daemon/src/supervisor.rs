@@ -327,7 +327,7 @@ impl Supervisor {
         project: Project,
         catalog: Catalog,
     ) -> Result<()> {
-        let cfg = self.cfg.integration.clone();
+        let cfg = self.integration_for(&project);
         anyhow::ensure!(
             cfg.enabled,
             "l'intégration est désactivée dans la configuration"
@@ -416,7 +416,7 @@ impl Supervisor {
         worktree_path: PathBuf,
         branch: String,
     ) -> Result<()> {
-        let cfg = self.cfg.integration.clone();
+        let cfg = self.integration_for(&project);
         // What the team said, read back from the store: the task that held it
         // in memory ended when the ticket went to relecture.
         let past = self.store.agents_of_ticket(ticket.id).await?;
@@ -500,7 +500,7 @@ impl Supervisor {
         worktree_path: PathBuf,
         branch: String,
     ) -> Result<()> {
-        let cfg = self.cfg.integration.clone();
+        let cfg = self.integration_for(&project);
         let handoffs: Vec<(String, String)> = self
             .store
             .agents_of_ticket(ticket.id)
@@ -1197,7 +1197,7 @@ impl Supervisor {
         handoffs: &mut Vec<(String, String)>,
         stage: &mut u32,
     ) -> bool {
-        let is_pr = self.cfg.integration.mode.is_pr();
+        let is_pr = self.integration_for(project).mode.is_pr();
         let mut round = 1;
         loop {
             let book = crate::rules::book(&self.conventions_dir, Some(project));
@@ -1877,7 +1877,7 @@ impl Supervisor {
             prompt.push_str(&team_criteria(ticket, &member.role));
         }
         let rules = crate::rules::book(&self.conventions_dir, Some(project))
-            .prompt_section(&role.name, self.cfg.integration.mode.is_pr());
+            .prompt_section(&role.name, self.integration_for(project).mode.is_pr());
         // One file per agent: the rules depend on the project, and a resume
         // reads the file again, by which time another ticket may have run the
         // same role.
@@ -1928,6 +1928,7 @@ impl Supervisor {
                     resume,
                     fork,
                     git,
+                    self.integration_for(project).push,
                     &label,
                 )
                 .await?;
@@ -2004,6 +2005,8 @@ impl Supervisor {
         resume: Option<Uuid>,
         fork: bool,
         git: GitPolicy,
+        // `false` when the project closed pushing: the guard refuses it.
+        push: bool,
         // `[projet] rôle #12`: the session's name, and its pane's.
         label: &str,
     ) -> Result<AgentOutcome> {
@@ -2063,6 +2066,7 @@ impl Supervisor {
             &agent.ticket_id.to_string(),
             &[],
             git,
+            push,
         );
 
         let (mut process, mut rx) = ClaudeProcess::spawn(&cmd).await?;
@@ -2315,6 +2319,22 @@ impl Supervisor {
             role,
             &self.cfg.integration.role,
         )
+    }
+
+    /// `[integration]` as it applies to `project`, with what its
+    /// `.orchestra/integration.toml` overrides. Read from the main repository
+    /// at each use: a change there applies to the next step. A file that does
+    /// not parse is said, and the configuration applies as it is.
+    fn integration_for(&self, project: &Project) -> orchestra_core::config::IntegrationConfig {
+        use orchestra_core::config::ProjectIntegration;
+        let own = match std::fs::read_to_string(project.path.join(".orchestra/integration.toml")) {
+            Ok(src) => ProjectIntegration::parse(&src).unwrap_or_else(|e| {
+                tracing::warn!("{e} — [integration] s'applique tel quel");
+                ProjectIntegration::default()
+            }),
+            Err(_) => ProjectIntegration::default(),
+        };
+        self.cfg.integration.for_project(&own)
     }
 
     async fn warn_ticket(&self, ticket_id: TicketId, project_id: Uuid, message: String) {

@@ -125,6 +125,10 @@ pub struct Boundary {
     pub extra: Vec<PathBuf>,
     /// What this agent may do with git.
     pub git: GitPolicy,
+    /// Whether `git push` is possible at all. A project that says
+    /// `push = false` closes it even to a `git: full` role: what leaves the
+    /// machine is then the user's doing alone, whatever the prompt said.
+    pub push: bool,
     /// Whether a path named in a shell command could be written at all.
     pub reach: Reach,
 }
@@ -135,6 +139,7 @@ impl Boundary {
             worktree: worktree.into(),
             extra: Vec::new(),
             git: GitPolicy::Confined,
+            push: true,
             reach: everything_is_reachable,
         }
     }
@@ -240,7 +245,8 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
         }
     }
 
-    if let Some(invocation) = git_invocation(scanned) {
+    // Every invocation, not the first: `git status && git push` is two.
+    for invocation in git_invocations(scanned) {
         let sub = invocation[0].clone();
         // Whatever the policy, git is not a way out of the box: `-C`,
         // `--git-dir` and `--work-tree` name a directory, and a relative one is
@@ -266,6 +272,13 @@ pub fn check_command(boundary: &Boundary, command: &str) -> Verdict {
         // orients itself, and it was refused along with `worktree add`.
         let read_only =
             sub == "worktree" && invocation.get(1).is_some_and(|w| w == "list");
+        if sub == "push" && !boundary.push {
+            return Verdict::Deny(
+                "« git push » est fermé sur ce projet (.orchestra/integration.toml) : \
+                 rien ne quitte cette machine, c'est l'humain qui pousse."
+                    .into(),
+            );
+        }
         if boundary.git == GitPolicy::Confined
             && !read_only
             && FORBIDDEN_GIT.contains(&sub.as_str())
@@ -376,11 +389,12 @@ fn catastrophic(command: &str) -> Option<String> {
     None
 }
 
-/// A `git …` invocation from its subcommand on, if that is what this is.
+/// Every `git …` invocation in a command line, each from its subcommand on.
 ///
-/// The first element is the subcommand; the rest are its arguments, as far as
+/// In each, the first element is the subcommand; the rest are its arguments, as far as
 /// the tokeniser can tell.
-fn git_invocation(command: &str) -> Option<Vec<String>> {
+fn git_invocations(command: &str) -> Vec<Vec<String>> {
+    let mut found = Vec::new();
     let mut words = tokens(command).into_iter().peekable();
     while let Some(word) = words.next() {
         if word != "git" {
@@ -396,10 +410,11 @@ fn git_invocation(command: &str) -> Option<Vec<String>> {
             if next.starts_with('-') {
                 continue;
             }
-            return Some(std::iter::once(next).chain(rest).collect());
+            found.push(std::iter::once(next).chain(rest).collect());
+            break;
         }
     }
-    None
+    found
 }
 
 /// Split on whitespace, dropping quotes so a quoted path is still seen.
@@ -648,6 +663,7 @@ mod tests {
         // Options before the subcommand do not hide it.
         assert!(bash("git -C . push origin main").is_denied());
         assert!(bash("cd src && git push").is_denied());
+        assert!(bash("git status && git push").is_denied(), "pas seulement la première invocation");
         // Committing and reading history stay allowed.
         assert_eq!(bash("git log --oneline -5"), Verdict::Allow);
         assert_eq!(bash("git commit -am wip"), Verdict::Allow);
@@ -786,5 +802,16 @@ mod tests {
             check(&boundary(), "Inconnu", &json!({"x": 1})),
             Verdict::Allow
         );
+    }
+
+    #[test]
+    fn a_project_closed_to_push_refuses_it_even_to_full_git() {
+        let open = boundary().with_full_git();
+        assert!(!check_command(&open, "git push origin HEAD").is_denied());
+        let mut closed = boundary().with_full_git();
+        closed.push = false;
+        assert!(check_command(&closed, "git push origin HEAD").is_denied());
+        assert!(check_command(&closed, "git fetch && git push").is_denied());
+        assert!(!check_command(&closed, "git rebase main").is_denied(), "le reste de git full reste ouvert");
     }
 }

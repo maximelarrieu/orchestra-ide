@@ -53,6 +53,7 @@ pub fn agent_env(
     ticket_id: &str,
     extra_dirs: &[String],
     git: GitPolicy,
+    push: bool,
 ) -> Vec<(String, String)> {
     let mut env = vec![
         (
@@ -62,6 +63,10 @@ pub fn agent_env(
         ("ORCHESTRA_AGENT_ID".to_string(), agent_id.to_string()),
         ("ORCHESTRA_TICKET_ID".to_string(), ticket_id.to_string()),
         ("ORCHESTRA_GIT".to_string(), git.as_str().to_string()),
+        (
+            "ORCHESTRA_PUSH".to_string(),
+            if push { "allowed" } else { "denied" }.to_string(),
+        ),
     ];
     if !extra_dirs.is_empty() {
         env.push(("ORCHESTRA_EXTRA_DIRS".to_string(), extra_dirs.join(":")));
@@ -114,13 +119,13 @@ mod tests {
 
     #[test]
     fn only_the_integrator_carries_the_open_git_policy() {
-        let confined = agent_env(&PathBuf::from("/w"), "a", "t", &[], GitPolicy::Confined);
+        let confined = agent_env(&PathBuf::from("/w"), "a", "t", &[], GitPolicy::Confined, true);
         assert!(confined
             .iter()
             .any(|(n, v)| n == "ORCHESTRA_GIT" && v == "confined"));
         assert!(!always_disallowed(GitPolicy::Confined).is_empty());
 
-        let full = agent_env(&PathBuf::from("/w"), "a", "t", &[], GitPolicy::Full);
+        let full = agent_env(&PathBuf::from("/w"), "a", "t", &[], GitPolicy::Full, true);
         assert!(full
             .iter()
             .any(|(n, v)| n == "ORCHESTRA_GIT" && v == "full"));
@@ -157,6 +162,7 @@ mod tests {
             "ticket-1",
             &[],
             GitPolicy::Confined,
+            true,
         );
         let get = |k: &str| {
             env.iter()
@@ -174,6 +180,7 @@ mod tests {
             "t",
             &["/tmp/scratch".into(), "/tmp/autre".into()],
             GitPolicy::Confined,
+            true,
         );
         assert!(with_extra
             .iter()

@@ -78,6 +78,20 @@ que ce qui n'est pas fait pour être édité : le garde-fou ne suit pas les lien
 Une fois le ticket fini, son worktree se teste comme le dépôt :
 `cd ~/.local/share/orchestra/worktrees/<projet>/<ticket>` puis la commande habituelle.
 
+## Un projet qui ne pousse jamais
+
+`push = true` dans `[integration]` vaut pour tous les projets. Un dépôt où c'est
+toi qui pousses et ouvres les PR (un dépôt client, par exemple) le ferme dans
+`.orchestra/integration.toml`, lu dans le dépôt principal :
+
+```toml
+push = false
+```
+
+Rien de ce projet ne quitte alors la machine : le daemon ne pousse pas après la
+fusion, `git push` est refusé par le garde-fou à tout agent, même `git: full`, et
+le mode `pr` se lit comme `merge`.
+
 ## Les rôles
 
 `orchestra init` installe six rôles dans `~/.config/orchestra/roles` : architecte,
