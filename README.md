@@ -61,6 +61,23 @@ qu'ils ne puissent pas diverger.
 
 Si `orchestra-hook` n'est pas installé, les agents tournent **sans garde-fou**.
 
+## Ce que le worktree reçoit
+
+Un worktree est un checkout neuf : tout ce que git ignore y manque, et souvent
+l'application ne démarre même pas sans. Le projet liste ce qu'il faut dans
+`.orchestra/worktree.toml`, lu dans le dépôt principal :
+
+```toml
+copy = [".env.local", "dev.sh", "CLAUDE.md"]   # copiés : l'agent modifie sa copie
+link = [".venv"]                               # liés : trop gros pour être copiés
+```
+
+À chaque lancement, ce qui manque est déposé ; rien n'est écrasé, rien n'est
+commité. Une entrée absente ou refusée apparaît dans le journal du ticket. Ne lier
+que ce qui n'est pas fait pour être édité : le garde-fou ne suit pas les liens.
+Une fois le ticket fini, son worktree se teste comme le dépôt :
+`cd ~/.local/share/orchestra/worktrees/<projet>/<ticket>` puis la commande habituelle.
+
 ## Les rôles
 
 `orchestra init` installe six rôles dans `~/.config/orchestra/roles` : architecte,

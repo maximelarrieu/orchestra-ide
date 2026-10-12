@@ -11,6 +11,7 @@ pub mod events;
 pub mod guard;
 pub mod model;
 pub mod pricing;
+pub mod provision;
 pub mod protocol;
 pub mod review;
 pub mod roles;

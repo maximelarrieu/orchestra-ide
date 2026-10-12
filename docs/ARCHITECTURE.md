@@ -48,6 +48,9 @@ toucher au disque ni au réseau.
 - `attention.rs` — ce qu'un ticket attend de l'utilisateur (`attention::of`),
   d'où la file « à toi » du tableau.
 - `pricing.rs` — tokens vers dollars indicatifs, par plus long préfixe de modèle.
+- `provision.rs` — `.orchestra/worktree.toml` : les fichiers ignorés par git
+  (`.venv`, `.env`…) qu'un worktree reçoit du dépôt principal, copiés (`copy`) ou
+  liés (`link`), et la validation de leurs chemins (relatifs, sans `..` ni `.git`).
 - `config.rs` — `config.toml` et tous les chemins XDG.
 - `guard.rs` — les règles du garde-fou, dont `GitPolicy` : `Confined` par défaut,
   `Full` pour un rôle dont l'entête dit `git: full` — et, faute de mot, pour
@@ -98,7 +101,11 @@ toucher au disque ni au réseau.
   le superviseur sait qu'il a envoyé le signal.
 - `worktree.rs` — création et adoption des worktrees git. Relancer un ticket
   retrouve le sien plutôt que d'échouer, et supprimer un worktree garde sa branche :
-  c'est là qu'est le travail.
+  c'est là qu'est le travail. `provision` y dépose, à chaque lancement, ce que
+  liste `.orchestra/worktree.toml` du dépôt principal : jamais par-dessus ce qui
+  existe, toujours exclu de git (`info/exclude`). Copie par défaut : le garde-fou
+  compare des chemins sans suivre les liens, un lien vers un fichier éditable
+  laisserait un agent écrire dans le dépôt principal.
 - `hooks.rs` — les réglages passés par session à un agent, et la reconnaissance
   d'un refus dans le flux.
 - `checks.rs` — les vérifications du dépôt, lancées par le daemon dans le

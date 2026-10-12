@@ -196,6 +196,23 @@ impl Supervisor {
             }
         };
 
+        // What git does not carry — `.venv`, `.env` — before any agent or check
+        // runs there. Every launch: a file added to the listing since reaches a
+        // relaunched ticket too.
+        let (repo, wt) = (project.path.clone(), worktree_path.clone());
+        let provisioned = worktree::off_runtime(move || worktree::provision(&repo, &wt)).await;
+        if !provisioned.done.is_empty() {
+            tracing::info!("worktree {} : {}", worktree_path.display(), provisioned.done.join(", "));
+        }
+        for problem in provisioned.problems {
+            self.warn_ticket(
+                ticket.id,
+                project.id,
+                format!("worktree incomplet (.orchestra/worktree.toml) : {problem}"),
+            )
+            .await;
+        }
+
         // The notes are written once: a relaunch finds what the agents added.
         let notes = worktree_path.join(worktree::NOTES_FILE);
         if !notes.exists() {

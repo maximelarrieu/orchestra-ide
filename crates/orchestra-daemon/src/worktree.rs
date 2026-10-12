@@ -114,13 +114,21 @@ pub const NOTES_FILE: &str = ".orchestra-ticket.md";
 /// `info/exclude` — shared by all its worktrees, and not a tracked file the
 /// user would see change.
 pub fn exclude_notes(repo: &Path) -> Result<()> {
+    exclude(
+        repo,
+        "# Orchestra : les notes de ticket ne sont jamais commitées.",
+        &format!("/{NOTES_FILE}"),
+    )
+}
+
+/// Add `line` to the repository's `info/exclude`, once, under `comment`.
+fn exclude(repo: &Path, comment: &str, line: &str) -> Result<()> {
     let common = git(repo, &["rev-parse".into(), "--git-common-dir".into()])?;
     let common = PathBuf::from(common);
     let common = if common.is_absolute() { common } else { repo.join(common) };
     let info = common.join("info");
     std::fs::create_dir_all(&info).with_context(|| format!("création de {}", info.display()))?;
     let exclude = info.join("exclude");
-    let line = format!("/{NOTES_FILE}");
     let current = std::fs::read_to_string(&exclude).unwrap_or_default();
     if current.lines().any(|l| l.trim() == line) {
         return Ok(());
@@ -129,10 +137,103 @@ pub fn exclude_notes(repo: &Path) -> Result<()> {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-    out.push_str("# Orchestra : les notes de ticket ne sont jamais commitées.\n");
-    out.push_str(&line);
+    out.push_str(comment);
+    out.push('\n');
+    out.push_str(line);
     out.push('\n');
     std::fs::write(&exclude, out).with_context(|| format!("écriture de {}", exclude.display()))
+}
+
+/// What `provision` did, said in the ticket's journal.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Provisioned {
+    /// Entries put in place this time, as `copié dev.sh` / `lié .venv`.
+    pub done: Vec<String>,
+    /// Entries that could not be, with why. Never fatal: a ticket without its
+    /// `.env` still runs, and says so.
+    pub problems: Vec<String>,
+}
+
+/// Give a worktree the ignored files its project lists in
+/// `.orchestra/worktree.toml` (see `orchestra_core::provision`).
+///
+/// Read from the main repository, like the checks. Idempotent: an entry
+/// already present in the worktree — a tracked file, or what a previous run
+/// put there and an agent may have changed since — is left alone. Each entry
+/// is also excluded from git: a link to a directory does not match a `.venv/`
+/// pattern, and a provided file showing as untracked would end up committed.
+pub fn provision(repo: &Path, worktree: &Path) -> Provisioned {
+    use orchestra_core::provision::{Mode, WorktreeFiles};
+
+    let mut report = Provisioned::default();
+    let src = match std::fs::read_to_string(repo.join(".orchestra/worktree.toml")) {
+        Ok(src) => src,
+        Err(_) => return report,
+    };
+    let files = match WorktreeFiles::parse(&src) {
+        Ok(files) => files,
+        Err(e) => {
+            report.problems.push(e.to_string());
+            return report;
+        }
+    };
+    let (entries, refused) = files.entries();
+    report.problems.extend(refused);
+    for entry in entries {
+        let shown = entry.path.display().to_string();
+        let from = repo.join(&entry.path);
+        let to = worktree.join(&entry.path);
+        if to.symlink_metadata().is_ok() {
+            continue;
+        }
+        if from.symlink_metadata().is_err() {
+            report
+                .problems
+                .push(format!("{shown} est absent de {}", repo.display()));
+            continue;
+        }
+        let placed = to
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| match entry.mode {
+                Mode::Copy => copy_tree(&from, &to),
+                Mode::Link => std::os::unix::fs::symlink(&from, &to),
+            });
+        if let Err(e) = placed {
+            report.problems.push(format!("{shown} : {e}"));
+            continue;
+        }
+        if let Err(e) = exclude(
+            repo,
+            "# Orchestra : fichiers fournis aux worktrees, jamais commités.",
+            &format!("/{}", entry.path.to_string_lossy()),
+        ) {
+            report.problems.push(format!("{shown} : {e:#}"));
+        }
+        report.done.push(match entry.mode {
+            Mode::Copy => format!("copié {shown}"),
+            Mode::Link => format!("lié {shown}"),
+        });
+    }
+    report
+}
+
+/// Copy a file, or a directory with everything under it. Links inside are
+/// copied as links, not followed: a directory may point at itself.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = from.symlink_metadata()?;
+    if meta.file_type().is_symlink() {
+        return std::os::unix::fs::symlink(std::fs::read_link(from)?, to);
+    }
+    if !meta.is_dir() {
+        return std::fs::copy(from, to).map(|_| ());
+    }
+    std::fs::create_dir(to)?;
+    for child in std::fs::read_dir(from)? {
+        let child = child?;
+        copy_tree(&child.path(), &to.join(child.file_name()))?;
+    }
+    Ok(())
 }
 
 /// Give an empty repository its first commit, so its default branch exists.
@@ -678,6 +779,113 @@ mod tests {
         let common = f.project.path.join(".git/info/exclude");
         let exclude = std::fs::read_to_string(common).unwrap();
         assert_eq!(exclude.matches(NOTES_FILE).count(), 1, "{exclude}");
+    }
+
+    /// The main checkout of `f`, with ignored files and the file listing them.
+    fn with_ignored_files(f: &Fixture, listing: &str) {
+        let repo = &f.project.path;
+        std::fs::write(repo.join(".env.local"), "SECRET=1\n").unwrap();
+        std::fs::create_dir_all(repo.join(".venv/bin")).unwrap();
+        std::fs::write(repo.join(".venv/bin/python"), "#!").unwrap();
+        std::fs::create_dir_all(repo.join("conf/locale")).unwrap();
+        std::fs::write(repo.join("conf/locale/fr.txt"), "bonjour").unwrap();
+        std::fs::create_dir_all(repo.join(".orchestra")).unwrap();
+        std::fs::write(repo.join(".orchestra/worktree.toml"), listing).unwrap();
+    }
+
+    #[test]
+    fn a_worktree_gets_its_ignored_files_copied_or_linked_and_never_committed() {
+        let f = fixture();
+        with_ignored_files(
+            &f,
+            "copy = [\".env.local\", \"conf\"]\nlink = [\".venv\"]\n",
+        );
+        let plan = plan_for(&f.project, &ticket(1, "env"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+
+        let report = provision(&f.project.path, &wt.path);
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
+        assert_eq!(report.done, vec!["copié .env.local", "copié conf", "lié .venv"]);
+
+        let env = wt.path.join(".env.local");
+        assert!(!env.symlink_metadata().unwrap().file_type().is_symlink(), "une copie");
+        assert_eq!(std::fs::read_to_string(&env).unwrap(), "SECRET=1\n");
+        assert_eq!(
+            std::fs::read_to_string(wt.path.join("conf/locale/fr.txt")).unwrap(),
+            "bonjour",
+            "un dossier est copié en entier"
+        );
+        let venv = wt.path.join(".venv");
+        assert!(venv.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(venv.join("bin/python").exists(), "le lien mène au dépôt principal");
+
+        assert!(dirty_files(&wt.path).is_empty(), "{:?}", dirty_files(&wt.path));
+    }
+
+    #[test]
+    fn what_a_worktree_already_has_is_never_overwritten() {
+        let f = fixture();
+        with_ignored_files(&f, "copy = [\".env.local\", \"fichier.txt\"]\n");
+        let plan = plan_for(&f.project, &ticket(1, "env"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        provision(&f.project.path, &wt.path);
+
+        // An agent changed its copy; a relaunch provisions again.
+        std::fs::write(wt.path.join(".env.local"), "SECRET=2\n").unwrap();
+        let again = provision(&f.project.path, &wt.path);
+        assert!(again.done.is_empty(), "{:?}", again.done);
+        assert_eq!(
+            std::fs::read_to_string(wt.path.join(".env.local")).unwrap(),
+            "SECRET=2\n"
+        );
+        // A tracked file is the branch's, not the main checkout's.
+        assert_eq!(
+            std::fs::read_to_string(wt.path.join("fichier.txt")).unwrap(),
+            "départ"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_refused_entry_is_said_and_the_rest_still_arrives() {
+        let f = fixture();
+        with_ignored_files(
+            &f,
+            "copy = [\"absent.env\", \"../dehors\", \".env.local\"]\n",
+        );
+        let plan = plan_for(&f.project, &ticket(1, "env"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+
+        let report = provision(&f.project.path, &wt.path);
+        assert_eq!(report.done, vec!["copié .env.local"]);
+        assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
+        assert!(report.problems.iter().any(|p| p.contains("absent.env")));
+        assert!(report.problems.iter().any(|p| p.contains("../dehors")));
+    }
+
+    #[test]
+    fn without_a_listing_nothing_happens_and_a_broken_one_is_said() {
+        let f = fixture();
+        let plan = plan_for(&f.project, &ticket(1, "env"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        assert_eq!(provision(&f.project.path, &wt.path), Provisioned::default());
+
+        with_ignored_files(&f, "copie = [\".env.local\"]\n");
+        let report = provision(&f.project.path, &wt.path);
+        assert!(report.done.is_empty());
+        assert!(report.problems[0].contains("worktree.toml"), "{:?}", report.problems);
+    }
+
+    #[test]
+    fn removing_a_worktree_leaves_what_its_links_point_at() {
+        let f = fixture();
+        with_ignored_files(&f, "link = [\".venv\"]\n");
+        let plan = plan_for(&f.project, &ticket(1, "env"), &f.worktrees, "orch/");
+        let wt = ensure(&f.project, &plan).unwrap();
+        provision(&f.project.path, &wt.path);
+
+        remove(&f.project, &wt.path).unwrap();
+        assert!(!wt.path.exists());
+        assert!(f.project.path.join(".venv/bin/python").exists());
     }
 
     #[test]
