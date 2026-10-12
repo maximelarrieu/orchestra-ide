@@ -121,7 +121,8 @@ pub fn exclude_notes(repo: &Path) -> Result<()> {
     )
 }
 
-/// Add `line` to the repository's `info/exclude`, once, under `comment`.
+/// Add `line` to the repository's `info/exclude`, once, under `comment` —
+/// written the first time only, so several entries share one heading.
 fn exclude(repo: &Path, comment: &str, line: &str) -> Result<()> {
     let common = git(repo, &["rev-parse".into(), "--git-common-dir".into()])?;
     let common = PathBuf::from(common);
@@ -137,8 +138,10 @@ fn exclude(repo: &Path, comment: &str, line: &str) -> Result<()> {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-    out.push_str(comment);
-    out.push('\n');
+    if !out.lines().any(|l| l.trim() == comment) {
+        out.push_str(comment);
+        out.push('\n');
+    }
     out.push_str(line);
     out.push('\n');
     std::fs::write(&exclude, out).with_context(|| format!("écriture de {}", exclude.display()))
@@ -820,6 +823,8 @@ mod tests {
         assert!(venv.join("bin/python").exists(), "le lien mène au dépôt principal");
 
         assert!(dirty_files(&wt.path).is_empty(), "{:?}", dirty_files(&wt.path));
+        let exclude = std::fs::read_to_string(f.project.path.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude.matches("fournis aux worktrees").count(), 1, "{exclude}");
     }
 
     #[test]
