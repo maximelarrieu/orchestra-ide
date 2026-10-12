@@ -300,8 +300,9 @@ fn has_npm_script(package: &str, name: &str) -> bool {
         .is_some_and(|scripts| scripts.contains(&format!("\"{name}\"")))
 }
 
-/// `.orchestra/checks.toml`, versioned with the repository: its gates travel
-/// with the code, and a change to them is reviewed like code.
+/// `.orchestra/checks.toml` of the main repository. Kept out of git by default
+/// (`worktree::exclude_orchestra_dir`); a project that versions it — a
+/// `!/.orchestra/` in its `.gitignore` — gets its gates reviewed like code.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RepoChecks {

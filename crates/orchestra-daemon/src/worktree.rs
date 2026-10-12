@@ -57,6 +57,7 @@ pub fn plan_for(
 pub fn ensure(project: &Project, plan: &Worktree) -> Result<Worktree> {
     if plan.path.join(".git").exists() {
         exclude_notes(&project.path)?;
+        exclude_orchestra_dir(&project.path)?;
         return Ok(plan.clone());
     }
     if plan.path.exists() {
@@ -103,6 +104,7 @@ pub fn ensure(project: &Project, plan: &Worktree) -> Result<Worktree> {
         )
     })?;
     exclude_notes(&project.path)?;
+    exclude_orchestra_dir(&project.path)?;
     Ok(plan.clone())
 }
 
@@ -118,6 +120,19 @@ pub fn exclude_notes(repo: &Path) -> Result<()> {
         repo,
         "# Orchestra : les notes de ticket ne sont jamais commitées.",
         &format!("/{NOTES_FILE}"),
+    )
+}
+
+/// Keep the project's `.orchestra/` out of git: checks, worktree files,
+/// conventions are this machine's way of working, not the repository's — on a
+/// client's repository above all. Local (`info/exclude`), so no tracked file
+/// changes; a project that wants it versioned says `!/.orchestra/` in its
+/// `.gitignore`, which takes precedence.
+pub fn exclude_orchestra_dir(repo: &Path) -> Result<()> {
+    exclude(
+        repo,
+        "# Orchestra : sa configuration par projet reste locale.",
+        "/.orchestra/",
     )
 }
 
@@ -891,6 +906,17 @@ mod tests {
         remove(&f.project, &wt.path).unwrap();
         assert!(!wt.path.exists());
         assert!(f.project.path.join(".venv/bin/python").exists());
+    }
+
+    #[test]
+    fn the_orchestra_directory_stays_out_of_git() {
+        let f = fixture();
+        std::fs::create_dir_all(f.project.path.join(".orchestra")).unwrap();
+        std::fs::write(f.project.path.join(".orchestra/checks.toml"), "commands = []").unwrap();
+        let plan = plan_for(&f.project, &ticket(1, "cache"), &f.worktrees, "orch/");
+        ensure(&f.project, &plan).unwrap();
+        let status = git(&f.project.path, &["status".into(), "--porcelain".into()]).unwrap();
+        assert!(status.is_empty(), "{status}");
     }
 
     #[test]

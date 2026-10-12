@@ -111,8 +111,9 @@ toucher au disque ni au réseau.
 - `checks.rs` — les vérifications du dépôt, lancées par le daemon dans le
   worktree : quelles commandes, et ce qu'elles ont rendu.
 - Les vérifications d'un projet viennent, dans l'ordre, de `.orchestra/checks.toml`
-  du dépôt principal (`commands`, `after_stage` — versionnées avec le code, relues
-  comme du code), de `[checks]` dans `config.toml`, puis de la détection
+  du dépôt principal (`commands`, `after_stage` — locales par défaut, car
+  `.orchestra/` est exclu de git ; `!/.orchestra/` dans le `.gitignore` du projet
+  pour les versionner et les relire comme du code), de `[checks]` dans `config.toml`, puis de la détection
   (`checks::detect_gates`) : fmt, clippy, lint ou typecheck que le projet et la
   machine ont tous deux, avant ses tests. Le relecteur reçoit la liste des fichiers
   que la branche modifie (`scope_appendix`) : un changement hors du ticket est

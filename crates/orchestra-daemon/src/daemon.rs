@@ -539,6 +539,14 @@ impl Daemon {
             .insert_project(project.clone())
             .await
             .map_err(internal)?;
+        // Before the first ticket: `.orchestra/` is written as soon as the
+        // project is configured, and must not show up in its `git status`.
+        let repo = path.clone();
+        if let Err(e) =
+            crate::worktree::off_runtime(move || crate::worktree::exclude_orchestra_dir(&repo)).await
+        {
+            tracing::warn!("{} : .orchestra/ non exclu de git : {e:#}", path.display());
+        }
         self.bus
             .publish(
                 NewEvent::new(EventKind::ProjectAdded {

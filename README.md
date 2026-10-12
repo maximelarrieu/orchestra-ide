@@ -78,6 +78,13 @@ que ce qui n'est pas fait pour être édité : le garde-fou ne suit pas les lien
 Une fois le ticket fini, son worktree se teste comme le dépôt :
 `cd ~/.local/share/orchestra/worktrees/<projet>/<ticket>` puis la commande habituelle.
 
+## Le dossier `.orchestra/` d'un projet
+
+`checks.toml`, `worktree.toml`, `integration.toml`, conventions et ADR : c'est ta
+façon de travailler, pas celle du dépôt. Orchestra exclut donc `.orchestra/` de git
+en local (`info/exclude`, aucun fichier suivi ne change), dès l'ajout du projet.
+Pour le versionner malgré tout, mets `!/.orchestra/` dans le `.gitignore` du projet.
+
 ## Un projet qui ne pousse jamais
 
 `push = true` dans `[integration]` vaut pour tous les projets. Un dépôt où c'est
