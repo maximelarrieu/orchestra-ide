@@ -244,6 +244,8 @@ enum ProjectAction {
     Forget { project: String },
     /// Suit un dépôt déplacé : tickets, coûts et épopées restent au projet.
     Move { project: String, path: PathBuf },
+    /// Change la branche dont partent les tickets et où ils sont fusionnés.
+    Branch { project: String, branch: String },
     /// Oublie tous les projets découverts dont le dossier a disparu.
     Prune {
         /// Montre ce qui serait oublié sans rien changer.
@@ -378,6 +380,22 @@ impl Cli {
                         {
                             Reply::Project { project } => {
                                 println!("projet « {} » désormais à {}", project.name, project.path.display());
+                                Ok(())
+                            }
+                            other => bail!("réponse inattendue : {other:?}"),
+                        }
+                    }
+                    ProjectAction::Branch { project, branch } => {
+                        let p = resolve_project(&mut client, &project).await?;
+                        match client
+                            .call(Cmd::SetProjectBranch { project_id: p.id, branch })
+                            .await?
+                        {
+                            Reply::Project { project } => {
+                                println!(
+                                    "projet « {} » : les tickets partent de « {} »",
+                                    project.name, project.default_branch
+                                );
                                 Ok(())
                             }
                             other => bail!("réponse inattendue : {other:?}"),

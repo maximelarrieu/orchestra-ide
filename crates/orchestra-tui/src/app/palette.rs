@@ -55,9 +55,27 @@ impl App {
                             _ => self.status = "usage : :project move <nom> <chemin>".into(),
                         }
                     }
+                    "branch" | "branche" if !arg.is_empty() => {
+                        let (name, branch) =
+                            arg.split_once(char::is_whitespace).unwrap_or((arg, ""));
+                        let found = self.find_project(name).map(|p| (p.id, p.name.clone()));
+                        match (found, branch.trim()) {
+                            (Some((project_id, project)), branch) if !branch.is_empty() => {
+                                self.outbox.push(Command::SetProjectBranch {
+                                    project_id,
+                                    branch: branch.into(),
+                                });
+                                self.status = format!("« {project} » partira de « {branch} »…");
+                            }
+                            (None, _) => {
+                                self.status = format!("aucun projet ne correspond à « {name} »")
+                            }
+                            _ => self.status = "usage : :project branch <nom> <branche>".into(),
+                        }
+                    }
                     _ => {
                         self.status = "usage : :project add <chemin> | :project forget <nom> \
-                                       | :project move <nom> <chemin>"
+                                       | :project move <nom> <chemin> | :project branch <nom> <branche>"
                             .into()
                     }
                 }

@@ -80,6 +80,9 @@ pub fn describe(e: &Event) -> Option<String> {
         EventKind::ProjectMoved { name, to, .. } => {
             format!("projet « {name} » déplacé vers {}", to.display())
         }
+        EventKind::ProjectBranchChanged { name, from, to } => {
+            format!("projet « {name} » : les tickets partent de « {to} » (avant « {from} »)")
+        }
         EventKind::TicketCreated { number, title } => format!("ticket #{number} « {title} » créé"),
         EventKind::TicketStatusChanged { from, to } => {
             format!("ticket {} → {}", from.label_fr(), to.label_fr())

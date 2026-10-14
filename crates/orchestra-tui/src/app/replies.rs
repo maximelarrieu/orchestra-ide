@@ -335,6 +335,7 @@ impl App {
             EventKind::ProjectAdded { .. }
             | EventKind::ProjectForgotten { .. }
             | EventKind::ProjectMoved { .. }
+            | EventKind::ProjectBranchChanged { .. }
             | EventKind::UnmanagedSessionSeen { .. } => {
                 self.outbox.push(Command::ListProjects);
             }

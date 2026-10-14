@@ -49,6 +49,11 @@ pub enum Command {
         project_id: ProjectId,
         path: PathBuf,
     },
+    /// The branch tickets start from and merge back into.
+    SetProjectBranch {
+        project_id: ProjectId,
+        branch: String,
+    },
     ListTickets {
         #[serde(default)]
         project_id: Option<ProjectId>,

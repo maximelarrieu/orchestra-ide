@@ -249,6 +249,9 @@ impl Daemon {
             Command::ListProjects => self.list_projects().await,
             Command::AddProject { path, name } => self.add_project(path, name).await,
             Command::MoveProject { project_id, path } => self.move_project(project_id, path).await,
+            Command::SetProjectBranch { project_id, branch } => {
+                self.set_project_branch(project_id, branch).await
+            }
             Command::ForgetProject { project_id } => {
                 let project = self
                     .store
@@ -483,6 +486,74 @@ impl Daemon {
                     name: project.name.clone(),
                     from,
                     to: path,
+                })
+                .project(project_id),
+            )
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Project {
+            project: Box::new(project),
+        })
+    }
+
+    /// Change the branch tickets start from and merge into. Only a branch
+    /// the repository has: a typo would fail every launch, later, elsewhere.
+    async fn set_project_branch(
+        &self,
+        project_id: ProjectId,
+        branch: String,
+    ) -> Result<Reply, ApiError> {
+        let mut project = self
+            .store
+            .project(project_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("projet"))?;
+        let branch = branch.trim().to_string();
+        if branch.is_empty() {
+            return Err(ApiError::invalid("nom de branche vide"));
+        }
+        if branch == project.default_branch {
+            return Err(ApiError::invalid(format!(
+                "le projet part déjà de « {branch} »"
+            )));
+        }
+        ensure_project_dir(&project)?;
+        let (repo, b) = (project.path.clone(), branch.clone());
+        let exists = crate::worktree::off_runtime(move || {
+            Ok(crate::worktree::branch_exists(&repo, &b))
+        })
+        .await
+        .map_err(internal)?;
+        if !exists {
+            return Err(ApiError::invalid(format!(
+                "la branche « {branch} » n'existe pas dans {}",
+                project.path.display()
+            )));
+        }
+        // A running team integrates into the branch it started from.
+        let active = self
+            .store
+            .list_tickets(Some(project_id), Some(vec![TicketStatus::Running]))
+            .await
+            .map_err(internal)?;
+        if !active.is_empty() {
+            return Err(ApiError::conflict(
+                "un ticket de ce projet tourne : attends qu'il ait fini pour changer de branche",
+            ));
+        }
+
+        let from = std::mem::replace(&mut project.default_branch, branch.clone());
+        self.store
+            .set_project_branch(project_id, branch.clone())
+            .await
+            .map_err(internal)?;
+        self.bus
+            .publish(
+                NewEvent::new(EventKind::ProjectBranchChanged {
+                    name: project.name.clone(),
+                    from,
+                    to: branch,
                 })
                 .project(project_id),
             )
@@ -2188,6 +2259,39 @@ mod tests {
         assert_eq!(tickets.len(), 1);
         // Moving it onto itself, or onto another project's path, is refused.
         assert!(daemon.move_project(ticket.project_id, moved.clone()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_project_starts_from_a_branch_its_repository_has() {
+        let (daemon, ticket) = daemon_with_ticket(TicketStatus::Done).await;
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        for args in [
+            vec!["init", "-q", "-b", "tmp"],
+            vec!["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "départ"],
+        ] {
+            std::process::Command::new("git").arg("-C").arg(&repo).args(&args).output().unwrap();
+        }
+        daemon.move_project(ticket.project_id, repo).await.unwrap();
+
+        let err = daemon
+            .set_project_branch(ticket.project_id, "develop".into())
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("« develop » n'existe pas"), "{}", err.message);
+
+        let Reply::Project { project } = daemon
+            .set_project_branch(ticket.project_id, " tmp ".into())
+            .await
+            .unwrap()
+        else {
+            panic!("réponse inattendue");
+        };
+        assert_eq!(project.default_branch, "tmp");
+        let stored = daemon.store.project(ticket.project_id).await.unwrap().unwrap();
+        assert_eq!(stored.default_branch, "tmp");
+        // Already there: said, not silently accepted.
+        assert!(daemon.set_project_branch(ticket.project_id, "tmp".into()).await.is_err());
     }
 
     #[tokio::test]

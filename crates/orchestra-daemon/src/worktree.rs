@@ -80,6 +80,17 @@ pub fn ensure(project: &Project, plan: &Worktree) -> Result<Worktree> {
     // A repository nobody has committed to yet has no default branch either,
     // and `worktree add` fails on a reference that does not exist.
     ensure_root_commit(project)?;
+    // A project whose branch is gone, or never existed, would fail below with
+    // git's « référence invalide », which does not say what to change.
+    if !branch_exists(&project.path, &project.default_branch) {
+        anyhow::bail!(
+            "la branche « {} » n'existe pas dans {} : choisis celle dont partent les tickets \
+             avec « orchestra project branch {} <branche> » ou « :project branch » dans le TUI",
+            project.default_branch,
+            project.path.display(),
+            project.name
+        );
+    }
 
     // `git worktree add -b` fails when the branch exists, which is exactly what
     // a relaunch looks like, so an existing branch is checked out instead.
@@ -580,7 +591,7 @@ pub fn fast_forwardable(project: &Project, branch: &str) -> bool {
     .is_ok()
 }
 
-fn branch_exists(repo: &Path, branch: &str) -> bool {
+pub fn branch_exists(repo: &Path, branch: &str) -> bool {
     git(
         repo,
         &[
@@ -1103,6 +1114,21 @@ mod tests {
         );
         // Et un dépôt qui a déjà un commit n'en reçoit pas un deuxième.
         assert!(!ensure_root_commit(&f.project).unwrap());
+    }
+
+    #[test]
+    fn a_default_branch_the_repository_lacks_says_how_to_fix_it() {
+        // Un projet découvert déclarait « main » dans un dépôt qui n'a que
+        // master et tmp : git répondait « référence invalide : main ».
+        let mut f = fixture();
+        f.project.default_branch = "absente".into();
+        let plan = plan_for(&f.project, &ticket(1, "logo"), &f.worktrees, "orch/");
+        let err = ensure(&f.project, &plan).unwrap_err().to_string();
+        assert!(
+            err.contains("« absente » n'existe pas") && err.contains("orchestra project branch depot"),
+            "{err}"
+        );
+        assert!(!plan.path.exists(), "aucun worktree à moitié créé");
     }
 
     #[test]

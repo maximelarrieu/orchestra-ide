@@ -163,6 +163,17 @@ impl Store {
         .await
     }
 
+    pub async fn set_project_branch(&self, id: ProjectId, branch: String) -> Result<()> {
+        self.with(move |c| {
+            c.execute(
+                "UPDATE projects SET default_branch = ?2 WHERE id = ?1",
+                rusqlite::params![id.to_string(), branch],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn project_by_path(&self, path: PathBuf) -> Result<Option<Project>> {
         self.with(move |c| rows::select_project_by_path(c, &path))
             .await

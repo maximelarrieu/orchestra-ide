@@ -99,6 +99,12 @@ si le chemin n'est pas un dossier, si un autre projet le suit déjà, ou si un t
 du projet tourne. Planifier ou lancer dans un projet dont le dossier a disparu est
 refusé d'emblée, chemin à l'appui.
 
+`set_project_branch` (`project_id`, `branch`) change la branche dont partent les
+tickets et dans laquelle ils sont fusionnés ; l'événement `project_branch_changed`
+(`name`, `from`, `to`) suit. Refusé si la branche n'existe pas dans le dépôt ou si un
+ticket du projet tourne. Créer un worktree depuis une branche absente échoue avec un
+message qui nomme cette commande.
+
 `get_diff` (`ticket_id`) répond `{"reply":"diff","diff":{branch, base, files:[{path,
 added, removed}], patch, truncated}}` : ce que la branche du ticket apporte depuis
 qu'elle a quitté la branche par défaut (`base...branche`), lu dans le dépôt

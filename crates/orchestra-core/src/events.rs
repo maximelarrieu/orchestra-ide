@@ -119,6 +119,7 @@ pub enum EventTag {
     ProjectAdded,
     ProjectForgotten,
     ProjectMoved,
+    ProjectBranchChanged,
     TicketCreated,
     TicketStatusChanged,
     ProposalReady,
@@ -171,10 +172,11 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 52] = [
+    pub const ALL: [EventTag; 53] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::ProjectMoved,
+        EventTag::ProjectBranchChanged,
         EventTag::TicketCreated,
         EventTag::TicketStatusChanged,
         EventTag::ProposalReady,
@@ -231,6 +233,7 @@ impl EventTag {
             EventTag::ProjectAdded => "project_added",
             EventTag::ProjectForgotten => "project_forgotten",
             EventTag::ProjectMoved => "project_moved",
+            EventTag::ProjectBranchChanged => "project_branch_changed",
             EventTag::TicketCreated => "ticket_created",
             EventTag::TicketStatusChanged => "ticket_status_changed",
             EventTag::ProposalReady => "proposal_ready",
@@ -318,6 +321,12 @@ pub enum EventKind {
         name: String,
         from: PathBuf,
         to: PathBuf,
+    },
+    /// Tickets now start from, and merge into, another branch.
+    ProjectBranchChanged {
+        name: String,
+        from: String,
+        to: String,
     },
     TicketCreated {
         number: i64,
@@ -590,6 +599,7 @@ impl EventKind {
             EventKind::ProjectAdded { .. } => EventTag::ProjectAdded,
             EventKind::ProjectForgotten { .. } => EventTag::ProjectForgotten,
             EventKind::ProjectMoved { .. } => EventTag::ProjectMoved,
+            EventKind::ProjectBranchChanged { .. } => EventTag::ProjectBranchChanged,
             EventKind::TicketCreated { .. } => EventTag::TicketCreated,
             EventKind::TicketStatusChanged { .. } => EventTag::TicketStatusChanged,
             EventKind::ProposalReady { .. } => EventTag::ProposalReady,
