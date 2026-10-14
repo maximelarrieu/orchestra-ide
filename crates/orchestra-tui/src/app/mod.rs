@@ -55,6 +55,41 @@ pub enum Screen {
     Epic,
 }
 
+/// The three places one goes to; every screen lives in one of them. The
+/// others — a ticket, its agent, its team, a diff — are reached from the
+/// board with Entrée and left with q: steps of one path, not places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Space {
+    Board,
+    Todo,
+    Settings,
+}
+
+impl Space {
+    pub const ALL: [Space; 3] = [Space::Board, Space::Todo, Space::Settings];
+
+    pub fn title_fr(self) -> &'static str {
+        match self {
+            Space::Board => "Tableau",
+            Space::Todo => "TODO",
+            Space::Settings => "Réglages",
+        }
+    }
+
+    /// Where the space opens.
+    pub fn root(self) -> Screen {
+        match self {
+            Space::Board => Screen::Board,
+            Space::Todo => Screen::Todo,
+            Space::Settings => Screen::Rules,
+        }
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|s| *s == self).unwrap_or(0)
+    }
+}
+
 impl Screen {
     pub const ALL: [Screen; 9] = [
         Screen::Board,
@@ -68,8 +103,17 @@ impl Screen {
         Screen::Epic,
     ];
 
+    /// `1`, `2`, `3`: the root of that space.
     pub fn from_number(n: u8) -> Option<Self> {
-        Self::ALL.get(n.checked_sub(1)? as usize).copied()
+        Space::ALL.get(n.checked_sub(1)? as usize).map(|s| s.root())
+    }
+
+    pub fn space(self) -> Space {
+        match self {
+            Screen::Todo => Space::Todo,
+            Screen::Rules | Screen::Cost => Space::Settings,
+            _ => Space::Board,
+        }
     }
 
     pub fn title_fr(self) -> &'static str {
@@ -77,12 +121,12 @@ impl Screen {
             Screen::Board => "Tableau",
             Screen::Ticket => "Ticket",
             Screen::Agent => "Agent",
-            Screen::Cost => "Coût",
+            Screen::Cost => "Coûts",
             Screen::NewTicket => "Nouveau ticket",
             Screen::Proposal => "Équipe",
             Screen::Todo => "TODO",
-            Screen::Rules => "Rôles & règles",
-            Screen::Epic => "Épopées",
+            Screen::Rules => "Réglages",
+            Screen::Epic => "Découpage",
         }
     }
 
@@ -91,16 +135,15 @@ impl Screen {
         true
     }
 
-    fn index(self) -> usize {
-        Self::ALL.iter().position(|s| *s == self).unwrap_or(0)
-    }
-
+    /// Tab: the next space, from wherever one stands in this one.
     pub fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+        let i = self.space().index();
+        Space::ALL[(i + 1) % Space::ALL.len()].root()
     }
 
     pub fn prev(self) -> Self {
-        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+        let i = self.space().index();
+        Space::ALL[(i + Space::ALL.len() - 1) % Space::ALL.len()].root()
     }
 }
 
@@ -570,6 +613,49 @@ impl App {
                 .position(|i| *i == self.ticket_selected)
                 .map(|row| (col, row))
         })
+    }
+
+    /// Where one stands, from the space down: `Tableau › #12 cache › backend`.
+    pub fn breadcrumb(&self) -> Vec<String> {
+        let mut out = vec![self.screen.space().title_fr().to_string()];
+        let ticket = || {
+            self.ticket
+                .as_ref()
+                .map(|d| format!("#{} {}", d.ticket.number, d.ticket.title))
+        };
+        match self.screen {
+            Screen::Ticket => out.extend(ticket()),
+            Screen::Agent => {
+                out.extend(ticket());
+                if let Some(a) = self.watched_agent() {
+                    out.push(a.agent.role.clone());
+                }
+            }
+            Screen::Proposal => {
+                out.extend(ticket());
+                out.push("équipe".into());
+            }
+            Screen::NewTicket => out.push(
+                if self.creating_epic {
+                    "nouvelle demande à découper"
+                } else if self.promoting_todo.is_some() {
+                    "todo → ticket"
+                } else {
+                    "nouveau ticket"
+                }
+                .into(),
+            ),
+            Screen::Epic => out.push(match &self.epic {
+                Some(d) => format!("découpage « {} »", d.epic.title),
+                None => "découpages".into(),
+            }),
+            Screen::Cost => out.push("coûts".into()),
+            Screen::Board | Screen::Todo | Screen::Rules => {}
+        }
+        if self.diff_view.is_some() {
+            out.push("diff".into());
+        }
+        out
     }
 
     pub fn selected_ticket(&self) -> Option<&TicketSummary> {

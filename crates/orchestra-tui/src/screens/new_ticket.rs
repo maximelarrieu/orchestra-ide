@@ -20,6 +20,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
+            Constraint::Length(1),
             Constraint::Length(2),
         ])
         .split(area);
@@ -29,7 +30,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
         .map(|p| p.name.as_str())
         .unwrap_or("aucun projet");
     let verb = if app.creating_epic {
-        "épopée de"
+        "à découper dans"
     } else if app.promoting_todo.is_some() {
         "promotion vers"
     } else {
@@ -54,6 +55,23 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
         chunks[1],
     );
 
+    // The box: one decision, said in plain words, with what it changes.
+    let mark = if app.creating_epic { "☒" } else { "☐" };
+    let mut box_style = Style::default();
+    if app.form_field == TicketField::Split {
+        box_style = box_style.add_modifier(Modifier::REVERSED);
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {mark} Trop gros pour un seul ticket : le faire découper "), box_style),
+            Span::styled(
+                "— l'orchestrateur propose plusieurs tickets qui s'enchaînent",
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+        ])),
+        chunks[2],
+    );
+
     let hint = match &app.form.error {
         Some(e) => Line::from(Span::styled(
             format!("⚠ {e}"),
@@ -64,7 +82,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>, area: Rect) {
             Style::default().add_modifier(Modifier::DIM),
         )),
     };
-    frame.render_widget(Paragraph::new(hint).wrap(Wrap { trim: true }), chunks[2]);
+    frame.render_widget(Paragraph::new(hint).wrap(Wrap { trim: true }), chunks[3]);
 }
 
 /// The field's text with a cursor when it has focus.

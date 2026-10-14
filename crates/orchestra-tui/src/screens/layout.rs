@@ -76,69 +76,76 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
 }
 
 fn render_tabs(app: &App, frame: &mut Frame<'_>, area: Rect) {
-    let mut spans = Vec::new();
-    // What waits on the user goes first: it is the reason to look at all.
+    use crate::app::Space;
+    let width = area.width as usize;
+
+    // Right: what waits on the user. Each badge says its key when it has one.
+    let mut right: Vec<Span> = Vec::new();
     let waiting = app.attention_queue();
+    let splits = app.splits_waiting();
     if let Some(first) = waiting.first().and_then(|i| app.tickets[*i].attention) {
         let badge = theme::attention(first);
-        spans.push(Span::styled(
-            // The key rides along: on a narrow bar it is the first to go.
-            format!("{} {} à toi [!] ", badge.symbol, waiting.len()),
+        right.push(Span::styled(
+            format!("{} {} à toi [!]", badge.symbol, waiting.len()),
             badge.style(),
         ));
+    } else if splits > 0 {
+        let badge = theme::attention(orchestra_core::attention::Attention::ProposalReady);
+        right.push(Span::styled(format!("▶ {splits} découpage(s) [!]"), badge.style()));
     }
-    // A split is a decision waiting on the user too, before any ticket exists.
-    let splits = app.splits_waiting();
-    if splits > 0 {
-        spans.push(Span::styled(
-            format!("▶ {splits} découpage(s) "),
-            theme::attention(orchestra_core::attention::Attention::ProposalReady).style(),
-        ));
-    }
-    let badges: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    // Every tab named takes about ninety columns; past that, only the open
-    // one keeps its name and the others keep their number.
-    let named: usize = Screen::ALL
-        .iter()
-        .enumerate()
-        .map(|(i, s)| format!(" {} {} ", i + 1, s.title_fr()).chars().count())
-        .sum();
-    let compact = named + badges + 30 > area.width as usize;
-    for (i, s) in Screen::ALL.iter().enumerate() {
-        let label = if compact && *s != app.screen {
-            format!(" {} ", i + 1)
-        } else {
-            format!(" {} {} ", i + 1, s.title_fr())
-        };
-        let style = if *s == app.screen {
-            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-        } else if s.is_implemented() {
-            Style::default()
-        } else {
-            Style::default().add_modifier(Modifier::DIM)
-        };
-        spans.push(Span::styled(label, style));
-    }
-    // What the morning should look at first, visible from every screen —
-    // opening Orchestra is the notification, not a separate service.
     let digest = app.todo_digest();
     if !digest.is_empty() {
         let badge = theme::urgent();
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(badge.symbol, badge.style()));
-        spans.push(Span::styled(format!(" {}", digest.summary_fr()), badge.style()));
+        right.push(Span::styled(
+            format!("  {} {}", badge.symbol, digest.summary_fr()),
+            badge.style(),
+        ));
     }
-    // A proposal is a decision waiting on the user: nothing applies it until
-    // then, so it must not wait unseen.
     let pending = app.pending_rules();
     if pending > 0 {
         let badge = theme::rule(orchestra_core::conventions::RuleStatus::Proposed);
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(badge.symbol, badge.style()));
-        spans.push(Span::styled(
-            format!(" {pending} règle(s) à valider"),
+        right.push(Span::styled(
+            format!("  {} {pending} règle(s)", badge.symbol),
             badge.style(),
         ));
+    }
+    let right_width: usize = right.iter().map(|s| s.content.chars().count()).sum();
+
+    // Left: the three spaces; the open one reads as the path to here.
+    let current = app.screen.space();
+    let others: usize = Space::ALL
+        .iter()
+        .filter(|s| **s != current)
+        .map(|s| s.title_fr().chars().count() + 3)
+        .sum();
+    let room = width.saturating_sub(others + right_width + 2).max(8);
+    let mut left: Vec<Span> = Vec::new();
+    for space in Space::ALL {
+        if space == current {
+            let path = format!(" {} ", app.breadcrumb().join(" › "));
+            left.push(Span::styled(
+                truncate(&path, room),
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            ));
+        } else {
+            left.push(Span::styled(
+                format!(" {} ", space.title_fr()),
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+        }
+        left.push(Span::raw(" "));
+    }
+    let left_width: usize = left.iter().map(|s| s.content.chars().count()).sum();
+    let mut spans = left;
+    if right_width > 0 {
+        let gap = width.saturating_sub(left_width + right_width);
+        // Not enough room for both: the badges win, they are the reason to look.
+        if gap == 0 {
+            spans = right;
+        } else {
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.extend(right);
+        }
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

@@ -236,7 +236,11 @@ pub fn screen_hints(app: &App) -> Vec<Hint> {
         Screen::Cost => cost_hints(app),
         Screen::Proposal => proposal_hints(app),
         Screen::Todo => todo_hints(app),
-        Screen::Rules => rules_hints(app),
+        Screen::Rules => {
+            let mut hints = rules_hints(app);
+            hints.push(Hint::screen("$", "coûts"));
+            hints
+        }
         Screen::Epic => epic_hints(app),
         Screen::NewTicket => {
             let verb = if app.creating_epic {
@@ -266,7 +270,7 @@ pub fn global_hints(app: &App) -> Vec<Hint> {
         hints.push(Hint::global("!", format!("à toi ({waiting})")));
     }
     hints.extend([
-        Hint::global("Tab", "écran"),
+        Hint::global("Tab", "espace"),
         Hint::global(":", "commande"),
         Hint::global("A", "activité"),
         Hint::global("?", "aide"),
@@ -508,14 +512,15 @@ fn proposal_hints(app: &App) -> Vec<Hint> {
 
 /// What moves the same way everywhere.
 pub const NAVIGATION: &[(&str, &str)] = &[
-    ("1…9", "aller à un écran"),
-    ("Tab", "écran suivant"),
-    ("⇧Tab", "écran précédent"),
+    ("1 2 3", "Tableau, TODO, Réglages"),
+    ("Tab", "espace suivant"),
+    ("⇧Tab", "espace précédent"),
     ("j k", "descendre / monter"),
     ("h l", "gauche / droite"),
     ("g G", "début / fin"),
     ("PgUp PgDn", "page haut / bas"),
     ("Entrée", "ouvrir"),
+    ("q", "revenir d'un cran"),
 ];
 
 /// What answers the same way everywhere.

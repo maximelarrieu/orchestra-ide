@@ -1181,14 +1181,14 @@ fn tabbing_away_from_an_agent_stops_following_it() {
 }
 
 #[test]
-fn tabbing_onto_the_agent_screen_follows_the_agent_of_the_ticket() {
+fn opening_the_agent_screen_follows_the_agent_of_the_ticket() {
     let mut app = app_on_ticket(false, true);
     app.log.push_event(&Event::from_new(
         1,
         NewEvent::new(EventKind::AgentText { text: "reste d'un autre agent".into() }),
     ));
     assert!(!app.log.is_empty());
-    let cmds = app.update(Msg::Key(Action::NextScreen));
+    let cmds = app.update(Msg::Key(Action::Select));
     assert_eq!(app.screen, Screen::Agent);
     let watched = app.watched_agent_id();
     assert!(watched.is_some());
@@ -1729,15 +1729,24 @@ fn a_short_terminal_keeps_its_rows_for_the_screen() {
 }
 
 #[test]
-fn narrow_tabs_keep_their_numbers_and_the_open_one_its_name() {
-    let app = board_waiting();
-    let wide = draw(&app, 180, 30);
+fn the_top_line_names_three_spaces_and_where_one_stands() {
+    let mut app = app_on_ticket(false, true);
     let first_line = |out: &str| out.lines().next().unwrap().to_string();
-    assert!(first_line(&wide).contains("4 Coût"));
-    let narrow = first_line(&draw(&app, 80, 24));
-    assert!(!narrow.contains("Coût"), "{narrow}");
-    assert!(narrow.contains(" 4 "));
-    assert!(narrow.contains("1 Tableau"), "l'écran ouvert garde son nom : {narrow}");
+    let top = first_line(&draw(&app, 120, 30));
+    assert!(top.contains("Tableau › #12 Ajouter un cache mémoire"), "{top}");
+    assert!(top.contains("TODO") && top.contains("Réglages"), "{top}");
+    assert!(!top.contains("Agent") && !top.contains("Équipe"), "plus d'onglets d'étape : {top}");
+
+    // One step deeper, the path grows; q walks it back.
+    app.update(Msg::Key(Action::Select));
+    let top = first_line(&draw(&app, 120, 30));
+    assert!(top.contains("#12 Ajouter un cache mémoire › "), "{top}");
+    app.update(Msg::Key(Action::Back));
+    assert_eq!(app.screen, Screen::Ticket);
+
+    // Narrow: the path is cut, the other spaces keep their names.
+    let narrow = first_line(&draw(&app, 50, 20));
+    assert!(narrow.contains("TODO") && narrow.contains("Réglages"), "{narrow}");
 }
 
 #[test]

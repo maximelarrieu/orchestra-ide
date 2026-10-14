@@ -1,42 +1,42 @@
 ---
 source: crates/orchestra-tui/tests/screens.rs
-assertion_line: 1791
+assertion_line: 1802
 expression: "draw(&app, 120, 40)"
 ---
-⚑ 3 à toi [!]  1 Tableau  2  3  4  5  6  7  8  9                                                                        
+ Tableau   TODO   Réglages                                                                                 ⚑ 3 à toi [!]
 ┌ Projets ───────────┐┌ À faire (1) ──────────┐┌ En cours (1) ────────┐┌ À relire (2) ─────────┐┌ Fusionné ────────────┐
 │◆ Tous les projets  ││#1 équipe proposée     ││#2 au travail         ││#3 branche refusée     ││                      │
 │aucun projet        ││  ▶ équipe à relire    ││                      ││  ⚑ fusion bloquée     ││                      │
 │                    ││                       ││                      ││                       ││                      │
 │                    ││                       ││                      ││#4 relu sans défaut    ││                      │
-│ ┌ Aide — Tableau ──────────────────────────────────────────────────────────────────────────────────────────────────┐ │
-│ │Sur cet écran                    Partout                                                                          │ │
-│ │ [Entrée] voir ses tickets             [:] palette de commandes                                                   │ │
-│ │    [j/k] changer de projet            [R] rafraîchir                                                             │ │
-│ │      [d] oublier                      [?] cette aide                                                             │ │
-│ │      [n] nouveau ticket               [q] revenir en arrière                                                     │ │
-│ │                                       [Q] quitter                                                                │ │
-│ │Se déplacer                       [Ctrl-C] quitter                                                                │ │
-│ │       [1…9] aller à un écran          [!] aller à ce qui t'attend                                                │ │
-│ │       [Tab] écran suivant             [A] replier le bandeau Activité                                            │ │
-│ │      [⇧Tab] écran précédent                                                                                      │ │
-│ │       [j k] descendre / monter  Palette « : »                                                                    │ │
-│ │       [h l] gauche / droite      :t <n>                          ouvrir le ticket n°                             │ │
-│ │       [g G] début / fin          :epic new <titre>               écrire une épopée à découper                    │ │
-│ │ [PgUp PgDn] page haut / bas      :project add <chemin>           ajouter un projet                               │ │
-│ │    [Entrée] ouvrir               :project forget <nom>           oublier un projet                               │ │
-│ │                                  :project move <nom> <chemin>    suivre un dépôt déplacé                         │ │
-│ │                                  :todo add <titre>               ajouter un todo                                 │ │
-│ │                                  :todo urgent <n>                basculer l'urgence                              │ │
-│ │                                  :todo due <n> <AAAA-MM-JJ>      fixer l'échéance                                │ │
-│ │                                  :todo open|doing|done|drop <n>  changer le statut                               │ │
-│ │                                  :convention add <titre>         écrire une convention                           │ │
-│ │                                  :adr add <titre>                écrire une décision du projet                   │ │
-│ │                                  :role add <nom>                 créer un rôle (projet sélectionné, sinon global)│ │
-└─│                                  :regles                         les rôles, conventions et ADR                   │─┘
-┌ │                                  :usage                          les coûts                                       │─┐
-│e│                                  :refresh                        tout relire                                     │ │
-│ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│┌ Aide — Tableau ────────────────────────────────────────────────────────────────────────────────────────────────────┐│
+││Sur cet écran                         Partout                                                                       ││
+││ [Entrée] voir ses tickets                  [:] palette de commandes                                                ││
+││    [j/k] changer de projet                 [R] rafraîchir                                                          ││
+││      [d] oublier                           [?] cette aide                                                          ││
+││      [n] nouveau ticket                    [q] revenir en arrière                                                  ││
+││                                            [Q] quitter                                                             ││
+││Se déplacer                            [Ctrl-C] quitter                                                             ││
+││     [1 2 3] Tableau, TODO, Réglages        [!] aller à ce qui t'attend                                             ││
+││       [Tab] espace suivant                 [A] replier le bandeau Activité                                         ││
+││      [⇧Tab] espace précédent                                                                                       ││
+││       [j k] descendre / monter       Palette « : »                                                                 ││
+││       [h l] gauche / droite           :t <n>                          ouvrir le ticket n°                          ││
+││       [g G] début / fin               :epic new <titre>               écrire une épopée à découper                 ││
+││ [PgUp PgDn] page haut / bas           :project add <chemin>           ajouter un projet                            ││
+││    [Entrée] ouvrir                    :project forget <nom>           oublier un projet                            ││
+││         [q] revenir d'un cran         :project move <nom> <chemin>    suivre un dépôt déplacé                      ││
+││                                       :todo add <titre>               ajouter un todo                              ││
+││                                       :todo urgent <n>                basculer l'urgence                           ││
+││                                       :todo due <n> <AAAA-MM-JJ>      fixer l'échéance                             ││
+││                                       :todo open|doing|done|drop <n>  changer le statut                            ││
+││                                       :convention add <titre>         écrire une convention                        ││
+││                                       :adr add <titre>                écrire une décision du projet                ││
+││                                       :role add <nom>                 créer un rôle (projet sélectionné, sinon glob││
+└│                                       :regles                         les rôles, conventions et ADR                │┘
+┌│                                       :usage                          les coûts                                    │┐
+││                                       :refresh                        tout relire                                  ││
+│└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

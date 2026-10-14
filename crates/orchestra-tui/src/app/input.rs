@@ -132,12 +132,18 @@ impl App {
                 self.split = None;
                 self.split_selected = 0;
             }
+            Screen::Cost => self.screen = Screen::Rules,
             _ => self.screen = Screen::Board,
         }
     }
 
     pub(super) fn on_form_key(&mut self, action: Action) {
         match action {
+            // On the box, any key flips it; nothing is typed into a title.
+            Action::Char(_) if self.form_field == TicketField::Split => {
+                self.creating_epic = !self.creating_epic;
+            }
+            Action::Backspace if self.form_field == TicketField::Split => {}
             Action::Char(c) => self.form.type_char(self.form_field, c),
             Action::Backspace => self.form.backspace(self.form_field),
             Action::NextField => self.form_field = self.form_field.next(),

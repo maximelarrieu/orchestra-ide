@@ -12,6 +12,11 @@ impl App {
     }
 
     pub(super) fn on_rules_char(&mut self, c: char) {
+        if c == '$' {
+            self.screen = Screen::Cost;
+            self.request_usage();
+            return;
+        }
         if self.selected_role().is_some() {
             self.on_role_char(c);
             return;

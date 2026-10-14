@@ -61,7 +61,19 @@ impl App {
     pub(super) fn jump_to_attention(&mut self) {
         let queue = self.attention_queue();
         if queue.is_empty() {
-            self.status = "rien ne t'attend".into();
+            // A split to read is a decision too, before any ticket exists.
+            let split = self
+                .epics
+                .iter()
+                .find(|e| e.status == orchestra_core::epic::EpicStatus::Split)
+                .map(|e| e.id);
+            match split {
+                Some(epic_id) => {
+                    self.outbox.push(Command::GetEpic { epic_id });
+                    self.status = "découpage à relire".into();
+                }
+                None => self.status = "rien ne t'attend".into(),
+            }
             return;
         }
         let on_board = self.screen == Screen::Board && self.board_pane == BoardPane::Tickets;

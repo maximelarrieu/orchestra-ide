@@ -17,16 +17,21 @@ fn app_with_projects(n: usize) -> App {
 }
 
 #[test]
-fn screens_cycle_both_ways() {
-    assert_eq!(Screen::Board.next(), Screen::Ticket);
-    assert_eq!(Screen::Board.prev(), Screen::Epic);
+fn three_spaces_and_everything_else_is_reached_from_them() {
+    // Tab walks the spaces, from wherever one stands inside one.
+    assert_eq!(Screen::Board.next(), Screen::Todo);
+    assert_eq!(Screen::Agent.next(), Screen::Todo, "un écran du tableau compte comme le tableau");
+    assert_eq!(Screen::Todo.next(), Screen::Rules);
+    assert_eq!(Screen::Rules.next(), Screen::Board);
+    assert_eq!(Screen::Board.prev(), Screen::Rules);
+    // 1, 2, 3 open the spaces; there is no fourth.
     assert_eq!(Screen::from_number(1), Some(Screen::Board));
-    assert_eq!(Screen::from_number(6), Some(Screen::Proposal));
-    assert_eq!(Screen::from_number(7), Some(Screen::Todo));
-    assert_eq!(Screen::from_number(8), Some(Screen::Rules));
-    assert_eq!(Screen::from_number(9), Some(Screen::Epic));
+    assert_eq!(Screen::from_number(2), Some(Screen::Todo));
+    assert_eq!(Screen::from_number(3), Some(Screen::Rules));
+    assert_eq!(Screen::from_number(4), None);
     assert_eq!(Screen::from_number(0), None);
-    assert_eq!(Screen::from_number(10), None);
+    // The costs live in the settings.
+    assert_eq!(Screen::Cost.space(), crate::app::Space::Settings);
 }
 
 #[test]
@@ -567,7 +572,9 @@ fn every_screen_exists_now() {
 #[test]
 fn the_cost_screen_reacts_to_its_own_keys() {
     let mut app = App::new();
-    app.update(Msg::Key(Action::Screen(4)));
+    app.update(Msg::Key(Action::Screen(3)));
+    app.update(Msg::Key(Action::Char('$')));
+    assert_eq!(app.screen, Screen::Cost, "$ ouvre les coûts depuis les réglages");
 
     let cmds = app.update(Msg::Key(Action::Char('m')));
     assert_eq!(app.cost.group, GroupBy::Ticket, "m change le regroupement");
@@ -663,7 +670,7 @@ fn every_screen_refreshes_itself_on_the_tick() {
 #[test]
 fn the_cost_view_is_polled_rather_than_event_driven() {
     let mut app = App::new();
-    app.update(Msg::Key(Action::Screen(4)));
+    app.screen = Screen::Cost;
     // One tick is not enough; the second asks.
     assert!(app.update(Msg::Tick).is_empty());
     let cmds = app.update(Msg::Tick);

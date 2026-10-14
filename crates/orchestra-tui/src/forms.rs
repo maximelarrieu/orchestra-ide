@@ -9,13 +9,16 @@ use orchestra_core::model::{Effort, RoleDefinition, TeamMember, TeamProposal};
 pub enum TicketField {
     Title,
     Brief,
+    /// « Trop gros : le faire découper » — a box, toggled with Espace.
+    Split,
 }
 
 impl TicketField {
     pub fn next(self) -> Self {
         match self {
             TicketField::Title => TicketField::Brief,
-            TicketField::Brief => TicketField::Title,
+            TicketField::Brief => TicketField::Split,
+            TicketField::Split => TicketField::Title,
         }
     }
 
@@ -35,14 +38,14 @@ pub struct NewTicketForm {
 impl NewTicketForm {
     pub fn field_mut(&mut self, field: TicketField) -> &mut String {
         match field {
-            TicketField::Title => &mut self.title,
+            TicketField::Title | TicketField::Split => &mut self.title,
             TicketField::Brief => &mut self.brief,
         }
     }
 
     pub fn field(&self, field: TicketField) -> &str {
         match field {
-            TicketField::Title => &self.title,
+            TicketField::Title | TicketField::Split => &self.title,
             TicketField::Brief => &self.brief,
         }
     }
