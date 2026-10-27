@@ -149,6 +149,9 @@ impl App {
             }
             Reply::Epic { detail } => self.adopt_epic(detail),
             Reply::Stats { stats } => self.cost.stats = Some(stats),
+            Reply::Series { series } => self.observe.series = Some(series),
+            Reply::Alerts { active, recent, monitors } => self.adopt_alerts(active, recent, monitors),
+            Reply::Trace { ticket_id, trace } => self.adopt_trace(ticket_id, trace),
             Reply::Diff { diff } => {
                 self.status = format!(
                     "{} fichier(s) — j/k pour lire, q pour fermer",

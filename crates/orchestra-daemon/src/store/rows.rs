@@ -1059,6 +1059,58 @@ pub fn usage_breakdown(conn: &mut Connection, q: &UsageQuery) -> Result<Vec<Usag
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// One bucket of one model, for the observer's series. Priced by the ledger,
+/// model by model, like every other figure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeriesRow {
+    pub bucket_unix: i64,
+    pub model: String,
+    pub tokens: Tokens,
+    pub messages: u64,
+}
+
+pub fn usage_series(
+    conn: &mut Connection,
+    since: OffsetDateTime,
+    step_secs: i64,
+    project_id: Option<ProjectId>,
+) -> Result<Vec<SeriesRow>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT (CAST(strftime('%s', u.ts) AS INTEGER) / ?1) * ?1 AS bucket, u.model AS model,
+                SUM(u.input) AS input, SUM(u.output) AS output,
+                SUM(u.cache_read) AS cache_read, SUM(u.cache_creation) AS cache_creation,
+                SUM(u.thinking) AS thinking, COUNT(*) AS messages
+         FROM usage_samples u
+         WHERE u.ts >= ?2 AND (?3 IS NULL OR u.project_id = ?3)
+         GROUP BY bucket, u.model",
+    )?;
+    let rows = stmt.query_map(
+        params![step_secs, ts(since), project_id.map(|p| p.to_string())],
+        |row| {
+            Ok(SeriesRow {
+                bucket_unix: row.get("bucket")?,
+                model: row.get::<_, Option<String>>("model")?.unwrap_or_default(),
+                tokens: tokens_from_row(row)?,
+                messages: row.get::<_, i64>("messages")? as u64,
+            })
+        },
+    )?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Agents that ended badly since `since`: failed or crashed. A cancellation
+/// is the user's doing, not a failure.
+pub fn agent_failures_since(conn: &mut Connection, since: OffsetDateTime) -> Result<u32> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events
+         WHERE kind = 'agent_status_changed' AND ts >= ?1
+           AND json_extract(payload, '$.status') IN ('failed', 'crashed')",
+        [ts(since)],
+        |r| r.get(0),
+    )?;
+    Ok(n as u32)
+}
+
 // ---------------------------------------------------------------------------
 // Transcript cursors
 // ---------------------------------------------------------------------------

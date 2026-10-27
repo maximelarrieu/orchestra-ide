@@ -47,6 +47,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>) {
     match app.screen {
         Screen::Board => render_board(app, frame, chunks[1]),
         Screen::Cost => super::cost::render(app, frame, chunks[1]),
+        Screen::Observe => super::observe::render(app, frame, chunks[1]),
         Screen::Ticket => super::ticket::render(app, frame, chunks[1]),
         Screen::Agent => super::agent::render(app, frame, chunks[1]),
         Screen::NewTicket => super::new_ticket::render(app, frame, chunks[1]),

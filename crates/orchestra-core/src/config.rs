@@ -25,6 +25,10 @@ pub struct Config {
     pub notify: NotifyConfig,
     pub epic: EpicConfig,
     pub retro: RetroConfig,
+    /// Thresholds the daemon watches (`[[monitors]]`). None by default: an
+    /// alert is a choice of the user's, like a budget.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitors: Vec<crate::observe::MonitorRule>,
     /// MCP servers a role may name in its `mcp:` list, as Claude Code's
     /// `mcpServers` describes them (`command`, `args`, `env`, or `type` and
     /// `url`). Agents get none they are not given.
@@ -53,6 +57,7 @@ impl Default for Config {
             notify: NotifyConfig::default(),
             epic: EpicConfig::default(),
             retro: RetroConfig::default(),
+            monitors: Vec::new(),
             mcp_servers: Default::default(),
             models: ModelsConfig::default(),
             pricing: PriceTable::defaults(),
@@ -477,6 +482,21 @@ impl Config {
                 "daemon.max_attempts doit être au moins 1".into(),
             ));
         }
+        let mut seen = std::collections::BTreeSet::new();
+        for m in &self.monitors {
+            if m.name.trim().is_empty() || !seen.insert(m.name.as_str()) {
+                return Err(CoreError::Config(format!(
+                    "monitors : le nom « {} » est vide ou répété",
+                    m.name
+                )));
+            }
+            if !m.threshold.is_finite() || m.threshold < 0.0 {
+                return Err(CoreError::Config(format!(
+                    "monitors « {} » : le seuil doit être un nombre positif ou nul",
+                    m.name
+                )));
+            }
+        }
         for (label, d) in [
             ("defaults", &self.defaults),
             ("orchestrator", &self.orchestrator),
@@ -743,6 +763,26 @@ mod tests {
         c.daemon.worktrees_dir = Some(PathBuf::from("/tmp/elsewhere"));
         let p = ResolvedPaths::from_config(&c);
         assert_eq!(p.worktrees_dir, PathBuf::from("/tmp/elsewhere"));
+    }
+
+    #[test]
+    fn monitors_are_read_from_the_config_and_checked() {
+        let src = r#"
+            [[monitors]]
+            name = "budget"
+            kind = "cost_per_hour"
+            threshold = 5.0
+        "#;
+        let c: Config = toml::from_str(src).unwrap();
+        assert_eq!(c.monitors.len(), 1);
+        assert!(c.validate().is_ok());
+        assert!(Config::default().monitors.is_empty());
+
+        let twice = format!("{src}{src}");
+        assert!(toml::from_str::<Config>(&twice).unwrap().validate().is_err());
+        let negative = src.replace("5.0", "-1.0");
+        assert!(toml::from_str::<Config>(&negative).unwrap().validate().is_err());
+        assert!(toml::from_str::<Config>(&src.replace("cost_per_hour", "humeur")).is_err());
     }
 
     #[test]

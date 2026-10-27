@@ -179,6 +179,11 @@ impl App {
             }
             "regles" | "règles" | "rules" | "roles" | "rôles" => self.go(Screen::Rules),
             "usage" | "cout" | "coût" => self.go(Screen::Cost),
+            "observer" | "observe" | "metriques" | "métriques" => {
+                self.open_observer(ObserveTab::Metrics)
+            }
+            "alertes" | "alerts" => self.open_observer(ObserveTab::Alerts),
+            "trace" => self.open_observer(ObserveTab::Trace),
             "refresh" => self.refresh(),
             "q" | "quit" => self.should_quit = true,
             "" => {}

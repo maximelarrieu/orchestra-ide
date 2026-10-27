@@ -595,6 +595,65 @@ fn the_cost_screen_reacts_to_its_own_keys() {
 }
 
 #[test]
+fn the_observer_opens_from_the_settings_and_asks_for_what_its_tab_shows() {
+    use orchestra_core::observe::{Firing, MonitorKind, Series};
+    let mut app = App::new();
+    app.update(Msg::Key(Action::Screen(3)));
+    let cmds = app.update(Msg::Key(Action::Char('O')));
+    assert_eq!(app.screen, Screen::Observe);
+    assert_eq!(app.screen.space(), crate::app::Space::Settings);
+    assert!(cmds.iter().any(|c| matches!(c, Command::GetSeries { .. })), "{cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Command::GetAlerts)), "{cmds:?}");
+
+    // The window changes the query, and the series is dropped until the
+    // new one arrives rather than shown under the wrong label.
+    app.observe.series = Some(Series::default());
+    let cmds = app.update(Msg::Key(Action::Char('p')));
+    assert!(app.observe.series.is_none());
+    let hours = cmds.iter().find_map(|c| match c {
+        Command::GetSeries { query } => Some(query.hours),
+        _ => None,
+    });
+    assert_eq!(hours, Some(168));
+
+    app.on_reply(Reply::Alerts {
+        active: vec![Firing {
+            monitor: "budget".into(),
+            kind: MonitorKind::CostPerHour,
+            value: 4.0,
+            threshold: 3.0,
+        }],
+        recent: vec![],
+        monitors: 1,
+    });
+    assert_eq!(app.observe.active.len(), 1);
+
+    // q goes back to the settings, like the costs.
+    app.update(Msg::Key(Action::Back));
+    assert_eq!(app.screen, Screen::Rules);
+}
+
+#[test]
+fn a_trace_is_asked_for_the_ticket_in_view_and_a_stale_reply_is_dropped() {
+    use orchestra_core::observe::Trace;
+    let mut app = App::new();
+    app.screen = Screen::Observe;
+    let cmds = app.update(Msg::Key(Action::Char('t')));
+    assert!(app.status.contains("ouvre un ticket"), "sans ticket, on le dit");
+    assert!(!cmds.iter().any(|c| matches!(c, Command::GetTrace { .. })));
+
+    let mine = uuid::Uuid::new_v4();
+    app.observe.trace_for = Some(mine);
+    let cmds = app.update(Msg::Key(Action::Char('t')));
+    assert!(cmds.iter().any(|c| matches!(c, Command::GetTrace { ticket_id } if *ticket_id == mine)));
+
+    app.on_reply(Reply::Trace { ticket_id: uuid::Uuid::new_v4(), trace: Trace::default() });
+    assert!(app.observe.trace.is_none(), "la trace d'un autre ticket n'est pas la sienne");
+    app.on_reply(Reply::Trace { ticket_id: mine, trace: Trace::default() });
+    assert!(app.observe.trace.is_some());
+}
+
+#[test]
 fn the_period_defines_the_window_it_asks_for() {
     let mut app = App::new();
     app.cost.period = Period::All;

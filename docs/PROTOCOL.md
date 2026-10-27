@@ -65,7 +65,27 @@ Un seul type, discriminé par `kind` : `daemon_started`, `project_added`,
 `hook_blocked`, `unmanaged_session_seen`, `warning`, `todo_added`, `todo_updated`,
 `todo_status_changed`, `todo_deleted`, `todo_promoted`, `rule_proposed`,
 `rule_created`, `rule_status_changed`, `rule_deleted`, `rules_checked`,
-`merge_blocked`, et quelques autres.
+`merge_blocked`, `alert_raised`, `alert_resolved`, et quelques autres.
+
+## Observer
+
+Trois lectures, toutes calculées à la requête depuis la base (aucune table de plus) :
+
+- `get_series` (`query` : `hours`, `step_minutes`, `project_id`, tous facultatifs ; 24 h
+  par heure par défaut, au plus 336 tranches) répond
+  `{"reply":"series","series":{"start_unix","step_secs","tokens":[…],"cost_usd":[…],"messages":[…]}}`,
+  la dernière tranche étant celle en cours. Les tokens sont la vérité, le `$` est
+  tarifé modèle par modèle.
+- `get_trace` (`ticket_id`) répond `{"reply":"trace","ticket_id","trace":{"spans":[…]}}` :
+  proposition, agents, vérifications, relectures, fusion, chacun avec début, fin
+  (absente tant que l'étape tourne) et `ok` (absent tant qu'elle tourne).
+- `get_alerts` répond `{"reply":"alerts","active":[…],"recent":[…],"monitors":N}`.
+
+Les alertes viennent des `[[monitors]]` de `config.toml`. Le daemon mesure toutes les
+30 s et écrit `alert_raised` quand une mesure passe strictement au-dessus de son seuil,
+`alert_resolved` quand elle redescend : un événement par franchissement, pas par mesure.
+L'état des alertes se relit depuis ces événements, un redémarrage n'en oublie ni n'en
+relève aucune.
 
 Les rôles se lisent avec `list_roles` (`{"reply":"roles","roles":[…],"errors":[…]}`,
 où `git` est toujours résolu : ce qu'un agent du rôle recevra). `create_role` répond

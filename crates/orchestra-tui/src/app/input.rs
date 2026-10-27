@@ -132,7 +132,7 @@ impl App {
                 self.split = None;
                 self.split_selected = 0;
             }
-            Screen::Cost => self.screen = Screen::Rules,
+            Screen::Cost | Screen::Observe => self.screen = Screen::Rules,
             _ => self.screen = Screen::Board,
         }
     }
@@ -297,6 +297,7 @@ impl App {
         }
         match self.screen {
             Screen::Cost => self.on_cost_char(c),
+            Screen::Observe => self.on_observe_char(c),
             Screen::Board => self.on_board_char(c),
             Screen::Ticket => self.on_ticket_char(c),
             Screen::Agent => self.on_agent_char(c),

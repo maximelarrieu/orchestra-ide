@@ -21,7 +21,7 @@ use orchestra_core::protocol::{GroupBy, UsageQuery};
 use rusqlite::{Connection, OpenFlags};
 use uuid::Uuid;
 
-pub use rows::{KeyedUsage, Recorded, SessionRow, UsageBreakdown};
+pub use rows::{KeyedUsage, Recorded, SeriesRow, SessionRow, UsageBreakdown};
 
 #[derive(Clone)]
 pub struct Store {
@@ -379,6 +379,22 @@ impl Store {
     /// exactly rather than averaging rates.
     pub async fn usage_breakdown(&self, q: UsageQuery) -> Result<Vec<UsageBreakdown>> {
         self.with(move |c| rows::usage_breakdown(c, &q)).await
+    }
+
+    /// Usage per time bucket and model since `since`, for the observer.
+    pub async fn usage_series(
+        &self,
+        since: time::OffsetDateTime,
+        step_secs: i64,
+        project_id: Option<ProjectId>,
+    ) -> Result<Vec<SeriesRow>> {
+        self.with(move |c| rows::usage_series(c, since, step_secs, project_id))
+            .await
+    }
+
+    /// Agents that failed or crashed since `since`.
+    pub async fn agent_failures_since(&self, since: time::OffsetDateTime) -> Result<u32> {
+        self.with(move |c| rows::agent_failures_since(c, since)).await
     }
 
     /// Token totals for one agent, plus how many assistant turns it took.

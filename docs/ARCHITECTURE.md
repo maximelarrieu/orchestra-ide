@@ -45,6 +45,10 @@ toucher au disque ni au réseau.
 - `epic.rs` — les épopées : une demande découpée en tickets ordonnés, le découpage
   proposé (`EpicProposal`, validé en vagues par `waves`), son schéma pour
   `--json-schema`, et le lien d'un ticket à son épopée (`EpicLink`).
+- `observe.rs` — l'observabilité, en lectures pures : les séries (`Series`, tranches
+  de tokens, de $ et de messages), les monitors (`evaluate`, `diff`, `replay_alerts`) et
+  la trace d'un ticket (`build_trace`, depuis ses événements). Le daemon va chercher,
+  ces fonctions décident.
 - `attention.rs` — ce qu'un ticket attend de l'utilisateur (`attention::of`),
   d'où la file « à toi » du tableau.
 - `pricing.rs` — tokens vers dollars indicatifs, par plus long préfixe de modèle.
@@ -131,6 +135,8 @@ toucher au disque ni au réseau.
   règle est dans `orchestra-core`), et le veilleur qui notifie le bureau quand un
   ticket se met à attendre (`notify.attention`). `notify.rs` envoie, sans jamais
   échouer.
+- `monitor.rs` — la boucle des `[[monitors]]` : mesure, compare, écrit
+  `alert_raised` / `alert_resolved`. Absente quand aucun monitor n'est défini.
 - `zellij.rs` — les panes. Tout y est best-effort et sous échéance ; rien n'y
   peut faire échouer un ticket. Faits sur le CLI dans `docs/ZELLIJ_NOTES.md`.
 

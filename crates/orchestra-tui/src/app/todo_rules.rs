@@ -17,6 +17,10 @@ impl App {
             self.request_usage();
             return;
         }
+        if c == 'O' {
+            self.open_observer(ObserveTab::Metrics);
+            return;
+        }
         if self.selected_role().is_some() {
             self.on_role_char(c);
             return;

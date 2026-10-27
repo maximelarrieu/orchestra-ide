@@ -185,6 +185,22 @@ pub fn describe(e: &Event) -> Option<String> {
         EventKind::RoleCreated { name, .. } => format!("rôle « {name} » créé"),
         EventKind::RoleUpdated { name, change } => format!("rôle « {name} » : {change}"),
         EventKind::RoleDeleted { name } => format!("rôle « {name} » supprimé"),
+        EventKind::AlertRaised {
+            monitor,
+            monitor_kind,
+            value,
+            threshold,
+        } => format!(
+            "⚠ alerte « {monitor} » : {}",
+            orchestra_core::observe::Firing {
+                monitor: monitor.clone(),
+                kind: *monitor_kind,
+                value: *value,
+                threshold: *threshold,
+            }
+            .line_fr()
+        ),
+        EventKind::AlertResolved { monitor } => format!("✓ alerte « {monitor} » levée"),
         EventKind::RuleDeleted { rule_kind, title, .. } => {
             format!("{} « {title} » supprimée", rule_kind.label_fr())
         }

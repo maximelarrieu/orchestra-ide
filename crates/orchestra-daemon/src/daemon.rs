@@ -22,6 +22,7 @@ use orchestra_core::protocol::{
     AgentSummary, ApiError, Command, DaemonStatus, Reply, TicketDetail, TicketSummary, UsageQuery,
     PROTOCOL_VERSION,
 };
+use orchestra_core::observe::{build_trace, replay_alerts, SeriesQuery};
 use orchestra_core::roles::Catalog;
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
@@ -293,6 +294,9 @@ impl Daemon {
                 brief,
             } => self.create_ticket(project_id, title, brief).await,
             Command::GetUsage { query } => self.get_usage(query).await,
+            Command::GetSeries { query } => self.get_series(query).await,
+            Command::GetTrace { ticket_id } => self.get_trace(ticket_id).await,
+            Command::GetAlerts => self.get_alerts().await,
             Command::PlanTicket { ticket_id } => self.plan_ticket(ticket_id).await,
             Command::AcceptProposal { ticket_id, team } => {
                 self.accept_proposal(ticket_id, team).await
@@ -1940,6 +1944,53 @@ impl Daemon {
     async fn get_usage(&self, query: UsageQuery) -> Result<Reply, ApiError> {
         let (rows, totals) = self.ledger.rollup(query).await.map_err(internal)?;
         Ok(Reply::Usage { rows, totals })
+    }
+
+    async fn get_series(&self, query: SeriesQuery) -> Result<Reply, ApiError> {
+        let series = self.ledger.series(&query).await.map_err(internal)?;
+        Ok(Reply::Series { series })
+    }
+
+    /// A ticket's steps, from its events. The chatty per-turn events are left
+    /// out: a trace is about the structure of the work, not what was said.
+    async fn get_trace(&self, ticket_id: TicketId) -> Result<Reply, ApiError> {
+        self.store
+            .ticket(ticket_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::not_found("ticket"))?;
+        let filter = EventFilter {
+            ticket_id: Some(ticket_id),
+            exclude_verbose: true,
+            ..Default::default()
+        };
+        let events = self
+            .store
+            .events_since(0, filter, crate::monitor::ALERT_HISTORY)
+            .await
+            .map_err(internal)?;
+        Ok(Reply::Trace {
+            ticket_id,
+            trace: build_trace(&events),
+        })
+    }
+
+    async fn get_alerts(&self) -> Result<Reply, ApiError> {
+        let events = self
+            .store
+            .events_since(0, crate::monitor::alert_filter(), crate::monitor::ALERT_HISTORY)
+            .await
+            .map_err(internal)?;
+        let (standing, mut history) = replay_alerts(&events);
+        // The latest crossings are what one reads; the rest is in the events.
+        let keep = history.len().saturating_sub(50);
+        history.drain(..keep);
+        history.reverse();
+        Ok(Reply::Alerts {
+            active: standing.into_values().collect(),
+            recent: history,
+            monitors: self.cfg.monitors.len() as u32,
+        })
     }
 }
 

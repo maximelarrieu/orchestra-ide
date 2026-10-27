@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::Result;
 use orchestra_core::config::Config;
 use orchestra_core::model::{AgentId, ProjectId, TicketId, Tokens, UsageSample};
+use orchestra_core::observe::{Series, SeriesQuery};
 use orchestra_core::pricing::PriceTable;
+use time::OffsetDateTime;
 use orchestra_core::protocol::{GroupBy, UsageQuery, UsageRow, UsageTotals};
 
 use crate::store::{KeyedUsage, Recorded, Store, UsageBreakdown};
@@ -112,6 +114,23 @@ impl UsageLedger {
 
         rows.truncate(query.limit.max(1) as usize);
         Ok((rows, totals))
+    }
+
+    /// Usage bucket by bucket, priced model by model, for the observer.
+    pub async fn series(&self, query: &SeriesQuery) -> Result<Series> {
+        let query = query.clamped();
+        let now = orchestra_core::now();
+        let mut series = Series::empty(&query, now);
+        let since = OffsetDateTime::from_unix_timestamp(series.start_unix)?;
+        for row in self
+            .store
+            .usage_series(since, series.step_secs, query.project_id)
+            .await?
+        {
+            let cost = self.prices.cost(&row.model, &row.tokens).unwrap_or(0.0);
+            series.add(row.bucket_unix, row.tokens.total(), cost, row.messages);
+        }
+        Ok(series)
     }
 
     /// Tokens, turns and cost of one agent.
@@ -237,6 +256,40 @@ mod tests {
     async fn ledger() -> UsageLedger {
         let store = Store::open_memory().unwrap();
         UsageLedger::new(store, &Config::default())
+    }
+
+    #[tokio::test]
+    async fn the_series_buckets_and_prices_what_was_recorded() {
+        let l = ledger().await;
+        let s = Uuid::new_v4();
+        let mut recent = sample("msg_now", "claude-opus-5", 100, s);
+        recent.ts = OffsetDateTime::now_utc();
+        let mut old = sample("msg_old", "claude-opus-5", 100, s);
+        old.ts = OffsetDateTime::now_utc() - time::Duration::hours(3);
+        let mut ancient = sample("msg_ancient", "claude-opus-5", 100, s);
+        ancient.ts = OffsetDateTime::now_utc() - time::Duration::days(30);
+        for x in [recent.clone(), old.clone(), ancient] {
+            l.record(x).await.unwrap();
+        }
+        let q = SeriesQuery { hours: 6, step_minutes: 60, project_id: None };
+        let series = l.series(&q).await.unwrap();
+        assert_eq!(series.tokens.len(), 6);
+        // Two samples inside the window, none from a month ago.
+        assert_eq!(series.messages.iter().sum::<u64>(), 2);
+        assert_eq!(*series.messages.last().unwrap() + series.messages[2], 2);
+        let expected = recent.tokens.total() + old.tokens.total();
+        assert_eq!(series.tokens.iter().sum::<u64>(), expected);
+        assert!(series.cost_usd.iter().sum::<f64>() > 0.0, "un modèle de la grille est tarifé");
+    }
+
+    #[tokio::test]
+    async fn a_series_can_be_scoped_to_a_project() {
+        let l = ledger().await;
+        let mut x = sample("msg_1", "claude-opus-5", 10, Uuid::new_v4());
+        x.project_id = None;
+        l.record(x).await.unwrap();
+        let q = SeriesQuery { hours: 1, step_minutes: 1, project_id: Some(Uuid::new_v4()) };
+        assert_eq!(l.series(&q).await.unwrap().messages.iter().sum::<u64>(), 0);
     }
 
     #[tokio::test]

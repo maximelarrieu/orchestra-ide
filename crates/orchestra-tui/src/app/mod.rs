@@ -31,6 +31,7 @@ mod describe;
 mod epic;
 mod input;
 mod nav;
+mod observe;
 mod palette;
 mod proposal;
 mod replies;
@@ -40,6 +41,7 @@ mod todo_rules;
 mod tests;
 
 pub use describe::{agent_label, describe};
+pub use observe::{ObserveTab, ObserveView, WINDOWS};
 use describe::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +50,7 @@ pub enum Screen {
     Ticket,
     Agent,
     Cost,
+    Observe,
     NewTicket,
     Proposal,
     Todo,
@@ -91,11 +94,12 @@ impl Space {
 }
 
 impl Screen {
-    pub const ALL: [Screen; 9] = [
+    pub const ALL: [Screen; 10] = [
         Screen::Board,
         Screen::Ticket,
         Screen::Agent,
         Screen::Cost,
+        Screen::Observe,
         Screen::NewTicket,
         Screen::Proposal,
         Screen::Todo,
@@ -111,7 +115,7 @@ impl Screen {
     pub fn space(self) -> Space {
         match self {
             Screen::Todo => Space::Todo,
-            Screen::Rules | Screen::Cost => Space::Settings,
+            Screen::Rules | Screen::Cost | Screen::Observe => Space::Settings,
             _ => Space::Board,
         }
     }
@@ -122,6 +126,7 @@ impl Screen {
             Screen::Ticket => "Ticket",
             Screen::Agent => "Agent",
             Screen::Cost => "Coûts",
+            Screen::Observe => "Observer",
             Screen::NewTicket => "Nouveau ticket",
             Screen::Proposal => "Équipe",
             Screen::Todo => "TODO",
@@ -446,6 +451,7 @@ pub struct App {
     /// Set while a `CreateRule` is in flight: its file opens once written.
     awaiting_rule_file: bool,
     pub cost: CostView,
+    pub observe: ObserveView,
     /// Last few events, newest last: the "what is happening" strip.
     pub activity: Vec<String>,
     pub status: String,
@@ -531,6 +537,7 @@ impl Default for App {
             edit_request: None,
             awaiting_rule_file: false,
             cost: CostView::default(),
+            observe: ObserveView::default(),
             activity: Vec::new(),
             status: "connexion au daemon…".into(),
             connected: false,
@@ -650,6 +657,7 @@ impl App {
                 None => "découpages".into(),
             }),
             Screen::Cost => out.push("coûts".into()),
+            Screen::Observe => out.push("observer".into()),
             Screen::Board | Screen::Todo | Screen::Rules => {}
         }
         if self.diff_view.is_some() {
@@ -776,6 +784,8 @@ impl App {
             Screen::Ticket | Screen::Agent => self.refresh_open_ticket(None),
             // Rule files are edited by hand too, outside of Orchestra.
             Screen::Rules => self.request_rules(),
+            // Series and alerts change by the minute; a trace by the step.
+            Screen::Observe if slow => self.request_observe(),
             Screen::Epic => match self.epic.as_ref() {
                 Some(d) => self.outbox.push(Command::GetEpic { epic_id: d.epic.id }),
                 None => self.request_epics(),

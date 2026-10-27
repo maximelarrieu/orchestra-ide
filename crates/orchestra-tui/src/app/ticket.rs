@@ -13,6 +13,7 @@ impl App {
             'a' => self.open_editor(),
             'T' => self.ticket_timeline = !self.ticket_timeline,
             'D' => self.request_diff(),
+            'O' => self.open_observer(ObserveTab::Trace),
             'n' => self.open_new_ticket(),
             'L' => {
                 self.outbox.push(Command::LaunchTicket {

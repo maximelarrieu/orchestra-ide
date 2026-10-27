@@ -109,6 +109,20 @@ remove_worktree = true
 auto_pane = true
 layout = "orchestra"
 
+# Les alertes : le daemon mesure toutes les 30 s et écrit un événement quand une
+# mesure passe au-dessus de son seuil, un autre quand elle redescend. Aucune par
+# défaut. `kind` : cost_per_hour ($ indicatifs sur l'heure), tokens_per_hour,
+# stalled (agents silencieux en ce moment), failures (agents en échec sur l'heure).
+# [[monitors]]
+# name = "budget"
+# kind = "cost_per_hour"
+# threshold = 5.0
+#
+# [[monitors]]
+# name = "silence"
+# kind = "stalled"
+# threshold = 0
+
 # Une notification de bureau (notify-send) chaque fois qu'un ticket se met à
 # t'attendre : équipe à relire, fusion bloquée, agent silencieux…
 [notify]

@@ -234,11 +234,13 @@ pub fn screen_hints(app: &App) -> Vec<Hint> {
         Screen::Ticket => ticket_hints(app),
         Screen::Agent => agent_hints(app),
         Screen::Cost => cost_hints(app),
+        Screen::Observe => observe_hints(app),
         Screen::Proposal => proposal_hints(app),
         Screen::Todo => todo_hints(app),
         Screen::Rules => {
             let mut hints = rules_hints(app);
             hints.push(Hint::screen("$", "coûts"));
+            hints.push(Hint::screen("O", "observer"));
             hints
         }
         Screen::Epic => epic_hints(app),
@@ -336,6 +338,7 @@ fn ticket_hints(app: &App) -> Vec<Hint> {
         "T",
         if app.ticket_timeline { "le brief" } else { "chronologie" },
     ));
+    hints.push(Hint::screen("O", "trace"));
     hints
 }
 
@@ -401,6 +404,19 @@ fn cost_hints(app: &App) -> Vec<Hint> {
         ),
         Hint::screen("v", "qualité de l'équipe"),
     ]
+}
+
+fn observe_hints(app: &App) -> Vec<Hint> {
+    let o = &app.observe;
+    let mut hints = vec![
+        Hint::screen("m", "métriques"),
+        Hint::screen("a", "alertes"),
+        Hint::screen("t", "trace"),
+    ];
+    if o.tab == crate::app::ObserveTab::Metrics {
+        hints.push(Hint::screen("p", o.window_label()));
+    }
+    hints
 }
 
 fn todo_hints(app: &App) -> Vec<Hint> {

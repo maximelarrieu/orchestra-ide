@@ -169,10 +169,12 @@ pub enum EventTag {
     RoleCreated,
     RoleUpdated,
     RoleDeleted,
+    AlertRaised,
+    AlertResolved,
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 53] = [
+    pub const ALL: [EventTag; 55] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::ProjectMoved,
@@ -226,6 +228,8 @@ impl EventTag {
         EventTag::RoleCreated,
         EventTag::RoleUpdated,
         EventTag::RoleDeleted,
+        EventTag::AlertRaised,
+        EventTag::AlertResolved,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -280,6 +284,8 @@ impl EventTag {
             EventTag::RuleStatusChanged => "rule_status_changed",
             EventTag::RuleDeleted => "rule_deleted",
             EventTag::RulesChecked => "rules_checked",
+            EventTag::AlertRaised => "alert_raised",
+            EventTag::AlertResolved => "alert_resolved",
             EventTag::RoleCreated => "role_created",
             EventTag::RoleUpdated => "role_updated",
             EventTag::RoleDeleted => "role_deleted",
@@ -591,6 +597,18 @@ pub enum EventKind {
         #[serde(default)]
         violations: Vec<Violation>,
     },
+    /// A monitor of `config.toml` went over its threshold. Written by the
+    /// daemon, which measures; one event per crossing, not per reading.
+    AlertRaised {
+        monitor: String,
+        monitor_kind: crate::observe::MonitorKind,
+        value: f64,
+        threshold: f64,
+    },
+    /// That monitor is back under its threshold.
+    AlertResolved {
+        monitor: String,
+    },
 }
 
 impl EventKind {
@@ -646,6 +664,8 @@ impl EventKind {
             EventKind::RuleStatusChanged { .. } => EventTag::RuleStatusChanged,
             EventKind::RuleDeleted { .. } => EventTag::RuleDeleted,
             EventKind::RulesChecked { .. } => EventTag::RulesChecked,
+            EventKind::AlertRaised { .. } => EventTag::AlertRaised,
+            EventKind::AlertResolved { .. } => EventTag::AlertResolved,
             EventKind::RoleCreated { .. } => EventTag::RoleCreated,
             EventKind::RoleUpdated { .. } => EventTag::RoleUpdated,
             EventKind::RoleDeleted { .. } => EventTag::RoleDeleted,

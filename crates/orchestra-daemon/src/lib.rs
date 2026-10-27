@@ -15,6 +15,7 @@ pub mod attention;
 pub mod integration;
 pub mod init;
 pub mod ledger;
+pub mod monitor;
 pub mod notify;
 pub mod orchestrator;
 pub mod repo_summary;
@@ -50,6 +51,7 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     let store = Store::open(&paths.db_file)?;
     let notify_attention = cfg.notify.attention;
     let epic_auto_plan = cfg.epic.auto_plan;
+    let monitors = cfg.monitors.clone();
     let notify_store = store.clone();
     let roots = transcript_roots(&cfg, &paths, &store).await;
     let daemon = Daemon::new(cfg, store.clone());
@@ -104,6 +106,16 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
         cancel.clone(),
     ));
 
+    // The thresholds of `[[monitors]]`; nothing runs when there are none.
+    let monitoring = tokio::spawn(crate::monitor::watch(
+        monitors,
+        notify_store.clone(),
+        bus.clone(),
+        ledger.clone(),
+        supervisor.clone(),
+        cancel.clone(),
+    ));
+
     // Off unless asked: a desktop notification reaches outside the tool.
     let notifying = notify_attention.then(|| {
         tokio::spawn(crate::attention::notify_on_attention(
@@ -119,6 +131,7 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), watching).await;
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), pull_requests).await;
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), epics).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), monitoring).await;
     if let Some(task) = notifying {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
     }

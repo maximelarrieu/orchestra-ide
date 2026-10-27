@@ -164,6 +164,18 @@ pub enum Command {
         #[serde(default)]
         query: UsageQuery,
     },
+    /// Tokens, dollars and messages bucket by bucket, for the observer's
+    /// sparklines.
+    GetSeries {
+        #[serde(default)]
+        query: crate::observe::SeriesQuery,
+    },
+    /// The steps of one ticket's life, with their durations.
+    GetTrace {
+        ticket_id: TicketId,
+    },
+    /// The monitors over their threshold, and the history of crossings.
+    GetAlerts,
     /// Show the pane that follows this agent, opening one if there is none.
     OpenPane {
         agent_id: AgentId,
@@ -350,6 +362,20 @@ pub enum Reply {
     Usage {
         rows: Vec<UsageRow>,
         totals: UsageTotals,
+    },
+    Series {
+        series: crate::observe::Series,
+    },
+    Trace {
+        ticket_id: TicketId,
+        trace: crate::observe::Trace,
+    },
+    Alerts {
+        active: Vec<crate::observe::Firing>,
+        recent: Vec<crate::observe::AlertEntry>,
+        /// How many monitors `config.toml` defines; zero explains an empty
+        /// screen.
+        monitors: u32,
     },
     Pane {
         pane_id: String,
@@ -844,6 +870,9 @@ mod tests {
             Command::GetDiff {
                 ticket_id: Uuid::new_v4(),
             },
+            Command::GetSeries { query: Default::default() },
+            Command::GetTrace { ticket_id: Uuid::new_v4() },
+            Command::GetAlerts,
             Command::SteerAgent {
                 agent_id: Uuid::new_v4(),
                 text: "vas-y".into(),
@@ -1000,6 +1029,9 @@ mod tests {
                 path: PathBuf::from("/x.md"),
             },
             Reply::Agents { agents: vec![] },
+            Reply::Series { series: Default::default() },
+            Reply::Trace { ticket_id: Uuid::new_v4(), trace: Default::default() },
+            Reply::Alerts { active: vec![], recent: vec![], monitors: 2 },
             Reply::Usage {
                 rows: vec![],
                 totals: UsageTotals::default(),

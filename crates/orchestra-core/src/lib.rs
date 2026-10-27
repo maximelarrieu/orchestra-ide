@@ -10,6 +10,7 @@ pub mod error;
 pub mod events;
 pub mod guard;
 pub mod model;
+pub mod observe;
 pub mod pricing;
 pub mod provision;
 pub mod protocol;

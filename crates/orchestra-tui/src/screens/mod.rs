@@ -9,6 +9,7 @@ pub mod diff;
 pub mod epic;
 pub mod layout;
 pub mod new_ticket;
+pub mod observe;
 pub mod proposal;
 pub mod rules;
 pub mod ticket;
