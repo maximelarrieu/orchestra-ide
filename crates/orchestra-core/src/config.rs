@@ -78,6 +78,12 @@ pub struct DaemonConfig {
     /// cold: it keeps what it read, and the cached prefix with it.
     pub fork_on_rerun: bool,
     pub claude_bin: String,
+    /// `CLAUDE_CONFIG_DIR`, which picks the account a `claude` logs in with,
+    /// for a project that says nothing itself (`project_claude_config_dir`).
+    /// Unset, the inherited variable is removed and Claude Code falls back to
+    /// `~/.claude`: the shell the daemon was started from must not decide
+    /// which account does the work.
+    pub claude_config_dir: Option<PathBuf>,
     /// Root of the Claude Code transcripts the watcher tails.
     pub transcripts_dir: Option<PathBuf>,
     pub branch_prefix: String,
@@ -93,6 +99,7 @@ impl Default for DaemonConfig {
             fork_on_rerun: true,
             max_attempts: 2,
             claude_bin: "claude".into(),
+            claude_config_dir: None,
             transcripts_dir: None,
             branch_prefix: "orch/".into(),
         }
@@ -241,6 +248,44 @@ impl ProjectIntegration {
     pub fn parse(src: &str) -> Result<Self> {
         toml::from_str(src).map_err(|e| CoreError::Config(format!(".orchestra/integration.toml : {e}")))
     }
+}
+
+/// `.orchestra/account.toml` of a project: the Claude account its agents use,
+/// when the project's `.envrc` is not the right place to say it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectAccount {
+    /// `CLAUDE_CONFIG_DIR` for this project's agents. `~/` is expanded.
+    pub claude_config_dir: Option<PathBuf>,
+}
+
+impl ProjectAccount {
+    pub fn parse(src: &str) -> Result<Self> {
+        toml::from_str(src).map_err(|e| CoreError::Config(format!(".orchestra/account.toml : {e}")))
+    }
+}
+
+/// The `CLAUDE_CONFIG_DIR` a project's agents run with, so the account follows
+/// the project's folder and not the shell the daemon was started from.
+///
+/// First match wins: `.orchestra/account.toml`, then what the main
+/// repository's `.envrc` exports (worktrees live elsewhere, out of its reach),
+/// then `daemon.claude_config_dir`. `None` means Claude Code's own default,
+/// `~/.claude`.
+pub fn project_claude_config_dir(
+    account: &ProjectAccount,
+    from_envrc: Option<PathBuf>,
+    daemon: &DaemonConfig,
+) -> Option<PathBuf> {
+    account
+        .claude_config_dir
+        .clone()
+        .or(from_envrc)
+        .or_else(|| daemon.claude_config_dir.clone())
+        .map(|dir| match dir.strip_prefix("~") {
+            Ok(rest) => Paths::home().join(rest),
+            Err(_) => dir,
+        })
 }
 
 impl IntegrationConfig {
@@ -587,6 +632,7 @@ impl ResolvedPaths {
                 .daemon
                 .transcripts_dir
                 .clone()
+                .or_else(|| cfg.daemon.claude_config_dir.as_ref().map(|d| d.join("projects")))
                 .unwrap_or_else(Paths::transcripts_dir),
             roles_dir: Paths::roles_dir(),
             conventions_dir: Paths::conventions_dir(),
@@ -697,6 +743,50 @@ mod tests {
         c.daemon.worktrees_dir = Some(PathBuf::from("/tmp/elsewhere"));
         let p = ResolvedPaths::from_config(&c);
         assert_eq!(p.worktrees_dir, PathBuf::from("/tmp/elsewhere"));
+    }
+
+    #[test]
+    fn transcripts_follow_the_claude_config_dir() {
+        let mut c = Config::default();
+        c.daemon.claude_config_dir = Some(PathBuf::from("/home/u/.claude-pro"));
+        let p = ResolvedPaths::from_config(&c);
+        assert_eq!(p.transcripts_dir, PathBuf::from("/home/u/.claude-pro/projects"));
+
+        // An explicit transcripts_dir still wins.
+        c.daemon.transcripts_dir = Some(PathBuf::from("/tmp/transcripts"));
+        let p = ResolvedPaths::from_config(&c);
+        assert_eq!(p.transcripts_dir, PathBuf::from("/tmp/transcripts"));
+    }
+
+    #[test]
+    fn the_project_account_wins_then_the_envrc_then_the_daemon() {
+        let mut daemon = DaemonConfig::default();
+        let none = ProjectAccount::default();
+        assert_eq!(project_claude_config_dir(&none, None, &daemon), None);
+
+        daemon.claude_config_dir = Some(PathBuf::from("/d/.claude-pro"));
+        assert_eq!(
+            project_claude_config_dir(&none, None, &daemon),
+            Some(PathBuf::from("/d/.claude-pro"))
+        );
+        assert_eq!(
+            project_claude_config_dir(&none, Some(PathBuf::from("/e/.claude-perso")), &daemon),
+            Some(PathBuf::from("/e/.claude-perso"))
+        );
+
+        let forced = ProjectAccount::parse(r#"claude_config_dir = "/p/.claude-x""#).unwrap();
+        assert_eq!(
+            project_claude_config_dir(&forced, Some(PathBuf::from("/e/.claude-perso")), &daemon),
+            Some(PathBuf::from("/p/.claude-x"))
+        );
+        assert!(ProjectAccount::parse("compte = \"x\"").is_err());
+    }
+
+    #[test]
+    fn a_project_account_expands_the_home() {
+        let forced = ProjectAccount::parse(r#"claude_config_dir = "~/.claude-perso""#).unwrap();
+        let dir = project_claude_config_dir(&forced, None, &DaemonConfig::default()).unwrap();
+        assert_eq!(dir, Paths::home().join(".claude-perso"));
     }
 
     #[test]

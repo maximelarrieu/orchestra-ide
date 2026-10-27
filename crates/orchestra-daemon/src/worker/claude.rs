@@ -58,6 +58,9 @@ pub struct ClaudeCommand {
     pub isolated: bool,
     /// `--mcp-config` as inline JSON: the only servers an isolated run gets.
     pub mcp_config: Option<String>,
+    /// `CLAUDE_CONFIG_DIR`, hence the account (`crate::account`). `None` is
+    /// `~/.claude`: the inherited variable is removed, never passed through.
+    pub config_dir: Option<PathBuf>,
     pub env: Vec<(String, String)>,
     /// Close stdin as soon as the prompt is written.
     ///
@@ -91,6 +94,7 @@ impl ClaudeCommand {
             agents_json: None,
             isolated: true,
             mcp_config: None,
+            config_dir: None,
             env: Vec::new(),
             one_shot: false,
         }
@@ -219,6 +223,11 @@ impl ClaudeCommand {
         // Force subscription auth: a stray API key would bill separately and
         // silently change which account does the work.
         cmd.env_remove("ANTHROPIC_API_KEY");
+        // Same reason: the account is the project's, not the daemon's shell's.
+        match &self.config_dir {
+            Some(dir) => cmd.env("CLAUDE_CONFIG_DIR", dir),
+            None => cmd.env_remove("CLAUDE_CONFIG_DIR"),
+        };
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -528,6 +537,22 @@ mod tests {
         let mut c = cmd();
         c.name = Some("é".repeat(80));
         assert!(c.display().contains('…'));
+    }
+
+    #[test]
+    fn the_account_is_always_said_never_inherited() {
+        let env_of = |c: &ClaudeCommand| {
+            c.to_tokio()
+                .as_std()
+                .get_envs()
+                .find(|(k, _)| *k == "CLAUDE_CONFIG_DIR")
+                .map(|(_, v)| v.map(|v| v.to_os_string()))
+        };
+        let mut c = cmd();
+        // Removed: an `.envrc` of the daemon's shell does not pick the account.
+        assert_eq!(env_of(&c), Some(None));
+        c.config_dir = Some(PathBuf::from("/home/u/.claude-perso"));
+        assert_eq!(env_of(&c), Some(Some("/home/u/.claude-perso".into())));
     }
 
     #[tokio::test]

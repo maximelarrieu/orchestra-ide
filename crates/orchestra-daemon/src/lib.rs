@@ -10,6 +10,7 @@ pub mod daemon;
 pub mod epic_flow;
 pub mod github;
 pub mod hooks;
+pub mod account;
 pub mod attention;
 pub mod integration;
 pub mod init;
@@ -50,6 +51,7 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     let notify_attention = cfg.notify.attention;
     let epic_auto_plan = cfg.epic.auto_plan;
     let notify_store = store.clone();
+    let roots = transcript_roots(&cfg, &paths, &store).await;
     let daemon = Daemon::new(cfg, store.clone());
     let handle = daemon.handle();
     let bus = daemon.bus().clone();
@@ -69,17 +71,22 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     })
     .await?;
 
-    // Account for every Claude Code session on the machine, ours or not.
+    // Account for every Claude Code session on the machine, ours or not, under
+    // every account a project uses.
     let cancel = CancellationToken::new();
-    let watcher = TranscriptWatcher::new(paths.transcripts_dir.clone(), store, ledger, bus.clone());
-    let watching = tokio::spawn({
-        let cancel = cancel.clone();
-        async move {
-            if let Err(e) = watcher.run(cancel).await {
-                tracing::error!("surveillance des transcripts arrêtée : {e:#}");
+    let watchers: Vec<_> = roots
+        .into_iter()
+        .map(|root| {
+            let watcher = TranscriptWatcher::new(root, store.clone(), ledger.clone(), bus.clone());
+            let cancel = cancel.clone();
+            async move {
+                if let Err(e) = watcher.run(cancel).await {
+                    tracing::error!("surveillance des transcripts arrêtée : {e:#}");
+                }
             }
-        }
-    });
+        })
+        .collect();
+    let watching = tokio::spawn(futures::future::join_all(watchers));
 
     // Pull requests are answered on GitHub, not here: something has to notice.
     let pull_requests = tokio::spawn({
@@ -119,6 +126,30 @@ pub async fn run(cfg: Config, shutdown: impl std::future::Future<Output = ()>) -
     drop(bus);
     core.abort();
     result
+}
+
+/// The transcript roots to tail: one per account the known projects use.
+///
+/// A `daemon.transcripts_dir` set by hand is taken as the whole answer. The
+/// accounts are read at boot: a project moved to another account is followed
+/// from the next start.
+async fn transcript_roots(cfg: &Config, paths: &ResolvedPaths, store: &Store) -> Vec<std::path::PathBuf> {
+    let mut roots = std::collections::BTreeSet::from([paths.transcripts_dir.clone()]);
+    if cfg.daemon.transcripts_dir.is_some() {
+        return roots.into_iter().collect();
+    }
+    let projects = store.list_projects().await.unwrap_or_else(|e| {
+        tracing::warn!("projets illisibles, seuls les transcripts par défaut sont suivis : {e:#}");
+        Vec::new()
+    });
+    for project in projects {
+        let root = match account::claude_config_dir(&cfg.daemon, &project.path).await {
+            Some(dir) => dir.join("projects"),
+            None => orchestra_core::config::Paths::transcripts_dir(),
+        };
+        roots.insert(root);
+    }
+    roots.into_iter().collect()
 }
 
 fn prepare_dirs(paths: &ResolvedPaths) -> Result<()> {

@@ -77,6 +77,7 @@ pub async fn plan(
         &project.path,
         user_prompt(ticket, catalog, &project.path, &summary),
     );
+    cmd.config_dir = crate::account::claude_config_dir(&cfg.daemon, &project.path).await;
     cmd.session_id = Some(session_id);
     cmd.name = Some(format!(
         "[{}] orchestrateur #{}",
@@ -204,6 +205,7 @@ pub async fn split(
     prompt.push_str("\nDécoupe cette demande en tickets, et réponds selon le schéma.\n");
 
     let mut cmd = ClaudeCommand::new(&cfg.daemon.claude_bin, &project.path, prompt);
+    cmd.config_dir = crate::account::claude_config_dir(&cfg.daemon, &project.path).await;
     cmd.session_id = Some(session_id);
     cmd.name = Some(format!("[{}] découpage « {} »", project.name, epic.title));
     cmd.model = cfg.orchestrator.model_flag().map(str::to_string);
@@ -265,6 +267,8 @@ pub async fn retrospect(
         .context("écriture de la consigne de rétrospective")?;
 
     let mut cmd = ClaudeCommand::new(&cfg.daemon.claude_bin, worktree, prompt);
+    // From the main repository: the worktree has no `.envrc` to read.
+    cmd.config_dir = crate::account::claude_config_dir(&cfg.daemon, &project.path).await;
     cmd.session_id = Some(session_id);
     cmd.name = Some(format!("[{}] rétrospective #{}", project.name, ticket.number));
     cmd.model = Some(cfg.retro.model.clone()).filter(|m| !m.trim().is_empty());

@@ -24,6 +24,12 @@ stall_secs = 600
 # une copie de sa session précédente au lieu de tout relire.
 fork_on_rerun = true
 claude_bin = "claude"
+# Le compte Claude des agents d'un projet qui ne dit rien lui-même. Le compte
+# suit le dossier du projet : d'abord <projet>/.orchestra/account.toml
+# (claude_config_dir = "~/.claude-perso"), puis le CLAUDE_CONFIG_DIR exporté par
+# le .envrc du dépôt principal, puis cette valeur. Absente, c'est ~/.claude :
+# jamais le shell d'où l'on a lancé le daemon.
+# claude_config_dir = "/home/moi/.claude-pro"
 branch_prefix = "orch/"
 
 # Le modèle d'un agent vient d'abord de la proposition, puis de l'entête de son

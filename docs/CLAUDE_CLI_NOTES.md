@@ -224,3 +224,23 @@ comptabiliser toute l'activité Claude Code de la machine, pas seulement la sien
 Passés par session via `--settings '<json>'`, sans toucher `~/.claude/settings.json`.
 La charge utile arrive sur stdin et contient toujours `session_id`, `cwd` et
 `hook_event_name`. Une sortie 2 avec un motif sur stderr refuse l'appel d'outil.
+
+## Compte et CLAUDE_CONFIG_DIR
+
+`CLAUDE_CONFIG_DIR` déplace tout ce que Claude Code range dans `~/.claude` :
+identifiants (`.credentials.json`), transcripts (`projects/`), réglages, et aussi
+`.claude.json`, qui quitte alors `~` pour ce dossier. C'est donc la variable qui
+choisit le compte, et une session ne se reprend (`--resume`, `--fork-session`)
+que sous le compte qui l'a écrite.
+
+Le compte suit le dossier du projet (`daemon/src/account.rs`), dans cet ordre :
+`.orchestra/account.toml` (`claude_config_dir = "~/.claude-perso"`), puis ce
+qu'exporte le `.envrc` du **dépôt principal** (`direnv exec <dépôt> printenv
+CLAUDE_CONFIG_DIR`, l'environnement du daemon retiré ; un worktree n'a pas de
+`.envrc`), puis `daemon.claude_config_dir`, puis `~/.claude`. Il est résolu une
+fois par agent, et `ClaudeCommand` pose toujours la variable ou la retire :
+jamais celle du shell d'où le daemon est parti.
+Un pane est lancé par le serveur du multiplexeur avec son propre environnement :
+la commande de reprise porte donc `env CLAUDE_CONFIG_DIR=…` (ou `env -u`).
+Le surveillant de transcripts suit un `<compte>/projects` par compte utilisé,
+lus au démarrage.

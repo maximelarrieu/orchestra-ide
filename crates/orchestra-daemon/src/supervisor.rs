@@ -1894,6 +1894,9 @@ impl Supervisor {
         } else {
             None
         };
+        // Once per agent: a resume or a fork only finds its session under the
+        // account that wrote it.
+        let account = crate::account::claude_config_dir(&self.cfg.daemon, &project.path).await;
         // A redirection the user sent, waiting for the turn that delivers it.
         let mut redirect: Option<String> = None;
         let mut redirected = false;
@@ -1929,6 +1932,7 @@ impl Supervisor {
                     fork,
                     git,
                     self.integration_for(project).push,
+                    account.clone(),
                     &label,
                 )
                 .await?;
@@ -2007,6 +2011,8 @@ impl Supervisor {
         git: GitPolicy,
         // `false` when the project closed pushing: the guard refuses it.
         push: bool,
+        // The project's `CLAUDE_CONFIG_DIR` (`crate::account`).
+        account: Option<PathBuf>,
         // `[projet] rôle #12`: the session's name, and its pane's.
         label: &str,
     ) -> Result<AgentOutcome> {
@@ -2015,6 +2021,7 @@ impl Supervisor {
         cmd.session_id = Some(agent.session_id);
         cmd.resume = resume;
         cmd.fork_session = fork;
+        cmd.config_dir = account;
         cmd.name = Some(label.to_string());
         cmd.model = model;
         cmd.effort = Some(effort);
@@ -2399,11 +2406,22 @@ impl Supervisor {
         // Plain here: the mark is put on by `set_status` below, and putting it
         // on twice is how a pane ends up called « ☰ ☰ … ».
         let label = self.pane_label(&agent).await;
-        let command = vec![
+        // The pane is started by the zellij server, with its own environment:
+        // the account has to travel with the command, and the session is only
+        // found under the project's.
+        let account = match self.store.project(agent.project_id).await {
+            Ok(Some(project)) => crate::account::claude_config_dir(&self.cfg.daemon, &project.path).await,
+            _ => self.cfg.daemon.claude_config_dir.clone(),
+        };
+        let mut command = match &account {
+            Some(dir) => vec!["env".to_string(), format!("CLAUDE_CONFIG_DIR={}", dir.display())],
+            None => vec!["env".to_string(), "-u".to_string(), "CLAUDE_CONFIG_DIR".to_string()],
+        };
+        command.extend([
             claude_bin.to_string(),
             "--resume".to_string(),
             agent.session_id.to_string(),
-        ];
+        ]);
         let pane_id = self
             .open_pane(&mut agent, &label, worktree, Some(command))
             .await?;
