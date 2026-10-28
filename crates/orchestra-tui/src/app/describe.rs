@@ -141,6 +141,9 @@ pub fn describe(e: &Event) -> Option<String> {
             }
             None => format!("{branch} fusionnée dans {into} ({commits} commits)"),
         },
+        EventKind::RateLimited { resets_at, window } => {
+            format!("limite d'usage atteinte ({window}) jusqu'à {}", fmt_unix(*resets_at))
+        }
         EventKind::AgentLooping { tool, repeats } => {
             format!("boucle : {tool} appelé {repeats} fois de suite")
         }
@@ -247,4 +250,11 @@ pub fn describe(e: &Event) -> Option<String> {
         | EventKind::PaneClosed { .. } => return None,
     };
     Some(format!("{stamp}  {body}"))
+}
+
+/// `HH:MM` local-less (UTC) from Unix seconds; `?` when the time is unknown.
+fn fmt_unix(secs: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(secs)
+        .map(|t| format!("{:02}:{:02} UTC", t.hour(), t.minute()))
+        .unwrap_or_else(|_| "?".into())
 }

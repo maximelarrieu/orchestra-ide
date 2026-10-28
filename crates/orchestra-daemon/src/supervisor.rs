@@ -80,6 +80,9 @@ pub struct Supervisor {
     /// Agents currently reported silent (`AgentStalled`), until they speak
     /// again or stop. Read by the board's « à toi » queue.
     stalled: Arc<Mutex<HashSet<AgentId>>>,
+    /// When an agent's usage window reopens (Unix seconds), as its stream
+    /// reported it. Read once the agent stops, to decide whether to wait.
+    rate_blocked: Arc<Mutex<std::collections::HashMap<AgentId, i64>>>,
 }
 
 impl Supervisor {
@@ -102,6 +105,7 @@ impl Supervisor {
             panes_wanted: Arc::new(Mutex::new(HashSet::new())),
             slots: Arc::new(Semaphore::new(cfg.daemon.max_concurrent_agents)),
             stalled: Arc::new(Mutex::new(HashSet::new())),
+            rate_blocked: Arc::new(Mutex::new(Default::default())),
             cfg,
         }
     }
@@ -2222,6 +2226,11 @@ impl Supervisor {
                     redirected = true;
                     continue;
                 }
+                AgentOutcome::Failed { .. } if self.wait_for_rate_limit(&agent).await => {
+                    // The session is intact: resume it, no attempt spent.
+                    redirected = true;
+                    continue;
+                }
                 AgentOutcome::Failed { .. }
                     if agent.status == AgentStatus::Crashed
                         && agent.attempt < self.cfg.daemon.max_attempts =>
@@ -2246,6 +2255,42 @@ impl Supervisor {
                 }
             }
         }
+    }
+
+    /// An agent that stopped on a closed usage window waits for it to reopen,
+    /// when `daemon.rate_limit_wait_secs` allows it. `true` means it waited
+    /// and should resume; `false` means fail as before — no window reported,
+    /// the wait is too long, or the ticket was stopped meanwhile.
+    async fn wait_for_rate_limit(&self, agent: &Agent) -> bool {
+        let limit = self.cfg.daemon.rate_limit_wait_secs;
+        let Some(resets_at) = self.rate_blocked.lock().await.remove(&agent.id) else {
+            return false;
+        };
+        let now = orchestra_core::now().unix_timestamp();
+        // A few seconds past the reset: asking at the very second is refused.
+        let wait = (resets_at - now).max(0) as u64 + 5;
+        if limit == 0 || wait > limit {
+            return false;
+        }
+        self.warn_ticket(
+            agent.ticket_id,
+            agent.project_id,
+            format!(
+                "l'agent « {} » attend la réouverture de la fenêtre d'usage ({} min)",
+                agent.role,
+                wait.div_ceil(60)
+            ),
+        )
+        .await;
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(wait);
+        while tokio::time::Instant::now() < until {
+            tokio::time::sleep(std::time::Duration::from_secs(30).min(until - tokio::time::Instant::now())).await;
+            match self.store.ticket(agent.ticket_id).await {
+                Ok(Some(t)) if t.status == TicketStatus::Running => {}
+                _ => return false,
+            }
+        }
+        true
     }
 
     /// Wait for room under `daemon.max_concurrent_agents`, saying so on the
@@ -2435,6 +2480,13 @@ impl Supervisor {
                                     r.result.clone(),
                                 ));
                                 structured = r.structured_output.clone();
+                            }
+                            if let StreamLine::RateLimitEvent { rate_limit_info, .. } = line.as_ref() {
+                                if let (true, Some(at)) =
+                                    (rate_limit_info.is_blocked(), rate_limit_info.resets_at)
+                                {
+                                    self.rate_blocked.lock().await.insert(agent.id, at);
+                                }
                             }
                             if let StreamLine::Assistant { message, .. } = line.as_ref() {
                                 for block in &message.content {
@@ -4017,6 +4069,28 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.display().to_string()
+    }
+
+    #[tokio::test]
+    async fn an_agent_only_waits_for_a_window_that_is_reported_and_short_enough() {
+        let (sup, t, project, _dir) = gated(vec![], 0).await;
+        let a = agent("backend", AgentStatus::Failed, 1, None);
+        let a = Agent { ticket_id: t.id, project_id: project.id, ..a };
+        // Nothing reported: fail as before.
+        assert!(!sup.wait_for_rate_limit(&a).await);
+        // Reported, but waiting is off (the default).
+        let soon = orchestra_core::now().unix_timestamp() + 60;
+        sup.rate_blocked.lock().await.insert(a.id, soon);
+        assert!(!sup.wait_for_rate_limit(&a).await);
+        // Reported, waiting allowed, but the window reopens too late.
+        let mut cfg = (*sup.cfg).clone();
+        cfg.daemon.rate_limit_wait_secs = 60;
+        let sup = Supervisor { cfg: Arc::new(cfg), ..sup };
+        let late = orchestra_core::now().unix_timestamp() + 3600;
+        sup.rate_blocked.lock().await.insert(a.id, late);
+        assert!(!sup.wait_for_rate_limit(&a).await);
+        // The report is consumed: asking again finds nothing.
+        assert!(sup.rate_blocked.lock().await.is_empty());
     }
 
     #[tokio::test]

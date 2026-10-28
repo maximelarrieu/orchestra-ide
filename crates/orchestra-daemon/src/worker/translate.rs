@@ -104,6 +104,14 @@ pub fn translate(scope: &Scope, line: &StreamLine, now: time::OffsetDateTime) ->
                 reason: Some(reason),
             });
         }
+        StreamLine::RateLimitEvent { rate_limit_info, .. } => {
+            if rate_limit_info.is_blocked() {
+                out.push(EventKind::RateLimited {
+                    resets_at: rate_limit_info.resets_at.unwrap_or(0),
+                    window: rate_limit_info.rate_limit_type.clone().unwrap_or_default(),
+                });
+            }
+        }
         StreamLine::StreamEvent { .. } | StreamLine::Other => {}
     }
     out

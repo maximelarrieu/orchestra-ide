@@ -17,6 +17,8 @@ const OTHER_LINES: &str = include_str!("fixtures/other_lines.jsonl");
 const SUBAGENT: &str = include_str!("fixtures/subagent.jsonl");
 /// A reviewer run under `--json-schema` (claude 2.1.289): the verdict comes
 /// as `structured_output`, and `result` carries the same JSON as a string.
+/// The usage-window report Claude Code emits after a response (2.1.312).
+const RATE_LIMIT_EVENT: &str = include_str!("fixtures/rate_limit_event.jsonl");
 const REVIEWER_RESULT: &str = include_str!("fixtures/reviewer_result.jsonl");
 
 fn records(jsonl: &str) -> Vec<UsageRecord> {
@@ -185,4 +187,17 @@ fn a_structured_verdict_comes_out_of_a_real_result_line() {
     assert_eq!(review.roles_to_fix(&["backend", "tests"]), vec!["backend", "tests"]);
     // The text copy is the fallback: on its own, it is JSON, not a block.
     assert!(parse_review(r.result.as_deref().unwrap()).is_none());
+}
+
+#[test]
+fn a_rate_limit_event_reads_its_window_and_does_not_block_while_allowed() {
+    let line = StreamLine::parse(RATE_LIMIT_EVENT.lines().next().unwrap()).unwrap();
+    let StreamLine::RateLimitEvent { rate_limit_info, session_id, .. } = line else {
+        panic!("ligne reconnue comme autre chose");
+    };
+    assert_eq!(rate_limit_info.status, "allowed");
+    assert!(rate_limit_info.resets_at.is_some());
+    assert_eq!(rate_limit_info.rate_limit_type.as_deref(), Some("five_hour"));
+    assert!(!rate_limit_info.is_blocked());
+    assert!(session_id.is_some());
 }

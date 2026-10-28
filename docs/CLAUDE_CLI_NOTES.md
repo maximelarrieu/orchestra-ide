@@ -244,3 +244,26 @@ Un pane est lancé par le serveur du multiplexeur avec son propre environnement 
 la commande de reprise porte donc `env CLAUDE_CONFIG_DIR=…` (ou `env -u`).
 Le surveillant de transcripts suit un `<compte>/projects` par compte utilisé,
 lus au démarrage.
+
+## Fenêtres d'usage : `rate_limit_event`
+
+Avec `--output-format stream-json --verbose`, Claude Code 2.1.312 émet après
+chaque réponse une ligne `{"type":"rate_limit_event","rate_limit_info":{…}}`
+(fixture : `tests/fixtures/rate_limit_event.jsonl`). `rate_limit_info` porte
+`status` (`allowed` observé), `resetsAt` (secondes Unix), `rateLimitType`
+(`five_hour` observé) et `unifiedWindows` avec l'utilisation de chaque fenêtre
+(`five_hour`, `seven_day`).
+
+**Non observé** : un `status` autre que `allowed`. Le code ne traite que la
+valeur `rejected` comme un blocage (`RateLimitInfo::is_blocked`) ; on ignore ce
+que le CLI émet et comment il termine l'exécution à ce moment-là (sous-type de
+la ligne `result`). `daemon.rate_limit_wait_secs` reste à 0 tant que ce n'est pas
+vérifié sur un vrai refus.
+
+## Bac à sable : `bwrap`
+
+`claude -p` tourne dans `bwrap --ro-bind / / --bind <worktree> <worktree> --bind
+<CLAUDE_CONFIG_DIR> … --bind ~/.claude.json … --bind ~/.cache …` : il écrit son
+fichier et rend son résultat. Vérifié sur une tâche d'une ligne avec haiku ;
+`~/.local/share/claude` et `~/.local/state/claude` n'ont pas été nécessaires
+dans ce cas (ils sont liés s'ils existent). Pas essayé sur une session longue.

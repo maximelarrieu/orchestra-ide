@@ -321,6 +321,8 @@ pub enum SpanKind {
     Check,
     Review,
     Merge,
+    /// A ceiling reached, a usage window closed, a loop, a model change.
+    Incident,
 }
 
 impl SpanKind {
@@ -331,6 +333,7 @@ impl SpanKind {
             SpanKind::Check => "vérification",
             SpanKind::Review => "relecture",
             SpanKind::Merge => "fusion",
+            SpanKind::Incident => "incident",
         }
     }
 }
@@ -478,6 +481,38 @@ pub fn build_trace(events: &[Event]) -> Trace {
                 end: Some(e.ts),
                 ok: Some(true),
             }),
+            EventKind::BudgetExceeded { scope, spent_usd, cap_usd } => spans.push(Span {
+                kind: SpanKind::Incident,
+                label: format!(
+                    "plafond du {scope} : {} sur {}",
+                    crate::pricing::fmt_usd(*spent_usd),
+                    crate::pricing::fmt_usd(*cap_usd)
+                ),
+                start: e.ts,
+                end: Some(e.ts),
+                ok: Some(false),
+            }),
+            EventKind::RateLimited { window, .. } => spans.push(Span {
+                kind: SpanKind::Incident,
+                label: format!("limite d'usage ({window})"),
+                start: e.ts,
+                end: Some(e.ts),
+                ok: Some(false),
+            }),
+            EventKind::AgentLooping { tool, repeats } => spans.push(Span {
+                kind: SpanKind::Incident,
+                label: format!("boucle : {tool} × {repeats}"),
+                start: e.ts,
+                end: Some(e.ts),
+                ok: Some(false),
+            }),
+            EventKind::ModelEscalated { role, from, to } => spans.push(Span {
+                kind: SpanKind::Incident,
+                label: format!("{role} : {from} → {to}"),
+                start: e.ts,
+                end: Some(e.ts),
+                ok: None,
+            }),
             EventKind::MergeBlocked { reason, .. } => spans.push(Span {
                 kind: SpanKind::Merge,
                 label: format!("bloquée : {reason}"),
@@ -599,6 +634,30 @@ mod tests {
         assert!(!history[1].raised);
         let (standing, _) = replay_alerts(&events[..2]);
         assert!(standing.is_empty());
+    }
+
+    #[test]
+    fn incidents_show_in_the_trace_with_what_happened() {
+        let events = vec![
+            ev(1, None, EventKind::ModelEscalated {
+                role: "backend".into(),
+                from: "haiku".into(),
+                to: "sonnet".into(),
+            }),
+            ev(2, None, EventKind::AgentLooping { tool: "Bash".into(), repeats: 8 }),
+            ev(3, None, EventKind::RateLimited { resets_at: 0, window: "five_hour".into() }),
+            ev(4, None, EventKind::BudgetExceeded {
+                spent_usd: 5.0,
+                cap_usd: 5.0,
+                scope: "jour".into(),
+            }),
+        ];
+        let t = build_trace(&events);
+        assert_eq!(t.spans.len(), 4);
+        assert!(t.spans.iter().all(|s| s.kind == SpanKind::Incident));
+        assert_eq!(t.spans[0].ok, None, "une montée de modèle n'est pas un échec");
+        assert!(t.spans[1..].iter().all(|s| s.ok == Some(false)));
+        assert!(t.spans[3].label.contains("plafond du jour"), "{}", t.spans[3].label);
     }
 
     #[test]

@@ -93,6 +93,10 @@ pub struct DaemonConfig {
     /// The same tool call this many times in a row is a loop: the agent is
     /// told once, and `AgentLooping` is published. `0` turns the watch off.
     pub loop_repeats: u32,
+    /// An agent stopped by a usage window (`rate_limit_event` « rejected »)
+    /// waits for it to reopen, up to this many seconds, then resumes its
+    /// session instead of failing the ticket. `0` waits for nothing.
+    pub rate_limit_wait_secs: u64,
     /// Members of one stage that the team marked `parallel_ok` run together,
     /// in the same worktree, instead of one after the other. Off by default:
     /// it relies on the orchestrator having given them disjoint files.
@@ -125,6 +129,7 @@ impl Default for DaemonConfig {
             max_ticket_usd: None,
             resume_on_boot: false,
             loop_repeats: 8,
+            rate_limit_wait_secs: 0,
             parallel_stages: false,
             stall_secs: 600,
             fork_on_rerun: true,

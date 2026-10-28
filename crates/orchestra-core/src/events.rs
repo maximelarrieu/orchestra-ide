@@ -151,6 +151,7 @@ pub enum EventTag {
     BudgetExceeded,
     ModelEscalated,
     AgentLooping,
+    RateLimited,
     PullRequestOpened,
     PullRequestClosed,
     HookBlocked,
@@ -177,7 +178,7 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 58] = [
+    pub const ALL: [EventTag; 59] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::ProjectMoved,
@@ -213,6 +214,7 @@ impl EventTag {
         EventTag::BudgetExceeded,
         EventTag::ModelEscalated,
         EventTag::AgentLooping,
+        EventTag::RateLimited,
         EventTag::PullRequestOpened,
         EventTag::PullRequestClosed,
         EventTag::HookBlocked,
@@ -275,6 +277,7 @@ impl EventTag {
             EventTag::BudgetExceeded => "budget_exceeded",
             EventTag::ModelEscalated => "model_escalated",
             EventTag::AgentLooping => "agent_looping",
+            EventTag::RateLimited => "rate_limited",
             EventTag::PullRequestOpened => "pull_request_opened",
             EventTag::PullRequestClosed => "pull_request_closed",
             EventTag::HookBlocked => "hook_blocked",
@@ -517,6 +520,12 @@ pub enum EventKind {
         tool: String,
         repeats: u32,
     },
+    /// The account hit a usage window: nothing new can start before
+    /// `resets_at` (Unix seconds).
+    RateLimited {
+        resets_at: i64,
+        window: String,
+    },
     /// A role run again on the ticket moved up the `[routing]` ladder.
     ModelEscalated {
         role: String,
@@ -679,6 +688,7 @@ impl EventKind {
             EventKind::BudgetExceeded { .. } => EventTag::BudgetExceeded,
             EventKind::ModelEscalated { .. } => EventTag::ModelEscalated,
             EventKind::AgentLooping { .. } => EventTag::AgentLooping,
+            EventKind::RateLimited { .. } => EventTag::RateLimited,
             EventKind::PullRequestOpened { .. } => EventTag::PullRequestOpened,
             EventKind::PullRequestClosed { .. } => EventTag::PullRequestClosed,
             EventKind::HookBlocked { .. } => EventTag::HookBlocked,

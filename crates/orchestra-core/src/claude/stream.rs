@@ -47,8 +47,40 @@ pub enum StreamLine {
         #[serde(default)]
         session_id: Option<Uuid>,
     },
+    /// Where the account stands against its usage windows. Emitted by Claude
+    /// Code after each response; `status` is `allowed` while there is room.
+    RateLimitEvent {
+        #[serde(default)]
+        rate_limit_info: RateLimitInfo,
+        #[serde(default)]
+        session_id: Option<Uuid>,
+        #[serde(flatten)]
+        rest: Map<String, Value>,
+    },
     #[serde(other)]
     Other,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitInfo {
+    #[serde(default)]
+    pub status: String,
+    /// Unix seconds at which the window opens again.
+    #[serde(default, rename = "resetsAt")]
+    pub resets_at: Option<i64>,
+    /// `five_hour`, `seven_day`, …
+    #[serde(default, rename = "rateLimitType")]
+    pub rate_limit_type: Option<String>,
+    #[serde(flatten)]
+    pub rest: Map<String, Value>,
+}
+
+impl RateLimitInfo {
+    /// The account cannot start a new request until `resets_at`. Only the
+    /// value `rejected` says so; every other status lets work continue.
+    pub fn is_blocked(&self) -> bool {
+        self.status == "rejected"
+    }
 }
 
 impl StreamLine {
@@ -62,7 +94,8 @@ impl StreamLine {
             StreamLine::System(s) => s.session_id,
             StreamLine::Assistant { session_id, .. }
             | StreamLine::User { session_id, .. }
-            | StreamLine::StreamEvent { session_id, .. } => *session_id,
+            | StreamLine::StreamEvent { session_id, .. }
+            | StreamLine::RateLimitEvent { session_id, .. } => *session_id,
             StreamLine::Result(r) => r.session_id,
             StreamLine::Other => None,
         }

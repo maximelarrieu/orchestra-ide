@@ -27,6 +27,10 @@ resume_on_boot = false
 # Le même appel d'outil ce nombre de fois de suite est une boucle : l'agent en est
 # averti une fois et le journal le dit. 0 désactive.
 loop_repeats = 8
+# Un agent arrêté par une fenêtre d'usage (limite des 5 heures, par exemple) attend
+# sa réouverture, au plus ce nombre de secondes, puis reprend sa session au lieu
+# de faire échouer le ticket. 0 : n'attend pas. Non éprouvé sur un vrai refus.
+rate_limit_wait_secs = 0
 # Les membres d'une même étape marqués « parallel_ok » par l'équipe tournent en
 # même temps dans le worktree, au lieu de l'un après l'autre. Ils doivent
 # toucher des fichiers distincts : c'est l'orchestrateur qui le promet.
