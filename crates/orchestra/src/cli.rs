@@ -41,6 +41,8 @@ enum Sub {
     Tui,
     /// Vérifie que le daemon répond.
     Ping,
+    /// Vérifie ce dont la ferme a besoin : claude, garde-fou, git, bac à sable…
+    Doctor,
     /// État du daemon.
     Status,
     /// Gestion des projets.
@@ -185,6 +187,13 @@ enum TicketAction {
     },
     /// Affiche un ticket, son équipe et son coût.
     Show { ticket: String },
+    /// Les étapes d'un ticket, dans l'ordre, avec leur durée. `--json` pour les
+    /// exporter telles quelles.
+    Trace {
+        ticket: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Demande une proposition d'équipe à l'orchestrateur.
     Plan {
         ticket: String,
@@ -343,6 +352,12 @@ enum TodoAction {
 
 impl Cli {
     pub async fn run(self) -> Result<()> {
+        // Before the config is read: a broken one is something to report here,
+        // not a reason to refuse to look.
+        if matches!(self.command, Some(Sub::Doctor)) {
+            let socket = self.socket.clone().unwrap_or_else(Paths::socket);
+            return crate::doctor::run(self.config.as_deref(), &socket).await;
+        }
         let config = match &self.config {
             Some(p) => Config::load_from(p)?,
             None => Config::load()?,
@@ -352,6 +367,7 @@ impl Cli {
         match self.command.unwrap_or(Sub::Tui) {
             Sub::Daemon { quiet } => run_daemon(config, quiet).await,
             Sub::Tui => orchestra_tui::run(&socket).await,
+            Sub::Doctor => unreachable!("traité avant la lecture de la configuration"),
             Sub::Ping => {
                 let mut client = Client::connect(&socket)
                     .await
@@ -969,6 +985,16 @@ async fn run_ticket(action: TicketAction, socket: &std::path::Path) -> Result<()
         TicketAction::Show { ticket } => {
             let id = resolve_ticket(&mut client, &ticket).await?;
             show_ticket(&mut client, id).await
+        }
+        TicketAction::Trace { ticket, json } => {
+            let id = resolve_ticket(&mut client, &ticket).await?;
+            match client.call(Cmd::GetTrace { ticket_id: id }).await? {
+                Reply::Trace { trace, .. } => {
+                    print_trace(&trace, json)?;
+                    Ok(())
+                }
+                other => bail!("réponse inattendue : {other:?}"),
+            }
         }
         TicketAction::Plan { ticket, detach } => {
             let id = resolve_ticket(&mut client, &ticket).await?;
@@ -1818,5 +1844,35 @@ async fn run_eval(action: EvalAction, socket: &std::path::Path) -> Result<()> {
         });
     }
     println!("\n{}", report(&results));
+    Ok(())
+}
+
+fn print_trace(trace: &orchestra_core::observe::Trace, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&trace.spans)?);
+        return Ok(());
+    }
+    if trace.is_empty() {
+        println!("aucune étape enregistrée pour ce ticket");
+        return Ok(());
+    }
+    let now = orchestra_core::now();
+    for span in &trace.spans {
+        let symbol = match span.ok {
+            Some(true) => "✔",
+            Some(false) => "✘",
+            None if span.end.is_none() => "…",
+            None => "•",
+        };
+        println!(
+            "{symbol} {:02}:{:02}:{:02}  {:<13} {}  ({} s)",
+            span.start.hour(),
+            span.start.minute(),
+            span.start.second(),
+            span.kind.label_fr(),
+            span.label,
+            span.duration_ms(now) / 1000
+        );
+    }
     Ok(())
 }

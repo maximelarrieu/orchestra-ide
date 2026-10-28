@@ -395,6 +395,21 @@ fn terminal(status: AgentStatus) -> Option<bool> {
 ///
 /// An agent that is resumed after a crash opens a new step: the gap between
 /// the two is the time lost, and the trace is there to show it.
+/// The orchestrator is an agent that never reports a final status; the end of
+/// the proposal is when it stopped. Left open it would run for ever on a
+/// trace.
+fn close_open_agents(
+    spans: &mut [Span],
+    open: &mut BTreeMap<crate::model::AgentId, usize>,
+    at: OffsetDateTime,
+    ok: bool,
+) {
+    for (_, i) in std::mem::take(open) {
+        spans[i].end = Some(at);
+        spans[i].ok = Some(ok);
+    }
+}
+
 pub fn build_trace(events: &[Event]) -> Trace {
     let mut spans: Vec<Span> = Vec::new();
     let mut created: Option<OffsetDateTime> = None;
@@ -406,6 +421,7 @@ pub fn build_trace(events: &[Event]) -> Trace {
         match &e.kind {
             EventKind::TicketCreated { .. } => created = created.or(Some(e.ts)),
             EventKind::ProposalReady { .. } => {
+                close_open_agents(&mut spans, &mut open_agent, e.ts, true);
                 if let Some(start) = created.take() {
                     spans.push(Span {
                         kind: SpanKind::Planning,
@@ -417,6 +433,7 @@ pub fn build_trace(events: &[Event]) -> Trace {
                 }
             }
             EventKind::ProposalFailed { .. } => {
+                close_open_agents(&mut spans, &mut open_agent, e.ts, false);
                 if let Some(start) = created.take() {
                     spans.push(Span {
                         kind: SpanKind::Planning,
@@ -634,6 +651,25 @@ mod tests {
         assert!(!history[1].raised);
         let (standing, _) = replay_alerts(&events[..2]);
         assert!(standing.is_empty());
+    }
+
+    #[test]
+    fn the_end_of_the_proposal_closes_the_orchestrator_span() {
+        let orchestrator = Uuid::new_v4();
+        let events = vec![
+            ev(1, None, EventKind::TicketCreated { number: 1, title: "t".into() }),
+            ev(2, Some(orchestrator), EventKind::AgentSpawned {
+                role: "orchestrator".into(),
+                session_id: Uuid::new_v4(),
+                pid: 1,
+                cmdline: String::new(),
+            }),
+            ev(5, None, EventKind::ProposalFailed { error: "x".into() }),
+        ];
+        let t = build_trace(&events);
+        let agent = t.spans.iter().find(|s| s.kind == SpanKind::Agent).unwrap();
+        assert_eq!(agent.end, Some(at(5)));
+        assert_eq!(agent.ok, Some(false));
     }
 
     #[test]
