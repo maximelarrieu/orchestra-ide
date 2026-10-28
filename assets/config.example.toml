@@ -21,6 +21,9 @@ max_concurrent_agents = 3
 # plafond atteint. À retirer pour ne fixer aucune limite.
 # max_ticket_usd = 15.0
 max_attempts = 2
+# Un ticket qui tournait quand le daemon s'est arrêté reprend là où il en était
+# au démarrage suivant, au lieu d'attendre ta relance.
+resume_on_boot = false
 # Un agent muet depuis ce nombre de secondes est signalé (« ⚑ un agent est
 # silencieux »), sans être arrêté : un long build se tait aussi. 0 désactive.
 stall_secs = 600

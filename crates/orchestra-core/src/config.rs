@@ -81,6 +81,11 @@ pub struct DaemonConfig {
     pub max_ticket_usd: Option<f64>,
     /// How many times a crashed agent is resumed before giving up.
     pub max_attempts: u32,
+    /// A ticket that was running when the daemon stopped picks up where it
+    /// left off at the next boot, instead of waiting as « échoué » for a
+    /// relaunch. Only tickets whose team the user already accepted are
+    /// concerned, so no team starts that they did not agree to (rule 9).
+    pub resume_on_boot: bool,
     /// Seconds of silence after which a running agent is reported as stalled
     /// (`AgentStalled`). It is not stopped. `0` turns the watch off.
     pub stall_secs: u64,
@@ -107,6 +112,7 @@ impl Default for DaemonConfig {
             worktrees_dir: None,
             max_concurrent_agents: 3,
             max_ticket_usd: None,
+            resume_on_boot: false,
             stall_secs: 600,
             fork_on_rerun: true,
             max_attempts: 2,

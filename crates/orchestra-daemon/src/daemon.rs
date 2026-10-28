@@ -192,6 +192,18 @@ impl Daemon {
                 "tickets orphelins rendus relançables"
             );
         }
+        if self.cfg.daemon.resume_on_boot {
+            for ticket in &orphans {
+                if let Err(e) = self.launch_ticket(ticket.id, false).await {
+                    self.bus
+                        .warn(format!(
+                            "le ticket #{} n'a pas pu reprendre seul : {e}",
+                            ticket.number
+                        ))
+                        .await;
+                }
+            }
+        }
         Ok(count)
     }
 
@@ -2549,6 +2561,19 @@ mod tests {
         daemon.recover_on_boot().await.unwrap();
         let back = daemon.store.ticket(done.id).await.unwrap().unwrap();
         assert_eq!(back.status, TicketStatus::Review);
+    }
+
+    #[tokio::test]
+    async fn resume_on_boot_that_cannot_launch_leaves_the_ticket_relaunchable() {
+        // Pas d'équipe acceptée dans ce ticket de test : la reprise seule est
+        // refusée, et le ticket reste « échoué », comme sans l'option.
+        let (mut daemon, ticket) = daemon_with_ticket(TicketStatus::Running).await;
+        let mut cfg = (*daemon.cfg).clone();
+        cfg.daemon.resume_on_boot = true;
+        daemon.cfg = Arc::new(cfg);
+        daemon.recover_on_boot().await.unwrap();
+        let back = daemon.store.ticket(ticket.id).await.unwrap().unwrap();
+        assert_eq!(back.status, TicketStatus::Failed);
     }
 
     #[tokio::test]
