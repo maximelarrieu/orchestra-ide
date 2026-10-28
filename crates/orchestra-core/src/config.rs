@@ -26,6 +26,7 @@ pub struct Config {
     pub epic: EpicConfig,
     pub retro: RetroConfig,
     pub routing: crate::routing::RoutingConfig,
+    pub budget: crate::budget::BudgetConfig,
     pub sandbox: crate::sandbox::SandboxConfig,
     /// Thresholds the daemon watches (`[[monitors]]`). None by default: an
     /// alert is a choice of the user's, like a budget.
@@ -60,6 +61,7 @@ impl Default for Config {
             epic: EpicConfig::default(),
             retro: RetroConfig::default(),
             routing: Default::default(),
+            budget: Default::default(),
             sandbox: Default::default(),
             monitors: Vec::new(),
             mcp_servers: Default::default(),
@@ -88,6 +90,9 @@ pub struct DaemonConfig {
     /// relaunch. Only tickets whose team the user already accepted are
     /// concerned, so no team starts that they did not agree to (rule 9).
     pub resume_on_boot: bool,
+    /// The same tool call this many times in a row is a loop: the agent is
+    /// told once, and `AgentLooping` is published. `0` turns the watch off.
+    pub loop_repeats: u32,
     /// Members of one stage that the team marked `parallel_ok` run together,
     /// in the same worktree, instead of one after the other. Off by default:
     /// it relies on the orchestrator having given them disjoint files.
@@ -119,6 +124,7 @@ impl Default for DaemonConfig {
             max_concurrent_agents: 3,
             max_ticket_usd: None,
             resume_on_boot: false,
+            loop_repeats: 8,
             parallel_stages: false,
             stall_secs: 600,
             fork_on_rerun: true,
@@ -523,6 +529,7 @@ impl Config {
                 )));
             }
         }
+        self.budget.validate().map_err(CoreError::Config)?;
         if matches!(self.daemon.max_ticket_usd, Some(b) if b <= 0.0) {
             return Err(CoreError::Config(
                 "daemon.max_ticket_usd doit être positif".into(),

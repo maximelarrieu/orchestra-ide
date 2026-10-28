@@ -141,11 +141,14 @@ pub fn describe(e: &Event) -> Option<String> {
             }
             None => format!("{branch} fusionnée dans {into} ({commits} commits)"),
         },
+        EventKind::AgentLooping { tool, repeats } => {
+            format!("boucle : {tool} appelé {repeats} fois de suite")
+        }
         EventKind::ModelEscalated { role, from, to } => {
             format!("« {role} » monte de {from} à {to}")
         }
-        EventKind::BudgetExceeded { spent_usd, cap_usd } => format!(
-            "plafond du ticket atteint : {} sur {}",
+        EventKind::BudgetExceeded { spent_usd, cap_usd, scope } => format!(
+            "plafond du {scope} atteint : {} sur {}",
             orchestra_core::pricing::fmt_usd(*spent_usd),
             orchestra_core::pricing::fmt_usd(*cap_usd)
         ),

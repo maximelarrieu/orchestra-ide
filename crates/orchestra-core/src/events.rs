@@ -150,6 +150,7 @@ pub enum EventTag {
     MergeBlocked,
     BudgetExceeded,
     ModelEscalated,
+    AgentLooping,
     PullRequestOpened,
     PullRequestClosed,
     HookBlocked,
@@ -176,7 +177,7 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 57] = [
+    pub const ALL: [EventTag; 58] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::ProjectMoved,
@@ -211,6 +212,7 @@ impl EventTag {
         EventTag::MergeBlocked,
         EventTag::BudgetExceeded,
         EventTag::ModelEscalated,
+        EventTag::AgentLooping,
         EventTag::PullRequestOpened,
         EventTag::PullRequestClosed,
         EventTag::HookBlocked,
@@ -272,6 +274,7 @@ impl EventTag {
             EventTag::MergeBlocked => "merge_blocked",
             EventTag::BudgetExceeded => "budget_exceeded",
             EventTag::ModelEscalated => "model_escalated",
+            EventTag::AgentLooping => "agent_looping",
             EventTag::PullRequestOpened => "pull_request_opened",
             EventTag::PullRequestClosed => "pull_request_closed",
             EventTag::HookBlocked => "hook_blocked",
@@ -504,6 +507,15 @@ pub enum EventKind {
     BudgetExceeded {
         spent_usd: f64,
         cap_usd: f64,
+        /// Which ceiling spoke: « ticket », « épopée », « projet » or « jour ».
+        #[serde(default = "default_budget_scope")]
+        scope: String,
+    },
+    /// The agent made the same tool call `repeats` times in a row. The daemon
+    /// nudges it once; stopping it stays the user's call.
+    AgentLooping {
+        tool: String,
+        repeats: u32,
     },
     /// A role run again on the ticket moved up the `[routing]` ladder.
     ModelEscalated {
@@ -666,6 +678,7 @@ impl EventKind {
             EventKind::MergeBlocked { .. } => EventTag::MergeBlocked,
             EventKind::BudgetExceeded { .. } => EventTag::BudgetExceeded,
             EventKind::ModelEscalated { .. } => EventTag::ModelEscalated,
+            EventKind::AgentLooping { .. } => EventTag::AgentLooping,
             EventKind::PullRequestOpened { .. } => EventTag::PullRequestOpened,
             EventKind::PullRequestClosed { .. } => EventTag::PullRequestClosed,
             EventKind::HookBlocked { .. } => EventTag::HookBlocked,
@@ -769,6 +782,10 @@ impl EventFilter {
         }
         true
     }
+}
+
+fn default_budget_scope() -> String {
+    "ticket".into()
 }
 
 #[cfg(test)]

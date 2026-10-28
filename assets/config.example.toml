@@ -24,6 +24,9 @@ max_attempts = 2
 # Un ticket qui tournait quand le daemon s'est arrêté reprend là où il en était
 # au démarrage suivant, au lieu d'attendre ta relance.
 resume_on_boot = false
+# Le même appel d'outil ce nombre de fois de suite est une boucle : l'agent en est
+# averti une fois et le journal le dit. 0 désactive.
+loop_repeats = 8
 # Les membres d'une même étape marqués « parallel_ok » par l'équipe tournent en
 # même temps dans le worktree, au lieu de l'un après l'autre. Ils doivent
 # toucher des fichiers distincts : c'est l'orchestrateur qui le promet.
@@ -163,6 +166,13 @@ max_budget_usd = 0.5
 # Exemple : escalate = ["haiku", "sonnet", "opus"]
 [routing]
 escalate = []
+
+# Plafonds en USD indicatifs, au-dessus de celui de chaque agent et de celui d'un
+# ticket (`daemon.max_ticket_usd`). Aucun agent ne démarre quand l'un est atteint,
+# et chacun voit son budget ramené à la marge la plus étroite. Tous absents : pas
+# de limite. `epic_usd` : les tickets d'une épopée ensemble ; `project_usd` : tout
+# ce qu'un projet a dépensé ; `day_usd` : tout, sur les dernières 24 heures.
+[budget]
 
 # Chaque agent tourne dans `bwrap` (bubblewrap) : le disque entier est en lecture
 # seule, seuls le worktree, le dossier du compte Claude et `writable` s'écrivent,

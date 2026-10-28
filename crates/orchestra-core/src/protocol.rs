@@ -174,6 +174,12 @@ pub enum Command {
     GetTrace {
         ticket_id: TicketId,
     },
+    /// What the tickets did before and after a rule was accepted.
+    GetRuleEffect {
+        name: String,
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+    },
     /// The monitors over their threshold, and the history of crossings.
     GetAlerts,
     /// Show the pane that follows this agent, opening one if there is none.
@@ -369,6 +375,13 @@ pub enum Reply {
     Trace {
         ticket_id: TicketId,
         trace: crate::observe::Trace,
+    },
+    RuleEffect {
+        name: String,
+        /// `None` when the rule was never accepted: nothing to compare.
+        #[serde(default, with = "time::serde::rfc3339::option")]
+        accepted_at: Option<OffsetDateTime>,
+        effect: crate::effect::RuleEffect,
     },
     Alerts {
         active: Vec<crate::observe::Firing>,
@@ -872,6 +885,7 @@ mod tests {
             },
             Command::GetSeries { query: Default::default() },
             Command::GetTrace { ticket_id: Uuid::new_v4() },
+            Command::GetRuleEffect { name: "commits".into(), project_id: None },
             Command::GetAlerts,
             Command::SteerAgent {
                 agent_id: Uuid::new_v4(),
@@ -1031,6 +1045,7 @@ mod tests {
             Reply::Agents { agents: vec![] },
             Reply::Series { series: Default::default() },
             Reply::Trace { ticket_id: Uuid::new_v4(), trace: Default::default() },
+            Reply::RuleEffect { name: "commits".into(), accepted_at: None, effect: Default::default() },
             Reply::Alerts { active: vec![], recent: vec![], monitors: 2 },
             Reply::Usage {
                 rows: vec![],

@@ -308,6 +308,9 @@ impl Daemon {
             Command::GetUsage { query } => self.get_usage(query).await,
             Command::GetSeries { query } => self.get_series(query).await,
             Command::GetTrace { ticket_id } => self.get_trace(ticket_id).await,
+            Command::GetRuleEffect { name, project_id } => {
+                self.get_rule_effect(name, project_id).await
+            }
             Command::GetAlerts => self.get_alerts().await,
             Command::PlanTicket { ticket_id } => self.plan_ticket(ticket_id).await,
             Command::AcceptProposal { ticket_id, team } => {
@@ -1984,6 +1987,96 @@ impl Daemon {
         Ok(Reply::Trace {
             ticket_id,
             trace: build_trace(&events),
+        })
+    }
+
+    /// How the tickets that ended before a rule was accepted compare with
+    /// those that ended after, on corrections, red checks, failures and cost.
+    async fn get_rule_effect(
+        &self,
+        name: String,
+        project_id: Option<ProjectId>,
+    ) -> Result<Reply, ApiError> {
+        use orchestra_core::effect::{effect_of, TicketOutcome};
+        use orchestra_core::events::EventTag;
+        let history = self
+            .store
+            .events_since(
+                0,
+                EventFilter {
+                    tags: vec![EventTag::RuleStatusChanged, EventTag::RuleCreated],
+                    ..Default::default()
+                },
+                crate::monitor::ALERT_HISTORY,
+            )
+            .await
+            .map_err(internal)?;
+        let mut accepted_at = None;
+        let mut created_at = None;
+        for e in &history {
+            match &e.kind {
+                EventKind::RuleStatusChanged { name: n, to, .. }
+                    if *n == name && *to == orchestra_core::conventions::RuleStatus::Accepted =>
+                {
+                    accepted_at = Some(e.ts);
+                }
+                EventKind::RuleCreated { name: n, .. } if *n == name => created_at = Some(e.ts),
+                _ => {}
+            }
+        }
+        // A rule written by hand has no acceptance: its creation counts.
+        let accepted_at = accepted_at.or(created_at);
+        let Some(when) = accepted_at else {
+            return Ok(Reply::RuleEffect { name, accepted_at: None, effect: Default::default() });
+        };
+
+        let tickets = self
+            .store
+            .list_tickets(
+                project_id,
+                Some(vec![TicketStatus::Done, TicketStatus::Review, TicketStatus::Failed]),
+            )
+            .await
+            .map_err(internal)?;
+        let costs = self.ledger.ticket_costs(project_id).await.map_err(internal)?;
+        let mut outcomes = Vec::with_capacity(tickets.len());
+        for t in &tickets {
+            let events = self
+                .store
+                .events_since(
+                    0,
+                    EventFilter {
+                        ticket_id: Some(t.id),
+                        tags: vec![EventTag::ReviewVerdict, EventTag::CheckFinished],
+                        ..Default::default()
+                    },
+                    crate::monitor::ALERT_HISTORY,
+                )
+                .await
+                .map_err(internal)?;
+            let mut correction_rounds = 0;
+            let mut red_checks = 0;
+            for e in &events {
+                match &e.kind {
+                    EventKind::ReviewVerdict { verdict, .. } if !verdict.is_ready() => {
+                        correction_rounds += 1
+                    }
+                    EventKind::CheckFinished { run, .. } if !run.ok => red_checks += 1,
+                    _ => {}
+                }
+            }
+            outcomes.push(TicketOutcome {
+                ended_at: t.updated_at,
+                correction_rounds,
+                red_checks,
+                failed: t.status == TicketStatus::Failed,
+                cost_usd: costs.get(&t.id).and_then(|c| c.cost_usd),
+            });
+        }
+        Ok(Reply::RuleEffect {
+            name,
+            accepted_at: Some(when),
+            effect: effect_of(when, &outcomes),
         })
     }
 

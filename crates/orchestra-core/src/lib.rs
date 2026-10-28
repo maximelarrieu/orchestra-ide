@@ -1,14 +1,18 @@
 //! Orchestra core: pure types and rules. No tokio, no SQLite, no terminal.
 
 pub mod attention;
+pub mod budget;
 pub mod checks;
 pub mod claude;
 pub mod config;
 pub mod conventions;
+pub mod effect;
+pub mod eval;
 pub mod epic;
 pub mod error;
 pub mod events;
 pub mod guard;
+pub mod loops;
 pub mod model;
 pub mod observe;
 pub mod pricing;

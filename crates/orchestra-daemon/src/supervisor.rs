@@ -1965,6 +1965,78 @@ impl Supervisor {
             .count() as u32
     }
 
+    /// What a new agent of this ticket may still spend under the ceilings
+    /// above it (`daemon.max_ticket_usd` and `[budget]`), or the ceiling that
+    /// is already reached. A measure that cannot be read is skipped with a
+    /// warning: a broken ledger must not stop the farm.
+    async fn budget_left(
+        &self,
+        ticket: &Ticket,
+        project: &Project,
+    ) -> std::result::Result<Option<f64>, orchestra_core::budget::Exceeded> {
+        use orchestra_core::budget::{left, Ceiling};
+        use orchestra_core::protocol::{TimeRange, UsageQuery};
+        let mut ceilings = Vec::new();
+        let b = &self.cfg.budget;
+        if let Some(cap) = self.cfg.daemon.max_ticket_usd {
+            let spent = self.spent_by_ticket(ticket.id).await;
+            ceilings.push(Ceiling { scope: "ticket", cap, spent });
+        }
+        if let Some(cap) = b.epic_usd {
+            if let Ok(members) = self.store.all_epic_members().await {
+                if let Some(epic) = members
+                    .iter()
+                    .find(|(_, m)| m.ticket_id == ticket.id)
+                    .map(|(id, _)| *id)
+                {
+                    let mut spent = 0.0;
+                    for (_, m) in members.iter().filter(|(id, _)| *id == epic) {
+                        spent += self.spent_by_ticket(m.ticket_id).await;
+                    }
+                    ceilings.push(Ceiling { scope: "épopée", cap, spent });
+                }
+            }
+        }
+        let totals = |query: UsageQuery| async move {
+            match self.ledger.rollup(query).await {
+                Ok((_, totals)) => totals.cost_usd.unwrap_or(0.0),
+                Err(e) => {
+                    tracing::warn!("dépense illisible, plafond ignoré : {e:#}");
+                    0.0
+                }
+            }
+        };
+        if let Some(cap) = b.project_usd {
+            let spent = totals(UsageQuery {
+                project_id: Some(project.id),
+                include_unmanaged: false,
+                ..Default::default()
+            })
+            .await;
+            ceilings.push(Ceiling { scope: "projet", cap, spent });
+        }
+        if let Some(cap) = b.day_usd {
+            let spent = totals(UsageQuery {
+                range: TimeRange::last_days(1),
+                include_unmanaged: false,
+                ..Default::default()
+            })
+            .await;
+            ceilings.push(Ceiling { scope: "jour", cap, spent });
+        }
+        left(&ceilings)
+    }
+
+    async fn spent_by_ticket(&self, id: TicketId) -> f64 {
+        match self.ledger.ticket_cost(id).await {
+            Ok(cost) => cost.cost_usd.unwrap_or(0.0),
+            Err(e) => {
+                tracing::warn!("coût du ticket illisible, plafond ignoré : {e:#}");
+                0.0
+            }
+        }
+    }
+
     /// Everything one role needs to run, grouped so the call stays readable.
     async fn run_role(&self, spec: RoleRun<'_>) -> Result<AgentOutcome> {
         let RoleRun {
@@ -2021,37 +2093,29 @@ impl Supervisor {
             .max_budget_usd
             .or(role.max_budget_usd)
             .or(self.cfg.defaults.max_budget_usd);
-        let budget = match self.cfg.daemon.max_ticket_usd {
-            Some(cap) => {
-                let spent = match self.ledger.ticket_cost(ticket.id).await {
-                    Ok(cost) => cost.cost_usd.unwrap_or(0.0),
-                    Err(e) => {
-                        tracing::warn!("coût du ticket illisible, plafond ignoré : {e:#}");
-                        0.0
-                    }
-                };
-                let left = cap - spent;
-                if left <= 0.0 {
-                    let event = NewEvent::new(EventKind::BudgetExceeded {
-                        spent_usd: spent,
-                        cap_usd: cap,
-                    })
-                    .project(project.id)
-                    .ticket(ticket.id);
-                    if let Err(e) = self.bus.publish(event).await {
-                        tracing::warn!("BudgetExceeded non publié : {e:#}");
-                    }
-                    return Ok(AgentOutcome::Failed {
-                        reason: format!(
-                            "plafond du ticket atteint ({} sur {})",
-                            orchestra_core::pricing::fmt_usd(spent),
-                            orchestra_core::pricing::fmt_usd(cap)
-                        ),
-                    });
+        let budget = match self.budget_left(ticket, project).await {
+            Ok(None) => budget,
+            Ok(Some(left)) => Some(budget.map_or(left, |b| b.min(left))),
+            Err(hit) => {
+                let event = NewEvent::new(EventKind::BudgetExceeded {
+                    spent_usd: hit.spent,
+                    cap_usd: hit.cap,
+                    scope: hit.scope.into(),
+                })
+                .project(project.id)
+                .ticket(ticket.id);
+                if let Err(e) = self.bus.publish(event).await {
+                    tracing::warn!("BudgetExceeded non publié : {e:#}");
                 }
-                Some(budget.map_or(left, |b| b.min(left)))
+                return Ok(AgentOutcome::Failed {
+                    reason: format!(
+                        "plafond du {} atteint ({} sur {})",
+                        hit.scope,
+                        orchestra_core::pricing::fmt_usd(hit.spent),
+                        orchestra_core::pricing::fmt_usd(hit.cap)
+                    ),
+                });
             }
-            None => budget,
         };
 
         let mut agent = Agent {
@@ -2343,6 +2407,7 @@ impl Supervisor {
         let stall = std::time::Duration::from_secs(self.cfg.daemon.stall_secs);
         let mut last_heard = tokio::time::Instant::now();
         let mut stall_reported = false;
+        let mut repeats = orchestra_core::loops::RepeatDetector::new(self.cfg.daemon.loop_repeats);
 
         loop {
             tokio::select! {
@@ -2370,6 +2435,21 @@ impl Supervisor {
                                     r.result.clone(),
                                 ));
                                 structured = r.structured_output.clone();
+                            }
+                            if let StreamLine::Assistant { message, .. } = line.as_ref() {
+                                for block in &message.content {
+                                    let orchestra_core::claude::ContentBlock::ToolUse { name, input, .. } = block else {
+                                        continue;
+                                    };
+                                    if let Some(n) = repeats.observe(name, input) {
+                                        self.emit(agent, EventKind::AgentLooping {
+                                            tool: name.clone(),
+                                            repeats: n,
+                                        })
+                                        .await;
+                                        let _ = process.send_user(LOOP_NUDGE).await;
+                                    }
+                                }
                             }
                             self.publish_line(agent, &scope, &line).await;
                             if result_line.is_some() {
@@ -3178,6 +3258,10 @@ enum AgentOutcome {
     Redirected { text: String },
 }
 
+/// What an agent is told when it keeps making the same call.
+const LOOP_NUDGE: &str = "Tu viens de répéter plusieurs fois exactement le même appel. \
+    Ce que tu attends ne changera pas : change d'approche, ou arrête-toi et dis ce qui te bloque.";
+
 /// Where the integrator leaves the description it wrote.
 const PR_BODY_FILE: &str = "PR.md";
 
@@ -3933,6 +4017,32 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.display().to_string()
+    }
+
+    #[tokio::test]
+    async fn the_daily_ceiling_counts_every_project_and_names_itself() {
+        let (sup, t, project, _dir) = gated(vec![], 0).await;
+        let mut cfg = (*sup.cfg).clone();
+        cfg.budget.day_usd = Some(1.0);
+        let sup = Supervisor { cfg: Arc::new(cfg), ..sup };
+        assert_eq!(sup.budget_left(&t, &project).await, Ok(Some(1.0)));
+        sup.ledger
+            .record(orchestra_core::model::UsageSample {
+                message_id: "m-day".into(),
+                session_id: Uuid::new_v4(),
+                subagent_id: None,
+                agent_id: Some(Uuid::new_v4()),
+                ticket_id: Some(t.id),
+                project_id: Some(project.id),
+                model: "claude-opus-4-1".into(),
+                tokens: orchestra_core::model::Tokens { output: 1_000_000, ..Default::default() },
+                ts: orchestra_core::now(),
+                source: orchestra_core::model::UsageSource::Transcript,
+            })
+            .await
+            .unwrap();
+        let hit = sup.budget_left(&t, &project).await.unwrap_err();
+        assert_eq!(hit.scope, "jour");
     }
 
     #[tokio::test]

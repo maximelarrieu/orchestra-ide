@@ -58,6 +58,11 @@ enum Sub {
         #[command(subcommand)]
         action: RulesAction,
     },
+    /// Rejoue des tickets de référence pour comparer rôles, prompts et modèles.
+    Eval {
+        #[command(subcommand)]
+        action: EvalAction,
+    },
     /// Installe le catalogue de rôles et la configuration.
     Init {
         /// Réécrit les rôles livrés, même modifiés. La configuration n'est
@@ -255,6 +260,23 @@ enum ProjectAction {
 }
 
 #[derive(Subcommand, Debug)]
+enum EvalAction {
+    /// Lance les cas de `<projet>/.orchestra/evals/*.toml` l'un après l'autre,
+    /// puis compare : verdict de la relecture, tokens, coût, durée. Les tickets
+    /// créés restent dans le projet, avec leur worktree.
+    Run {
+        /// Projet : identifiant ou fragment de son nom.
+        #[arg(long)]
+        project: String,
+        /// Cas à lancer, par nom de fichier sans `.toml`. Tous par défaut.
+        names: Vec<String>,
+        /// Délai maximal par cas, en minutes.
+        #[arg(long, default_value_t = 30)]
+        timeout_min: u64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum RulesAction {
     /// Liste les règles : conventions globales, celles du projet, ses ADR.
     List {
@@ -270,6 +292,13 @@ enum RulesAction {
     },
     /// Rejette une règle : elle n'est plus donnée ni vérifiée.
     Reject {
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Compare les tickets terminés avant et après l'acceptation d'une règle :
+    /// tours de correction, vérifications rouges, échecs, coût.
+    Effect {
         name: String,
         #[arg(long)]
         project: Option<String>,
@@ -455,10 +484,12 @@ impl Cli {
                     },
                 }
             }
+            Sub::Eval { action } => run_eval(action, &socket).await,
             Sub::Rules { action } => {
                 let mut client = Client::connect_or_spawn(&socket).await?;
                 let (project, status_change) = match &action {
                     RulesAction::List { project } => (project.clone(), None),
+                    RulesAction::Effect { project, .. } => (project.clone(), None),
                     RulesAction::Accept { name, project } => (
                         project.clone(),
                         Some((name.clone(), orchestra_core::conventions::RuleStatus::Accepted)),
@@ -473,6 +504,18 @@ impl Cli {
                     None => None,
                 };
                 let project_id = project.as_ref().map(|p| p.id);
+                if let RulesAction::Effect { name, .. } = &action {
+                    return match client
+                        .call(Cmd::GetRuleEffect { name: name.clone(), project_id })
+                        .await?
+                    {
+                        Reply::RuleEffect { name, accepted_at, effect } => {
+                            print_rule_effect(&name, accepted_at.is_some(), &effect);
+                            Ok(())
+                        }
+                        other => bail!("réponse inattendue : {other:?}"),
+                    };
+                }
                 let (rules, errors) = match client.call(Cmd::ListRules { project_id }).await? {
                     Reply::Rules { rules, errors } => (rules, errors),
                     other => bail!("réponse inattendue : {other:?}"),
@@ -1649,4 +1692,131 @@ async fn epic_detail(client: &mut Client, spec: &str) -> Result<orchestra_core::
         Reply::Epic { detail } => Ok(*detail),
         other => bail!("réponse inattendue : {other:?}"),
     }
+}
+
+fn print_rule_effect(name: &str, accepted: bool, e: &orchestra_core::effect::RuleEffect) {
+    if !accepted {
+        println!("« {name} » n'a jamais été acceptée : rien à comparer");
+        return;
+    }
+    let cost = |a: &orchestra_core::effect::Averages| {
+        a.cost_usd
+            .map(orchestra_core::pricing::fmt_usd)
+            .unwrap_or_else(|| "coût inconnu".into())
+    };
+    println!("{:<22} {:>8} {:>8}", "", "avant", "après");
+    println!("{:<22} {:>8} {:>8}", "tickets", e.before.tickets, e.after.tickets);
+    println!(
+        "{:<22} {:>8.2} {:>8.2}",
+        "tours de correction", e.before.correction_rounds, e.after.correction_rounds
+    );
+    println!(
+        "{:<22} {:>8.2} {:>8.2}",
+        "vérifications rouges", e.before.red_checks, e.after.red_checks
+    );
+    println!(
+        "{:<22} {:>7.0}% {:>7.0}%",
+        "échecs",
+        e.before.failure_rate * 100.0,
+        e.after.failure_rate * 100.0
+    );
+    println!("{:<22} {:>8} {:>8}", "coût moyen", cost(&e.before), cost(&e.after));
+    if !e.readable {
+        println!(
+            "\nmoins de {} tickets d'un côté : ces moyennes ne disent encore rien",
+            orchestra_core::effect::MIN_TICKETS
+        );
+    }
+}
+
+async fn run_eval(action: EvalAction, socket: &std::path::Path) -> Result<()> {
+    use orchestra_core::eval::{report, EvalCase, EvalResult};
+    use orchestra_core::model::{Team, TicketStatus};
+    let EvalAction::Run { project, names, timeout_min } = action;
+    let mut client = Client::connect_or_spawn(socket).await?;
+    let project = resolve_project(&mut client, &project).await?;
+    let dir = project.path.join(".orchestra/evals");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .with_context(|| format!("lecture de {}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .collect();
+    files.sort();
+    let mut cases = Vec::new();
+    for path in files {
+        let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        if !names.is_empty() && !names.contains(&name) {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path)?;
+        cases.push(EvalCase::parse(&name, &src)?);
+    }
+    if cases.is_empty() {
+        bail!("aucun cas dans {}", dir.display());
+    }
+    if !cases.iter().all(|c| c.team.iter().any(|m| m.role == "reviewer")) {
+        eprintln!("attention : un cas sans relecture ne rendra pas de verdict, il ne peut pas réussir");
+    }
+
+    let mut results = Vec::new();
+    for case in &cases {
+        println!("→ {} …", case.name);
+        let started = std::time::Instant::now();
+        let ticket = match client
+            .call(Cmd::CreateTicket {
+                project_id: project.id,
+                title: format!("[éval] {}", case.title),
+                brief: case.brief.clone(),
+            })
+            .await?
+        {
+            Reply::Tickets { tickets } => tickets
+                .into_iter()
+                .next()
+                .context("le daemon n'a pas renvoyé le ticket créé")?
+                .ticket,
+            other => bail!("réponse inattendue : {other:?}"),
+        };
+        client
+            .call(Cmd::AcceptProposal {
+                ticket_id: ticket.id,
+                team: Team { members: case.members(), stages: Vec::new() },
+            })
+            .await?;
+        client.call(Cmd::LaunchTicket { ticket_id: ticket.id, open_panes: false }).await?;
+
+        let deadline = started + std::time::Duration::from_secs(timeout_min * 60);
+        let (detail, timed_out) = loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let detail = match client.call(Cmd::GetTicket { ticket_id: ticket.id }).await? {
+                Reply::Ticket { detail } => detail,
+                other => bail!("réponse inattendue : {other:?}"),
+            };
+            let pending = matches!(
+                detail.ticket.status,
+                TicketStatus::Draft | TicketStatus::Planned | TicketStatus::Running
+            );
+            if !pending {
+                break (detail, false);
+            }
+            if std::time::Instant::now() >= deadline {
+                break (detail, true);
+            }
+        };
+        if timed_out {
+            // Left running it would keep spending after the report is printed.
+            let _ = client.call(Cmd::CancelTicket { ticket_id: ticket.id }).await;
+        }
+        results.push(EvalResult {
+            name: case.name.clone(),
+            status: detail.ticket.status,
+            ready: detail.review.as_ref().map(|r| r.is_ready()),
+            cost_usd: detail.cost_usd,
+            tokens: detail.tokens.total(),
+            secs: started.elapsed().as_secs(),
+            timed_out,
+        });
+    }
+    println!("\n{}", report(&results));
+    Ok(())
 }
