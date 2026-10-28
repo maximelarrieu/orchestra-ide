@@ -164,6 +164,22 @@ max_budget_usd = 0.5
 [routing]
 escalate = []
 
+# Chaque agent tourne dans `bwrap` (bubblewrap) : le disque entier est en lecture
+# seule, seuls le worktree, le dossier du compte Claude et `writable` s'écrivent,
+# et `hide` (identifiants) est masqué pour les rôles sans git complet. Le réseau
+# reste ouvert. « off » : le garde-fou seul. Sans `bwrap` installé, on retombe
+# sur « off » avec un avertissement.
+[sandbox]
+mode = "off"
+hide = [
+    "~/.ssh",
+    "~/.aws",
+    "~/.gnupg",
+    "~/.config/gcloud",
+    "~/.config/gh",
+]
+writable = []
+
 # Serveurs MCP qu'un rôle peut demander dans son entête (`mcp: [nom, …]`). Les
 # agents tournent isolés de ta configuration : ils n'ont que ceux-là. Même forme
 # que les `mcpServers` de Claude Code.

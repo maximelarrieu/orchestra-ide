@@ -68,6 +68,8 @@ pub struct ClaudeCommand {
     /// user turns, so a one-shot run never exits and its stdout never reaches
     /// end of file. A run that will never be steered must therefore say so.
     pub one_shot: bool,
+    /// Run inside `bwrap` with this view of the filesystem.
+    pub sandbox: Option<orchestra_core::sandbox::Sandbox>,
 }
 
 impl ClaudeCommand {
@@ -97,6 +99,7 @@ impl ClaudeCommand {
             config_dir: None,
             env: Vec::new(),
             one_shot: false,
+            sandbox: None,
         }
     }
 
@@ -213,7 +216,14 @@ impl ClaudeCommand {
     }
 
     fn to_tokio(&self) -> Command {
-        let mut cmd = Command::new(&self.bin);
+        let mut cmd = match &self.sandbox {
+            Some(sandbox) => {
+                let mut c = Command::new("bwrap");
+                c.args(sandbox.bwrap_args()).arg(&self.bin);
+                c
+            }
+            None => Command::new(&self.bin),
+        };
         cmd.args(self.args())
             .current_dir(&self.cwd)
             .stdin(Stdio::piped())

@@ -16,6 +16,7 @@ pub mod provision;
 pub mod protocol;
 pub mod review;
 pub mod routing;
+pub mod sandbox;
 pub mod roles;
 pub mod schema;
 

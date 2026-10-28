@@ -26,6 +26,7 @@ pub struct Config {
     pub epic: EpicConfig,
     pub retro: RetroConfig,
     pub routing: crate::routing::RoutingConfig,
+    pub sandbox: crate::sandbox::SandboxConfig,
     /// Thresholds the daemon watches (`[[monitors]]`). None by default: an
     /// alert is a choice of the user's, like a budget.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -59,6 +60,7 @@ impl Default for Config {
             epic: EpicConfig::default(),
             retro: RetroConfig::default(),
             routing: Default::default(),
+            sandbox: Default::default(),
             monitors: Vec::new(),
             mcp_servers: Default::default(),
             models: ModelsConfig::default(),

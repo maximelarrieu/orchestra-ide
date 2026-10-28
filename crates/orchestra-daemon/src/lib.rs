@@ -20,6 +20,7 @@ pub mod notify;
 pub mod orchestrator;
 pub mod repo_summary;
 pub mod roles;
+pub mod sandbox;
 pub mod rules;
 pub mod server;
 pub mod store;

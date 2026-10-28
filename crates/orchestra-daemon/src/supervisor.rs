@@ -2233,6 +2233,12 @@ impl Supervisor {
         cmd.session_id = Some(agent.session_id);
         cmd.resume = resume;
         cmd.fork_session = fork;
+        match crate::sandbox::for_agent(&self.cfg, worktree_path, account.as_deref(), git) {
+            Ok(sandbox) => cmd.sandbox = sandbox,
+            Err(message) => {
+                self.warn_ticket(agent.ticket_id, agent.project_id, message).await;
+            }
+        }
         cmd.config_dir = account;
         cmd.name = Some(label.to_string());
         cmd.model = model;
