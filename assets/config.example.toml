@@ -16,6 +16,10 @@
 
 [daemon]
 max_concurrent_agents = 3
+# Plafond indicatif en USD pour l'ensemble des agents d'un ticket. Le budget de
+# chaque agent est ramené à ce qu'il reste, et aucun ne démarre une fois le
+# plafond atteint. À retirer pour ne fixer aucune limite.
+# max_ticket_usd = 15.0
 max_attempts = 2
 # Un agent muet depuis ce nombre de secondes est signalé (« ⚑ un agent est
 # silencieux »), sans être arrêté : un long build se tait aussi. 0 désactive.
@@ -96,6 +100,9 @@ role = "integrator"
 mode = "merge"
 pr_poll_secs = 60
 push = false
+# L'intégrateur démarre seul quand la relecture dit « prêt » et que les
+# vérifications sont vertes, sans attendre ton « i ». Désactivé par défaut.
+auto = false
 remove_worktree = true
 
 # Un pane zellij par agent, qui fait tourner « orchestra tail » : une vue, pas
@@ -141,6 +148,14 @@ auto_plan = true
 enabled = true
 model = "haiku"
 max_budget_usd = 0.5
+
+
+# Un rôle relancé sur le même ticket (tour de correction, seconde relecture)
+# monte d'un cran sur cette échelle, de la moins chère à la plus capable. Vide :
+# le modèle ne change jamais. Un modèle absent de l'échelle n'est pas touché.
+# Exemple : escalate = ["haiku", "sonnet", "opus"]
+[routing]
+escalate = []
 
 # Serveurs MCP qu'un rôle peut demander dans son entête (`mcp: [nom, …]`). Les
 # agents tournent isolés de ta configuration : ils n'ont que ceux-là. Même forme

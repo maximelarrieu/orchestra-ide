@@ -141,6 +141,14 @@ pub fn describe(e: &Event) -> Option<String> {
             }
             None => format!("{branch} fusionnée dans {into} ({commits} commits)"),
         },
+        EventKind::ModelEscalated { role, from, to } => {
+            format!("« {role} » monte de {from} à {to}")
+        }
+        EventKind::BudgetExceeded { spent_usd, cap_usd } => format!(
+            "plafond du ticket atteint : {} sur {}",
+            orchestra_core::pricing::fmt_usd(*spent_usd),
+            orchestra_core::pricing::fmt_usd(*cap_usd)
+        ),
         EventKind::MergeBlocked { branch, reason, .. } => {
             format!("fusion de {branch} en attente : {reason}")
         }

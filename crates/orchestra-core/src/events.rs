@@ -148,6 +148,8 @@ pub enum EventTag {
     CheckFinished,
     TicketMerged,
     MergeBlocked,
+    BudgetExceeded,
+    ModelEscalated,
     PullRequestOpened,
     PullRequestClosed,
     HookBlocked,
@@ -174,7 +176,7 @@ pub enum EventTag {
 }
 
 impl EventTag {
-    pub const ALL: [EventTag; 55] = [
+    pub const ALL: [EventTag; 57] = [
         EventTag::ProjectAdded,
         EventTag::ProjectForgotten,
         EventTag::ProjectMoved,
@@ -207,6 +209,8 @@ impl EventTag {
         EventTag::CheckFinished,
         EventTag::TicketMerged,
         EventTag::MergeBlocked,
+        EventTag::BudgetExceeded,
+        EventTag::ModelEscalated,
         EventTag::PullRequestOpened,
         EventTag::PullRequestClosed,
         EventTag::HookBlocked,
@@ -266,6 +270,8 @@ impl EventTag {
             EventTag::CheckFinished => "check_finished",
             EventTag::TicketMerged => "ticket_merged",
             EventTag::MergeBlocked => "merge_blocked",
+            EventTag::BudgetExceeded => "budget_exceeded",
+            EventTag::ModelEscalated => "model_escalated",
             EventTag::PullRequestOpened => "pull_request_opened",
             EventTag::PullRequestClosed => "pull_request_closed",
             EventTag::HookBlocked => "hook_blocked",
@@ -493,6 +499,18 @@ pub enum EventKind {
         head: String,
         reason: String,
     },
+    /// The ticket reached `daemon.max_ticket_usd`: no further agent starts for
+    /// it. Indicative USD, priced from the models actually used (rule 8).
+    BudgetExceeded {
+        spent_usd: f64,
+        cap_usd: f64,
+    },
+    /// A role run again on the ticket moved up the `[routing]` ladder.
+    ModelEscalated {
+        role: String,
+        from: String,
+        to: String,
+    },
     /// A pull request was opened for the ticket's branch.
     PullRequestOpened {
         url: String,
@@ -646,6 +664,8 @@ impl EventKind {
             EventKind::CheckFinished { .. } => EventTag::CheckFinished,
             EventKind::TicketMerged { .. } => EventTag::TicketMerged,
             EventKind::MergeBlocked { .. } => EventTag::MergeBlocked,
+            EventKind::BudgetExceeded { .. } => EventTag::BudgetExceeded,
+            EventKind::ModelEscalated { .. } => EventTag::ModelEscalated,
             EventKind::PullRequestOpened { .. } => EventTag::PullRequestOpened,
             EventKind::PullRequestClosed { .. } => EventTag::PullRequestClosed,
             EventKind::HookBlocked { .. } => EventTag::HookBlocked,

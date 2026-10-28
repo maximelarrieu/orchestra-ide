@@ -25,6 +25,7 @@ pub struct Config {
     pub notify: NotifyConfig,
     pub epic: EpicConfig,
     pub retro: RetroConfig,
+    pub routing: crate::routing::RoutingConfig,
     /// Thresholds the daemon watches (`[[monitors]]`). None by default: an
     /// alert is a choice of the user's, like a budget.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -57,6 +58,7 @@ impl Default for Config {
             notify: NotifyConfig::default(),
             epic: EpicConfig::default(),
             retro: RetroConfig::default(),
+            routing: Default::default(),
             monitors: Vec::new(),
             mcp_servers: Default::default(),
             models: ModelsConfig::default(),
@@ -73,6 +75,10 @@ pub struct DaemonConfig {
     /// Where `git worktree add` puts ticket worktrees.
     pub worktrees_dir: Option<PathBuf>,
     pub max_concurrent_agents: usize,
+    /// Indicative USD a ticket may spend across all its agents. Each agent's
+    /// own budget is cut to what is left, and none starts once it is spent.
+    /// `None` sets no ticket-wide limit.
+    pub max_ticket_usd: Option<f64>,
     /// How many times a crashed agent is resumed before giving up.
     pub max_attempts: u32,
     /// Seconds of silence after which a running agent is reported as stalled
@@ -100,6 +106,7 @@ impl Default for DaemonConfig {
             data_dir: None,
             worktrees_dir: None,
             max_concurrent_agents: 3,
+            max_ticket_usd: None,
             stall_secs: 600,
             fork_on_rerun: true,
             max_attempts: 2,
@@ -339,6 +346,11 @@ pub struct IntegrationConfig {
     /// sends the default branch up once the fusion is done. Off by default —
     /// pushing is visible outside this machine, and that is the user's call.
     pub push: bool,
+    /// Launch the integrator by itself once the relecture says « prêt » and
+    /// the checks are green, instead of waiting for the user's `i`. Off by
+    /// default: the team was accepted by the user, the landing is still theirs
+    /// to delegate (rule 9).
+    pub auto: bool,
     /// Delete the worktree once the branch is merged. The branch is kept.
     pub remove_worktree: bool,
 }
@@ -353,6 +365,7 @@ impl Default for IntegrationConfig {
             // and costs one `gh` call per open request.
             pr_poll_secs: 60,
             push: false,
+            auto: false,
             remove_worktree: true,
         }
     }
@@ -496,6 +509,11 @@ impl Config {
                     m.name
                 )));
             }
+        }
+        if matches!(self.daemon.max_ticket_usd, Some(b) if b <= 0.0) {
+            return Err(CoreError::Config(
+                "daemon.max_ticket_usd doit être positif".into(),
+            ));
         }
         for (label, d) in [
             ("defaults", &self.defaults),
@@ -735,6 +753,10 @@ mod tests {
 
         let mut c = Config::default();
         c.defaults.max_budget_usd = Some(0.0);
+        assert!(c.validate().is_err());
+
+        let mut c = Config::default();
+        c.daemon.max_ticket_usd = Some(0.0);
         assert!(c.validate().is_err());
 
         let mut c = Config::default();

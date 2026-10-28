@@ -9,10 +9,13 @@ token par token.
 
 ## État
 
-**Phases 0 à 3 livrées** : le daemon, le suivi des coûts, les tickets,
-l'orchestrateur, et les agents qui exécutent vraiment. L'intégration zellij
-(phase 4) arrive ensuite. Le plan complet est dans
-`~/.claude/plans/jai-un-projet-orchestra-ide-wise-salamander.md`.
+**Livré** : le daemon, le suivi des coûts, les tickets, l'orchestrateur, les
+agents qui exécutent vraiment, l'intégration zellij, la relecture et les
+vérifications mesurées, l'intégration (fusion ou pull request), les épopées,
+les conventions et ADR, l'écran Observer. Côté pilotage du coût et de
+l'autonomie : plafond par ticket (`daemon.max_ticket_usd`), escalade de modèle
+(`[routing]`) et intégration automatique (`integration.auto`), tous trois
+désactivés par défaut. Architecture : `docs/ARCHITECTURE.md`.
 
 ```sh
 cargo install --path crates/orchestra

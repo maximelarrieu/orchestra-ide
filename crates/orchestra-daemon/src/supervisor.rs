@@ -1012,6 +1012,9 @@ impl Supervisor {
             TicketStatus::Review
         };
         self.finish_ticket(&ticket, final_status).await;
+        if !failed && self.integration_for(&project).auto {
+            self.auto_integrate(&ticket, &project, catalog).await;
+        }
         // On its own task: the ticket is already the user's, a retrospective
         // only adds proposals they may or may not accept.
         if self.cfg.retro.enabled {
@@ -1019,6 +1022,28 @@ impl Supervisor {
             tokio::spawn(async move { me.retrospect(&ticket, &project, &worktree_path).await });
         }
         Ok(())
+    }
+
+    /// `integration.auto`: land a ticket the relecture cleared, as `i` would.
+    /// A blocking or missing verdict leaves it to the user, as does any error:
+    /// the ticket is already « à relire » and nothing is lost.
+    async fn auto_integrate(&self, ticket: &Ticket, project: &Project, catalog: Catalog) {
+        match self.last_verdict(ticket.id).await {
+            Some((_, verdict)) if verdict.is_ready() => {}
+            _ => return,
+        }
+        let fresh = match self.store.ticket(ticket.id).await {
+            Ok(Some(t)) => t,
+            _ => return,
+        };
+        if let Err(e) = self.integrate(fresh, project.clone(), catalog).await {
+            self.warn_ticket(
+                ticket.id,
+                project.id,
+                format!("intégration automatique impossible : {e:#}"),
+            )
+            .await;
+        }
     }
 
     /// Ask for the lessons of a ticket that met friction, and record them as
@@ -1833,6 +1858,34 @@ impl Supervisor {
             .clone()
             .or_else(|| role.model.clone())
             .or_else(|| self.cfg.defaults.model_flag().map(str::to_string));
+        let model = match model {
+            Some(current) if !self.cfg.routing.escalate.is_empty() => {
+                let reruns = self
+                    .store
+                    .agents_of_ticket(ticket.id)
+                    .await?
+                    .iter()
+                    .filter(|a| a.role == member.role)
+                    .count();
+                match self.cfg.routing.escalate(&current, reruns) {
+                    Some(to) => {
+                        let event = NewEvent::new(EventKind::ModelEscalated {
+                            role: member.role.clone(),
+                            from: current,
+                            to: to.clone(),
+                        })
+                        .project(project.id)
+                        .ticket(ticket.id);
+                        if let Err(e) = self.bus.publish(event).await {
+                            tracing::warn!("ModelEscalated non publié : {e:#}");
+                        }
+                        Some(to)
+                    }
+                    None => Some(current),
+                }
+            }
+            other => other,
+        };
         let effort = member
             .effort
             .or(role.effort)
@@ -1841,6 +1894,38 @@ impl Supervisor {
             .max_budget_usd
             .or(role.max_budget_usd)
             .or(self.cfg.defaults.max_budget_usd);
+        let budget = match self.cfg.daemon.max_ticket_usd {
+            Some(cap) => {
+                let spent = match self.ledger.ticket_cost(ticket.id).await {
+                    Ok(cost) => cost.cost_usd.unwrap_or(0.0),
+                    Err(e) => {
+                        tracing::warn!("coût du ticket illisible, plafond ignoré : {e:#}");
+                        0.0
+                    }
+                };
+                let left = cap - spent;
+                if left <= 0.0 {
+                    let event = NewEvent::new(EventKind::BudgetExceeded {
+                        spent_usd: spent,
+                        cap_usd: cap,
+                    })
+                    .project(project.id)
+                    .ticket(ticket.id);
+                    if let Err(e) = self.bus.publish(event).await {
+                        tracing::warn!("BudgetExceeded non publié : {e:#}");
+                    }
+                    return Ok(AgentOutcome::Failed {
+                        reason: format!(
+                            "plafond du ticket atteint ({} sur {})",
+                            orchestra_core::pricing::fmt_usd(spent),
+                            orchestra_core::pricing::fmt_usd(cap)
+                        ),
+                    });
+                }
+                Some(budget.map_or(left, |b| b.min(left)))
+            }
+            None => budget,
+        };
 
         let mut agent = Agent {
             id: Uuid::new_v4(),
@@ -3715,6 +3800,62 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.display().to_string()
+    }
+
+    #[tokio::test]
+    async fn no_agent_starts_once_the_ticket_ceiling_is_spent() {
+        let (sup, t, project, dir) = gated(vec![], 0).await;
+        let mut cfg = (*sup.cfg).clone();
+        cfg.daemon.max_ticket_usd = Some(1.0);
+        let sup = Supervisor { cfg: Arc::new(cfg), ..sup };
+        // One million output tokens of opus-4 is far past one dollar.
+        sup.ledger
+            .record(orchestra_core::model::UsageSample {
+                message_id: "m1".into(),
+                session_id: Uuid::new_v4(),
+                subagent_id: None,
+                agent_id: None,
+                ticket_id: Some(t.id),
+                project_id: Some(project.id),
+                model: "claude-opus-4-1".into(),
+                tokens: orchestra_core::model::Tokens {
+                    output: 1_000_000,
+                    ..Default::default()
+                },
+                ts: orchestra_core::now(),
+                source: orchestra_core::model::UsageSource::Transcript,
+            })
+            .await
+            .unwrap();
+        let role = role_def("backend");
+        let m = member("backend");
+        let outcome = sup
+            .run_role(RoleRun {
+                ticket: &t,
+                project: &project,
+                role: &role,
+                member: &m,
+                stage: 0,
+                worktree_path: dir.path(),
+                handoffs: &[],
+                blocking: &[],
+                blocked_by: Blocked::Review,
+                git: GitPolicy::Confined,
+                appendix: "",
+            })
+            .await
+            .unwrap();
+        match outcome {
+            AgentOutcome::Failed { reason } => assert!(reason.contains("plafond"), "{reason}"),
+            _ => panic!("l'agent ne devait pas démarrer"),
+        }
+        assert!(sup.store.agents_of_ticket(t.id).await.unwrap().is_empty());
+        let filter = orchestra_core::events::EventFilter {
+            ticket_id: Some(t.id),
+            tags: vec![orchestra_core::events::EventTag::BudgetExceeded],
+            ..Default::default()
+        };
+        assert_eq!(sup.store.recent_events(filter, 5).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
