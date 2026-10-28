@@ -86,6 +86,10 @@ pub struct DaemonConfig {
     /// relaunch. Only tickets whose team the user already accepted are
     /// concerned, so no team starts that they did not agree to (rule 9).
     pub resume_on_boot: bool,
+    /// Members of one stage that the team marked `parallel_ok` run together,
+    /// in the same worktree, instead of one after the other. Off by default:
+    /// it relies on the orchestrator having given them disjoint files.
+    pub parallel_stages: bool,
     /// Seconds of silence after which a running agent is reported as stalled
     /// (`AgentStalled`). It is not stopped. `0` turns the watch off.
     pub stall_secs: u64,
@@ -113,6 +117,7 @@ impl Default for DaemonConfig {
             max_concurrent_agents: 3,
             max_ticket_usd: None,
             resume_on_boot: false,
+            parallel_stages: false,
             stall_secs: 600,
             fork_on_rerun: true,
             max_attempts: 2,

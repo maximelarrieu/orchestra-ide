@@ -24,6 +24,10 @@ max_attempts = 2
 # Un ticket qui tournait quand le daemon s'est arrêté reprend là où il en était
 # au démarrage suivant, au lieu d'attendre ta relance.
 resume_on_boot = false
+# Les membres d'une même étape marqués « parallel_ok » par l'équipe tournent en
+# même temps dans le worktree, au lieu de l'un après l'autre. Ils doivent
+# toucher des fichiers distincts : c'est l'orchestrateur qui le promet.
+parallel_stages = false
 # Un agent muet depuis ce nombre de secondes est signalé (« ⚑ un agent est
 # silencieux »), sans être arrêté : un long build se tait aussi. 0 désactive.
 stall_secs = 600

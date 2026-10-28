@@ -489,8 +489,8 @@ pub struct TeamMember {
     /// judges against it rather than against an impression.
     #[serde(default)]
     pub acceptance: Vec<String>,
-    /// May run alongside its siblings in the same stage. Ignored in the MVP
-    /// (everything is sequential), kept so the scheduler can use it later.
+    /// May run alongside its siblings in the same stage, when
+    /// `daemon.parallel_stages` is on; otherwise everything is sequential.
     #[serde(default)]
     pub parallel_ok: bool,
 }

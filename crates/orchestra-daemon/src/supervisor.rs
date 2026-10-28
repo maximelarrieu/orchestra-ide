@@ -858,11 +858,89 @@ impl Supervisor {
                 .await;
         }
 
-        for (stage, member) in team.ordered() {
+        let ordered = team.ordered();
+        let mut idx = 0;
+        while idx < ordered.len() {
+            let (stage, member) = ordered[idx];
+            idx += 1;
             next_stage = stage + 1;
             if let Some(handoff) = finished_handoff(&prior, &member.role) {
                 handoffs.push((member.role.clone(), handoff));
                 continue;
+            }
+            // Siblings of one stage that all said `parallel_ok` go together.
+            // The relecture never does: its gate must come right before it.
+            if self.cfg.daemon.parallel_stages
+                && member.parallel_ok
+                && member.role != self.cfg.review.role
+            {
+                let mut group = vec![member];
+                while let Some(&(s, m)) = ordered.get(idx) {
+                    if s == stage
+                        && m.parallel_ok
+                        && m.role != self.cfg.review.role
+                        && finished_handoff(&prior, &m.role).is_none()
+                    {
+                        group.push(m);
+                        idx += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if group.len() > 1 {
+                    match self
+                        .run_parallel_stage(&ticket, &project, &catalog, &group, stage, &worktree_path, &mut handoffs)
+                        .await
+                    {
+                        StepOutcome::Done => {}
+                        StepOutcome::Cancelled => {
+                            self.finish_ticket(&ticket, TicketStatus::Cancelled).await;
+                            return Ok(());
+                        }
+                        StepOutcome::Failed => {
+                            failed = true;
+                            break;
+                        }
+                    }
+                    // The same quick look as after a lone step, once per author.
+                    if !crate::checks::after_stage(&self.cfg.checks, &project.path).is_empty() {
+                        let mut stop = None;
+                        for m in &group {
+                            let mut gate_stage = next_stage;
+                            match self
+                                .stage_gate(
+                                    &ticket,
+                                    &project,
+                                    &team,
+                                    &catalog,
+                                    &worktree_path,
+                                    &mut handoffs,
+                                    &mut gate_stage,
+                                    &m.role,
+                                )
+                                .await
+                            {
+                                StepOutcome::Done => next_stage = next_stage.max(gate_stage),
+                                other => {
+                                    stop = Some(other);
+                                    break;
+                                }
+                            }
+                        }
+                        match stop {
+                            None => {}
+                            Some(StepOutcome::Cancelled) => {
+                                self.finish_ticket(&ticket, TicketStatus::Cancelled).await;
+                                return Ok(());
+                            }
+                            Some(_) => {
+                                failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
             }
             // The relecture is a team member like the others, so this is where
             // the gate belongs: right before it, never after. Reading a branch
@@ -1081,6 +1159,55 @@ impl Supervisor {
         {
             Ok(text) => self.record_proposals(ticket, project, "rétrospective", &text).await,
             Err(e) => tracing::warn!("rétrospective du ticket #{} : {e:#}", ticket.number),
+        }
+    }
+
+    /// Run the members of one stage together. Each one reads the handoffs the
+    /// ticket had when the stage began and writes its own; they are folded back
+    /// in team order once all have finished. One failure fails the stage and
+    /// one cancellation cancels it, but the others are left to finish: stopping
+    /// an agent halfway through a file is worse than waiting for it.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_parallel_stage(
+        &self,
+        ticket: &Ticket,
+        project: &Project,
+        catalog: &Catalog,
+        group: &[&orchestra_core::model::TeamMember],
+        stage: u32,
+        worktree_path: &Path,
+        handoffs: &mut Vec<(String, String)>,
+    ) -> StepOutcome {
+        let base = handoffs.len();
+        let mut locals: Vec<Vec<(String, String)>> =
+            group.iter().map(|_| handoffs.clone()).collect();
+        let outcomes = futures::future::join_all(group.iter().zip(locals.iter_mut()).map(
+            |(member, local)| {
+                self.run_member(Step {
+                    ticket,
+                    project,
+                    catalog,
+                    member: (*member).clone(),
+                    stage,
+                    worktree_path,
+                    handoffs: local,
+                    blocking: &[],
+                    blocked_by: Blocked::Review,
+                    git: self.git_for(catalog, &member.role),
+                    appendix: "",
+                })
+            },
+        ))
+        .await;
+        for local in locals {
+            handoffs.extend(local.into_iter().skip(base));
+        }
+        if outcomes.iter().any(|o| matches!(o, StepOutcome::Cancelled)) {
+            StepOutcome::Cancelled
+        } else if outcomes.iter().any(|o| matches!(o, StepOutcome::Failed)) {
+            StepOutcome::Failed
+        } else {
+            StepOutcome::Done
         }
     }
 
@@ -3800,6 +3927,29 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.display().to_string()
+    }
+
+    #[tokio::test]
+    async fn parallel_siblings_each_leave_their_handoff_once_the_stage_is_done() {
+        let (sup, t, project, dir) = gated(vec![], 0).await;
+        let mut cfg = (*sup.cfg).clone();
+        cfg.daemon.claude_bin = script_claude(dir.path(), false);
+        cfg.daemon.max_attempts = 1;
+        let sup = Supervisor { cfg: Arc::new(cfg), ..sup };
+        let catalog = Catalog {
+            roles: vec![role_def("backend"), role_def("frontend")],
+            errors: vec![],
+        };
+        let (a, b) = (member("backend"), member("frontend"));
+        let mut handoffs = vec![("architect".to_string(), "plan".to_string())];
+        let outcome = sup
+            .run_parallel_stage(&t, &project, &catalog, &[&a, &b], 1, dir.path(), &mut handoffs)
+            .await;
+        assert!(matches!(outcome, StepOutcome::Done));
+        let roles: Vec<&str> = handoffs.iter().map(|(r, _)| r.as_str()).collect();
+        assert_eq!(roles.len(), 3, "{roles:?}");
+        assert!(roles.contains(&"backend") && roles.contains(&"frontend"), "{roles:?}");
+        assert_eq!(roles[0], "architect", "ce qui précédait l'étape reste en tête");
     }
 
     #[tokio::test]
